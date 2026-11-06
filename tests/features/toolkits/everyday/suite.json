@@ -1,0 +1,17 @@
+{
+  "name": "everyday",
+  "sources": [
+    "Baymax-main/features/toolkits/everyday/**",
+    "Baymax-main/features/toolkits/checkins.py"
+  ],
+  "python": [
+    {
+      "directory": "Baymax-main/tests",
+      "patterns": [
+        "test_toolkit_everyday.py",
+        "test_toolkit_reminder_repeats.py",
+        "test_toolkit_checkins.py"
+      ]
+    }
+  ]
+}

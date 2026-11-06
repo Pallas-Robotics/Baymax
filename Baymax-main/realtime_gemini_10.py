@@ -765,18 +765,23 @@ tracker_first_audio = LatencyTracker("first_audio_latency")
 _last_mic_send_ts: float = 0.0
 
 # ─── Playback buffer helpers ─────────────────────────────────────────────────
-def _append_playback(data: bytes, *, new_turn=False):
+def _append_playback(data: bytes, *, new_turn=False, timing_id=None):
     global _playback_buffer
     with _playback_lock:
         if new_turn and _playback_buffer:
             # Separate queued replies without delaying a reply after silence.
             _playback_buffer += b"\x00" * (RECEIVE_SAMPLE_RATE * OUTPUT_CHANNELS * 2 * 180 // 1000)
+        if timing_id is not None:
+            nonzero = np.flatnonzero(np.frombuffer(data, dtype=np.int16))
+            if len(nonzero):
+                monitor.timing.queued(timing_id, len(_playback_buffer), int(nonzero[0]))
         _playback_buffer += data
 
 def _flush_playback():
     global _playback_buffer
     with _playback_lock:
         _playback_buffer = b""
+        monitor.timing.clear_playback()
 
 def _abandon_reply():
     """A lost connection ends the reply it was streaming. Without this the rest of
@@ -786,6 +791,7 @@ def _abandon_reply():
     with _playback_lock:
         audio_cut_off = bool(_playback_buffer)
     _flush_playback()
+    monitor.timing.complete_reply(interrupted=True)
     with _gemini_speaking_lock:
         audio_cut_off = audio_cut_off or _gemini_speaking
         _gemini_speaking = False
@@ -818,10 +824,14 @@ def _abort_connection(session):
 # ─── Callback-based output stream ────────────────────────────────────────────
 def _output_callback(outdata, frames, time_info, status):
     global _playback_buffer
+    monitor.timing.output_status(status)
     n_bytes = frames * 2
     with _playback_lock:
         chunk = _playback_buffer[:n_bytes]
         _playback_buffer = _playback_buffer[n_bytes:]
+        current, dac = getattr(time_info, 'currentTime', 0), getattr(time_info, 'outputBufferDacTime', 0)
+        delay = max(0, dac - current) if current > 0 and dac > 0 else getattr(_audio_enhancer, 'output_latency_ms', 0) / 1000
+        monitor.timing.played(len(chunk), delay, RECEIVE_SAMPLE_RATE)
     if _waiting_cue is not None:
         if _audio_enhancer is not None and _audio_enhancer.full_duplex:
             chunk = _waiting_cue.render(chunk, n_bytes)
@@ -1857,6 +1867,7 @@ async def receive_audio(session):
             async for response in session.receive():
                 receive_failures = 0
                 t0 = time.perf_counter()
+                received_at = monitor.timing.now()
                 if response.session_resumption_update or response.go_away:
                     from features.conversational_ability.session import on_server_message
                     on_server_message(response)
@@ -1870,6 +1881,7 @@ async def receive_audio(session):
                 if server_content.interrupted:
                     # Cancel before examining any co-delivered output; retain new user input below.
                     _flush_playback()
+                    monitor.timing.complete_reply(interrupted=True)
                     _address_gate.end(interrupted=True)
                     monitor.finish_transcripts("ember")
                     monitor.emit("listening", "Reply interrupted; listening")
@@ -1923,6 +1935,8 @@ async def receive_audio(session):
                 # ── Output transcription (what GEMINI said) ──
                 if server_content.output_transcription:
                     text = server_content.output_transcription.text
+                    if text and text.strip():
+                        monitor.timing.received_text(at=received_at)
 
                     def show_reply_text(text=text):
                         monitor.transcribe("ember", text)
@@ -1967,7 +1981,9 @@ async def receive_audio(session):
                                 "audio/pcm"
                             )
                         ):
-                            def play_reply_audio(data=part.inline_data.data, new_turn=not _reply_audio_started):
+                            timing_id = monitor.timing.received_audio(at=received_at)
+                            def play_reply_audio(data=part.inline_data.data, new_turn=not _reply_audio_started,
+                                                 timing_id=timing_id):
                                 global _last_robot_speech_ts, _gemini_speaking
                                 monitor.emit("speaking", "Gemini is producing reply audio")
                                 with _gemini_speaking_lock:
@@ -1977,7 +1993,8 @@ async def receive_audio(session):
                                 audio_array = np.frombuffer(data, dtype=np.int16)
                                 upsampled_array = np.repeat(audio_array, 2)
                                 upsampled_bytes = upsampled_array.tobytes()
-                                _append_playback(upsampled_bytes, new_turn=new_turn)
+                                _append_playback(upsampled_bytes, new_turn=new_turn,
+                                                 timing_id=timing_id if new_turn else None)
                                 # -----------------------------------------------
                                 _address_gate.spoke(time.monotonic() + len(_playback_buffer)
                                                     / (RECEIVE_SAMPLE_RATE * 2 * OUTPUT_CHANNELS))
@@ -2006,6 +2023,7 @@ async def receive_audio(session):
                                 tracker_roundtrip.record(rt_ms)
 
                 if server_content.turn_complete:
+                    monitor.timing.complete_reply()
                     _address_gate.end()
                     monitor.finish_transcripts()
                     monitor.emit("listening", "Reply complete; listening (buffered audio may still play)")

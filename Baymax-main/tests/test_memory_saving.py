@@ -711,7 +711,7 @@ class ReceiveLoopTests(unittest.TestCase):
                 return stream()
         ns = {"asyncio": asyncio, "time": time, "_transcript_add": lambda *a: added.append(a),
               "_address_gate": SimpleNamespace(heard=lambda text: [], reply=lambda show, *a: show()),
-              "monitor": SimpleNamespace(emit=Mock(), transcribe=Mock()),
+              "monitor": SimpleNamespace(emit=Mock(), transcribe=Mock(), timing=Mock()),
               "_TurnTranscript": lambda *a: SimpleNamespace(add=Mock(), flush=Mock()),
               "_initiation_ts_lock": threading.Lock(), "_recent_user_words_lock": threading.Lock(),
               "_recent_user_words": [], "MEMORY_WORD_WINDOW": 30, "_memory_embedder": None}

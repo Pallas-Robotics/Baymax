@@ -1,0 +1,19 @@
+{
+  "full_validation_paths": [
+    "Baymax-main/realtime_gemini_*.py",
+    "Baymax-main/run_*.py",
+    "Baymax-main/device_config.py",
+    "Baymax-main/runtime_monitor.py",
+    "Baymax-main/check_release.py",
+    "Baymax-main/requirements*",
+    "tests/**",
+    ".github/**"
+  ],
+  "documentation_paths": [
+    "README.md",
+    "CHANGELOG.md",
+    "AGENTS.md",
+    "devops/EDITING_PROTOCOL.md",
+    "docs/**"
+  ]
+}

@@ -1,0 +1,8 @@
+*
+!.gitignore
+!graph.json
+!graph.html
+!GRAPH_REPORT.md
+!FEATURE_LOG.html
+!cost.json
+!UNRESOLVED_REFERENCES.json

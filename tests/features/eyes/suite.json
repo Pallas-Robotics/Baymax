@@ -1,0 +1,16 @@
+{
+  "name": "eyes",
+  "sources": [
+    "Baymax-main/features/eyes/**"
+  ],
+  "python": [
+    {
+      "directory": "Baymax-main/tests",
+      "patterns": [
+        "test_eyes.py",
+        "test_eyes_auto.py",
+        "test_toolkit_eyes.py"
+      ]
+    }
+  ]
+}
