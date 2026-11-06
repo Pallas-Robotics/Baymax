@@ -8,7 +8,8 @@ Proactive audio and the [WHEN TO SPEAK] prompt only ask Gemini to stay quiet;
 it still answers noise and people talking among themselves. This gate decides
 on the robot, from Gemini's own input transcription, whether a reply is played:
 
-- the person said Ember's name (or a usual mishearing such as "Amber"), or
+- the person said Ember's name (or a usual mishearing such as "Amber"; Hindi
+  transcribed in Devanagari counts too: एम्बर, एंबर, अम्बर ...), or
 - they spoke within BAYMAX_FOLLOW_UP_SECONDS (default 20) of Ember finishing
   speaking, so they are still in a conversation with it, or
 - the reply answers one of Ember's own messages ([FALL ALERT], [REMINDER],
@@ -39,9 +40,23 @@ import time
 
 PROMPT_TTL_S = 30  # A prompt Gemini never answered must not let a later overheard reply through.
 RESEND_WINDOW_S = 120  # Ember's own message is sent again only if a reply to it could still be playing.
+# Gemini sometimes ends a turn without replying, then answers in the next one
+# (ember-002: "Amber, please response." -> empty turn -> "I'm here." dropped).
+# Speech from a turn with no reply still counts for the next reply this long
+# after the person's last words, so the name is not forgotten.
+CARRY_S = 10
 NAMES = r"(?:ember|embers|amber|ambers|emba|embar|emmer|emperor|ember's|amber's)"
 NAME = re.compile(rf"\b{NAMES}\b")
 WHOLE_NAME = re.compile(rf"{NAMES}")
+# Hindi speech is often transcribed in Devanagari: "Ember" as एम्बर/एंबर, the
+# "Amber" mishearing as अम्बर/अंबर (also the Hindi word for sky, so it can let an
+# overheard reply through, like "amber" in English). \b is not used: Python
+# treats the virama (्) and vowel signs as non-word characters, so \bबर\b would
+# match inside एम्बर. Any Devanagari character next to the name blocks a match.
+DEVANAGARI = "ऀ-ॿ"
+HINDI_NAMES = r"(?:एम्बर|एंबर|एमबर|ऍम्बर|ऍंबर|ऐम्बर|ऐंबर|अम्बर|अंबर)"
+HINDI_NAME = re.compile(rf"(?<![{DEVANAGARI}]){HINDI_NAMES}(?![{DEVANAGARI}])")
+WHOLE_HINDI_NAME = re.compile(HINDI_NAMES)
 NOISE = re.compile(r"<[^>]*>")
 
 
@@ -57,10 +72,13 @@ def names_ember(text):
     # ("A mber", "E mperor" on ember-002), so two neighbouring pieces that
     # together make the name count too; "a member" or "the member" do not.
     text = text.lower()
-    if NAME.search(text):
+    if NAME.search(text) or HINDI_NAME.search(text):
         return True
     words = re.findall(r"[a-z']+", text)
-    return any(WHOLE_NAME.fullmatch(a + b) for a, b in zip(words, words[1:]))
+    if any(WHOLE_NAME.fullmatch(a + b) for a, b in zip(words, words[1:])):
+        return True
+    hindi = re.findall(rf"[{DEVANAGARI}]+", text)  # "एम् बर" split by transcription
+    return any(WHOLE_HINDI_NAME.fullmatch(a + b) for a, b in zip(hindi, hindi[1:]))
 
 
 def is_speech(text):
@@ -76,6 +94,8 @@ class AddressGate:
         self._lock = threading.Lock()
         self._heard = []          # user transcription since the last reply
         self._heard_at = None     # when that speech started
+        self._heard_last = None   # when the latest fragment arrived
+        self._carried = False     # _heard is from an earlier turn that had no reply
         self._prompted_at = None  # when Ember's own message, still unanswered, was sent
         self._sent = []           # [time, args, kwargs, heard_until] of Ember's recent delivered messages
         self._answers_prompt = False  # this reply was let through for that message
@@ -89,10 +109,12 @@ class AddressGate:
     def heard(self, text):
         """User transcription fragment. Returns held actions to run now, if released."""
         with self._lock:
+            self._expire_carried()
             if is_speech(text):
                 self._sent = []  # The conversation moved on: the next reply answers the person.
                 if self._heard_at is None:
                     self._heard_at = self.clock()
+                self._heard_last = self.clock()
             self._heard.append(text)
             return self._release()
 
@@ -128,6 +150,7 @@ class AddressGate:
     def tool_call(self):
         """A tool call from an addressed turn keeps the reply after its result."""
         with self._lock:
+            self._expire_carried()
             if self._decision is True or self._addressed():
                 self._prompted_at = self.clock()
 
@@ -137,6 +160,14 @@ class AddressGate:
             self._spoke_until = max(self._spoke_until or until, until)
 
     # ── the decision ─────────────────────────────────────────────────────────
+    def _clear_heard(self):
+        self._heard, self._heard_at, self._heard_last, self._carried = [], None, None, False
+
+    def _expire_carried(self):
+        # Caller holds the lock. Speech kept from a turn with no reply lapses after CARRY_S.
+        if self._carried and (self._heard_last is None or self.clock() - self._heard_last > CARRY_S):
+            self._clear_heard()
+
     def _release(self):
         # Caller holds the lock. Held actions to run if an undecided reply is now allowed.
         if self._decision is None and self._held and self._addressed(prompt=False):
@@ -164,6 +195,7 @@ class AddressGate:
     def reply(self, action, text=None):
         """Run `action` now if this reply may be heard, else hold it. Returns True if run."""
         with self._lock:
+            self._expire_carried()
             if self._decision is None and self._addressed(prompt=not self._held):
                 self._decision = True
                 self._answers_prompt = not self._held and self._prompt_waiting()
@@ -184,6 +216,7 @@ class AddressGate:
         """The reply is over (turn_complete or interrupted)."""
         with self._lock:
             dropped = self._decision is not True and bool(self._held)
+            replied = self._decision is True or bool(self._held)
             text = " ".join("".join(self._held_text).split())
             if self._answers_prompt and not interrupted:
                 self._prompted_at = None
@@ -193,7 +226,12 @@ class AddressGate:
                     if message[3] is None and message[0] <= self._reply_started:
                         message[3] = heard_at
             self._answers_prompt = False
-            self._heard, self._heard_at = [], None
+            if replied:
+                self._clear_heard()
+            else:
+                # No reply this turn: keep what was said for the next one (CARRY_S).
+                self._carried = bool(self._heard)
+                self._expire_carried()
             self._decision, self._held, self._held_text = None, [], []
         if dropped:
             self.log(f"[ADDRESS] Not spoken to; dropped reply: {text or '(audio only)'}", flush=True)

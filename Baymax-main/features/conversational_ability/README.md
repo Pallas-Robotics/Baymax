@@ -192,13 +192,21 @@ misjudge background speech or noise. Mixed conversations need live verification.
 When the optional strict gate is enabled, a reply plays only if:
 
 - the person said "Ember" (or a usual mishearing: Amber, Emba, Embar, Emmer,
-  Emperor; also split by transcription as "A mber" or "E mperor"), or
+  Emperor; also split by transcription as "A mber" or "E mperor"; Hindi in
+  Devanagari: एम्बर, एंबर, एमबर, ऐम्बर, अम्बर, अंबर, also split as "एम् बर").
+  अंबर is also the Hindi word for sky, so it can occasionally let an overheard
+  reply through, as "amber" can in English, or
 - they started speaking within `BAYMAX_FOLLOW_UP_SECONDS` (default 20) of Ember's
   last played reply ending, counting audio still buffered; noise tags such as
   `<noise>` are not speech, or
 - it answers one of Ember's own messages: any `send_client_content` with
   `turn_complete=True` (fall alert, reminders, startup/initiation, audiobook
   notes), within 30 s, or the reply after a tool call from an addressed turn.
+
+Gemini sometimes ends a turn without replying and answers in the next one, so
+speech from a turn with no reply (nothing played or held) still counts for the
+next reply for 10 s after the person's last words (`CARRY_S`). A played reply
+clears it.
 
 The decision is made at the first reply audio. Transcription can trail the reply,
 so an undecided reply's audio and transcript are held and released in order if

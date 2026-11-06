@@ -73,6 +73,43 @@ class AddressGateTests(unittest.TestCase):
             g, _, _ = gate()
             self.assertEqual(turn(g, words), ["ok"], words)
 
+    def test_name_before_a_turn_with_no_reply_counts_for_the_next_reply(self):
+        # ember-002, 2026-11-06: "Amber, please response." -> Gemini ended a turn
+        # without replying -> "I'm here." in the next turn was dropped.
+        for interrupted in (False, True):
+            g, clock, _ = gate()
+            for held in g.heard("Amber, please response."):
+                held()
+            g.end(interrupted=interrupted)  # no reply this turn
+            clock.now += 3
+            played = []
+            g.reply(lambda: played.append("I'm here."), "I'm here.")
+            g.end()
+            self.assertEqual(played, ["I'm here."], interrupted)
+
+    def test_speech_from_a_turn_with_no_reply_lapses(self):
+        g, clock, log = gate()
+        g.heard("Ember, are you there?")
+        g.end()
+        clock.now += 11  # longer than CARRY_S after the last words
+        self.assertEqual(turn(g, [], "overheard"), [])
+        self.assertIn("overheard", log.call_args_list[-1].args[0])
+
+    def test_played_reply_still_clears_what_was_heard(self):
+        g, clock, _ = gate()
+        self.assertEqual(turn(g, ["Ember, hi"]), ["ok"])
+        clock.now += 1
+        self.assertEqual(turn(g, [], "unprompted"), [])  # no new speech, no prompt, never spoke
+
+    def test_hindi_name_in_devanagari_counts(self):
+        for words in (["एम्बर, क्या तुम मुझे सुन सकते हो?"], ["हाय", " एंबर"], ["अंबर, मौसम कैसा है?"],
+                      ["ऐम्बर"], ["एम्", "बर, सुनो"], ["Ember, नमस्ते"]):
+            g, _, _ = gate()
+            self.assertEqual(turn(g, words), ["ok"], words)
+        # Longer Hindi words that only contain the letters, and the name glued to other letters.
+        for text in ("बर", "अंबरीश", "सम्बर", "एम्बरों", "मैं घर जा रहा हूँ", "नमस्ते"):
+            self.assertFalse(addressing.names_ember(text), text)
+
     def test_side_conversation_and_noise_are_dropped_and_logged(self):
         g, _, log = gate()
         self.assertEqual(turn(g, ["thanks for calling. I did finish my homework."], "That's good to hear."), [])
