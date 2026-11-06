@@ -68,8 +68,8 @@ The reusable builder is in [devops/opi4-flash](devops/opi4-flash/README.md).
 It builds a private, per-card image on a Linux host/VM. Select the runtime branch,
 Wi-Fi, Gemini key and time zone; retain the private access file. It does not write
 a physical card. Use an image writer's verification step when flashing.
-The separate **SD CARD Flash** PR adds the public walkthrough and read-only image
-verifier. The 4 Pro image is not a 5 Max image. Fresh-card hardware validation is
+For the build, verification and card-writing walkthrough with the read-only image
+verifier, see [SD CARD Flash](docs/SD_CARD_FLASH.md). The 4 Pro image is not a 5 Max image. Fresh-card hardware validation is
 separate from checksum and unit tests.
 
 ## Tests and future edits

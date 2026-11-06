@@ -8,7 +8,7 @@ import secrets
 import shutil
 import subprocess
 
-from image_settings import load, source
+from image_settings import TARGET_BOARD, load, source
 
 HERE = Path(__file__).resolve().parent
 
@@ -99,6 +99,7 @@ def main():
         image.chmod(0o600)
         private_json(output / 'device-access.private.json', credentials)
         private_json(output / 'ready-image.json', {
+            'format': 1, 'board': TARGET_BOARD,
             'image': image.name, 'length': image.stat().st_size, 'sha256': digest(image),
             'repository': selected['repository'], 'ref': selected['branch'], 'commit': commit,
             'hostname': credentials['hostname'], 'wifi_ssid': settings['wifi']['ssid'],

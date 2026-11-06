@@ -9,6 +9,7 @@ from pathlib import Path
 # payload/ember-device-config.py (DEFAULTS) and payload/ember-update (DEFAULT_REPOSITORY)
 # in step if it changes.
 REPOSITORY = 'https://github.com/Pallas-Robotics/Baymax.git'
+TARGET_BOARD = 'orange-pi-4-pro'
 # The board's clock unless the private settings name another time zone. Daily
 # check-ins, reminders and the greeting's time of day follow it.
 DEFAULT_TIMEZONE = 'America/Los_Angeles'

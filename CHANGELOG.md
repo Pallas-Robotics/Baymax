@@ -22,6 +22,12 @@
   a device override for speech-end sensitivity. Diagnostics use existing audio
   streams, keep bounded local metadata, and omit ambiguous speech matches.
 
+- Add an SD CARD Flash quickstart and cross-platform, read-only image verifier.
+  New builder manifests identify the Orange Pi 4 Pro and format version;
+  verification checks the source repository, safe image filename, byte length
+  and SHA256 before the operator uses a separate image writer. No physical disk
+  is written by the builder or verifier; fresh-card hardware checks remain pending.
+
 - **Ember for Orange Pi: one repository for the Orange Pi 4 Pro and the Orange Pi 5
   Max.** Made from JoeKojima/Baymax PR #29 (`opi4-demo`), PR #22 (the SD-image builder),
   the Orange Pi 5 Max branches `orangepi5-npu` + `memory-incremental-saves`,
