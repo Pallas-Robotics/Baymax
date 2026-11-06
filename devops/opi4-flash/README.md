@@ -1,5 +1,9 @@
 # OPI4-Flash
 
+Start with the [SD CARD Flash quickstart](../../docs/SD_CARD_FLASH.md).
+After building, run `python3 verify_image.py --manifest output/ready-image.json`
+before selecting a card in your image writer. The verifier reads files only.
+
 Build a personalized bootable microSD image for the **Orange Pi 4 Pro (A733)**.
 The image installs Ember, a headless XFCE desktop, AnyDesk and a progress page.
 No running Ember device is required to prepare it.

@@ -1,5 +1,15 @@
 # OPI4-Flash validation
 
+## Current reusable tooling
+
+The SD CARD Flash quickstart and read-only image verifier apply to the current
+Pallas-Robotics repository. New images carry an explicit Orange Pi 4 Pro board
+label and manifest format. Verification checks labels, size and SHA256; it does
+not establish a fresh-card boot or support for other boards. The records below
+are historical evidence, not a claim that this published revision was boot-tested.
+
+## Historical checks
+
 Recorded 2026-11-01. Runtime baseline: PR #20 commit
 `e0ea954` (including Svanik's PR #21); application source is unchanged by this
 packaging PR. Tests do not start new microphone/camera streams or contact Gemini.

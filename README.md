@@ -28,7 +28,7 @@ while someone watches it, and memories are saved while Ember runs. See
 [the board guide](docs/DEMO_DEVICES.md) and [ORANGE_PI_SETUP.md](Baymax-main/ORANGE_PI_SETUP.md).
 
 Where this came from: JoeKojima/Baymax PR #29 (`opi4-demo`, the Orange Pi 4 Pro
-demo), PR #22 (`codex/opi4-flash`, the SD-image builder), the Orange Pi 5 Max
+demo), PR #22 (the SD-image builder), the Orange Pi 5 Max
 branches `orangepi5-npu` and `memory-incremental-saves`, `orangepi-features`
 (opi4-demo with Svanik's PRs #23-#28 and #30 and the voice volume control) and the
 reconnect fix from `reconnect-any-disconnect` (one commit), merged in November 2026. This
@@ -37,6 +37,9 @@ branch: shared fixes are ported by hand. The x86/LattePanda, macOS, Windows and 
 code is still in the tree, unchanged, but is not what this repository targets.
 
 ## Orange Pi 4 Pro SD image
+
+For a reusable build, verification and card-writing walkthrough, see
+[SD CARD Flash](docs/SD_CARD_FLASH.md).
 
 See [OPI4-Flash](devops/opi4-flash/README.md) for a private SD-image builder with
 three first-boot choices: the branch to follow (default `release`), preconfigured
