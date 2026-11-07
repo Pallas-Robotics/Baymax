@@ -214,7 +214,8 @@ class ScenarioTests(unittest.TestCase):
         # the first three are right and failed only on the tag or the script; the last is English.
         alert = {s["name"]: s for s in live_eval.load_scenarios()}["language-fall-alert-hindi"]["steps"][1]["expect"]
         for reply in ("[FALL ALERT] अरे! क्या आप ठीक हैं? क्या आपको किसी मदद की ज़रूरत है?",
-                      "[FALL ALERT] Kya aap theek hain? Kya aapko madad ki zaroorat hai?",
+                      "[FALL ALERT] Kya aap theek hain? Mujhe lagta hai ki aap gir gayi hain. Kya aapko madad ki "
+                      "zaroorat hai?",
                       "[PRESENCE] میں سن رہی ہوں، کیا آپ کچھ بتانا چاہتی ہیں؟"):
             self.assertEqual(live_eval.check(alert, turn(reply=reply)), [], reply)
         self.assertTrue(live_eval.check(alert, turn(reply="Oh no! Are you okay? Do you need any help?")))
