@@ -52,9 +52,11 @@ python tests/run.py
   Ownership and suite-selection checks (`tests/overall/test_validation.py`) run
   only in CI (`GITHUB_ACTIONS=true`) and `tests/run.py`, not on a robot: robots
   roll back a release whose gate fails.
-- Existing CI filters miss root-only tests/docs/devops changes. Enable the full
-  workflow described in `tests/README.md`; until then run the root gate manually
-  and include its report. Do not claim automatic coverage that is not enabled.
+- Existing CI runs `check_release.py` for application, root test, chat UI,
+  sampler and SD-card tool changes, but not the SD-card or Graphify suites or
+  documentation-only changes. Enable the full workflow described in
+  `tests/README.md`; until then run the root gate manually and include its
+  report. Do not claim automatic coverage that is not enabled.
 - Node is needed for the chat UI check. Local machines without it record a skip;
   CI must have it. Explain every skip, failure or unavailable platform.
 - Every new `Baymax-main/tests/test_*.py` file must belong to exactly one suite.

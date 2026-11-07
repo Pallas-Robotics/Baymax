@@ -67,10 +67,13 @@ protocol](../devops/EDITING_PROTOCOL.md) and the live checklist before release.
 
 ## CI activation
 
-The existing workflow filters for `Baymax-main/**`; changes confined to root
-tests, documentation or deployment tools do not trigger that workflow. The ready
-workflow at `devops/ci/feature-validation.yml.example` covers every PR and pushes
-to `main`/`release`, runs all suites and uploads the report/logs. A maintainer must
+The existing workflow (`offline-checks.yml`) runs `Baymax-main/check_release.py`
+for changes under `Baymax-main/**`, `tests/**`, `test/**`, `devops/performance/**`
+and `devops/opi4-flash/**`. That gate includes the overall checks and the sampler's
+tests but not the SD-card or Graphify suites, and documentation-only changes do
+not trigger it. The ready workflow at `devops/ci/feature-validation.yml.example`
+covers every PR and pushes to `main`/`release`, runs all suites and uploads the
+report/logs. A maintainer must
 copy it to `.github/workflows/feature-validation.yml` using a credential with
 workflow-write access. The current publishing credential lacks that scope.
 Until enabled, run `python tests/run.py` explicitly for those changes and attach
