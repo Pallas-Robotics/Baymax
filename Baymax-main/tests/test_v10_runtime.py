@@ -1243,13 +1243,39 @@ class SpeakerStreamTests(unittest.TestCase):
     def test_unset_keeps_todays_stream_and_bad_values_fall_back(self):
         self.assertEqual(self.settings(), ((1024, None), 0))
         self.assertEqual(self.settings(BAYMAX_OUTPUT_BLOCKSIZE="480", BAYMAX_OUTPUT_LATENCY=" Low ")[0], (480, "low"))
-        self.assertEqual(self.settings(BAYMAX_OUTPUT_BLOCKSIZE="0", BAYMAX_OUTPUT_LATENCY="0.03")[0], (0, 0.03))
+        self.assertEqual(self.settings(BAYMAX_OUTPUT_BLOCKSIZE="64", BAYMAX_OUTPUT_LATENCY="0.03")[0], (64, 0.03))
+        self.assertEqual(self.settings(BAYMAX_OUTPUT_BLOCKSIZE="4096", BAYMAX_OUTPUT_LATENCY="0.5")[0], (4096, 0.5))
         self.assertEqual(self.settings(BAYMAX_OUTPUT_LATENCY="high")[0], (1024, "high"))
         for bad in ({"BAYMAX_OUTPUT_BLOCKSIZE": "big"}, {"BAYMAX_OUTPUT_BLOCKSIZE": "-1"},
                     {"BAYMAX_OUTPUT_LATENCY": "fast"}, {"BAYMAX_OUTPUT_LATENCY": "nan"},
-                    {"BAYMAX_OUTPUT_LATENCY": "0"}):
+                    {"BAYMAX_OUTPUT_LATENCY": "0"},
+                    # Past what the audio cleanup can follow: the echo reference keeps 250 ms
+                    # (12000 frames), AEC3's delay range and the reply mute end at 0.5 s.
+                    {"BAYMAX_OUTPUT_BLOCKSIZE": "16384"}, {"BAYMAX_OUTPUT_BLOCKSIZE": "4097"},
+                    {"BAYMAX_OUTPUT_BLOCKSIZE": "63"}, {"BAYMAX_OUTPUT_BLOCKSIZE": "0"},
+                    {"BAYMAX_OUTPUT_LATENCY": "1"}, {"BAYMAX_OUTPUT_LATENCY": "0.51"}):
             with self.subTest(**bad):
                 self.assertEqual(self.settings(**bad), ((1024, None), 1))   # warned once, default kept
+
+    def test_on_the_rk3588_fast_cores_the_speaker_gets_512_frames_and_low_latency(self):
+        # Measured on the Orange Pi 5 Max's USB speaker: 42 ms of output latency instead of
+        # about 96 ms, no underflows. pc_hardware sets it before the runtime reads it.
+        import pc_hardware
+        names = ("BAYMAX_OUTPUT_BLOCKSIZE", "BAYMAX_OUTPUT_LATENCY", "BAYMAX_CPU_PINNING", "BAYMAX_GIL_SWITCH_MS",
+                 *pc_hardware.LIBRARY_THREADS, pc_hardware.FAST_CPUS_ENV, pc_hardware.SLOW_CPUS_ENV)
+        clean = {k: v for k, v in os.environ.items() if k not in names}
+        with patch("test_public_core_integration.CORE", V10):
+            read = load_function("_output_stream_settings", {"os": os})
+        for rk3588, expected in ((True, (512, "low")), (False, (1024, None))):   # the 4 Pro: as before
+            with self.subTest(rk3588=rk3588), patch.dict(os.environ, clean, clear=True), \
+                    patch.object(pc_hardware, "is_rk3588", return_value=rk3588), \
+                    patch.object(pc_hardware, "performance_cpus", return_value={4, 5, 6, 7}), \
+                    patch.object(pc_hardware, "pin_threads"), \
+                    patch.object(pc_hardware.os, "sched_getaffinity", Mock(return_value=set(range(8))), create=True), \
+                    patch.object(pc_hardware.os, "sched_setaffinity", Mock(), create=True), \
+                    patch.object(sys, "setswitchinterval"), patch("builtins.print"):
+                pc_hardware.use_performance_cpus()
+                self.assertEqual(read(), expected)
 
     def test_the_speaker_stream_is_opened_with_them(self):
         opened = []

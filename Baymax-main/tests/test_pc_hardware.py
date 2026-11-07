@@ -154,7 +154,8 @@ class HardwareTests(unittest.TestCase):
 # Everything use_performance_cpus may set for the rest of Ember and what it starts, by the
 # names realtime_gemini_10.py, the vision children and the libraries read.
 FAST, SLOW = "BAYMAX_FAST_CPUS", "BAYMAX_SLOW_CPUS"
-FAST_CORE_ENV = (FAST, SLOW, "OPENBLAS_NUM_THREADS", "OPENCV_FOR_THREADS_NUM", "TOKENIZERS_PARALLELISM")
+SPEAKER = ("BAYMAX_OUTPUT_BLOCKSIZE", "BAYMAX_OUTPUT_LATENCY")
+FAST_CORE_ENV = (FAST, SLOW, "OPENBLAS_NUM_THREADS", "OPENCV_FOR_THREADS_NUM", "TOKENIZERS_PARALLELISM", *SPEAKER)
 
 
 class BigLittleCpuTests(unittest.TestCase):
@@ -318,10 +319,21 @@ class BigLittleCpuTests(unittest.TestCase):
              patch("builtins.print"), \
              patch.dict(os.environ, {"OPENBLAS_NUM_THREADS": "4"}):         # a value already set wins
             self.assertEqual(pc_hardware.use_performance_cpus(), {4, 5, 6, 7})
+            # The speaker: 512-frame callbacks and low latency, measured on the 5 Max (42 ms
+            # of output latency instead of about 96 ms, no underflows).
             self.assertEqual({name: os.environ.get(name) for name in FAST_CORE_ENV},
                              {FAST: "4,5,6,7", SLOW: "0,1,2,3", "OPENBLAS_NUM_THREADS": "4",
-                              "OPENCV_FOR_THREADS_NUM": "1", "TOKENIZERS_PARALLELISM": "false"})
+                              "OPENCV_FOR_THREADS_NUM": "1", "TOKENIZERS_PARALLELISM": "false",
+                              "BAYMAX_OUTPUT_BLOCKSIZE": "512", "BAYMAX_OUTPUT_LATENCY": "low"})
         self.switch.assert_called_once_with(0.001)
+        with patch.object(pc_hardware, "performance_cpus", return_value={4, 5, 6, 7}), \
+             patch.object(pc_hardware, "thread_ids", return_value=[100]), \
+             patch.object(pc_hardware.os, "sched_setaffinity", Mock(), create=True), \
+             patch.object(pc_hardware.os, "sched_getaffinity", Mock(return_value=set(range(8))), create=True), \
+             patch("builtins.print"), \
+             patch.dict(os.environ, {"BAYMAX_OUTPUT_BLOCKSIZE": "1024"}):   # e.g. from .env: it wins
+            pc_hardware.use_performance_cpus()
+            self.assertEqual([os.environ.get(name) for name in SPEAKER], ["1024", "low"])
 
     @patch.object(pc_hardware, "is_rk3588", Mock(return_value=True))
     def test_the_gil_switch_interval_can_be_changed_or_left_to_python(self):

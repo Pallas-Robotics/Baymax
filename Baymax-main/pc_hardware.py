@@ -120,6 +120,14 @@ FAST_CPUS_ENV, SLOW_CPUS_ENV = "BAYMAX_FAST_CPUS", "BAYMAX_SLOW_CPUS"
 # when the reply starts holds back its first audio.
 LIBRARY_THREADS = {"OPENBLAS_NUM_THREADS": "1", "OPENCV_FOR_THREADS_NUM": "1",
                    "TOKENIZERS_PARALLELISM": "false"}
+# The speaker stream while Ember is on the fast cores (realtime_gemini_10.py reads both once,
+# at start): 512-frame callbacks and PortAudio's low output latency instead of sounddevice's
+# defaults (1024 frames, 'high'). On the Orange Pi 5 Max with its USB speaker on PipeWire's
+# default device, the default stream reported 42.7 ms of PortAudio latency and the audio
+# cleanup measured about 96 ms of output latency; 512/low reported 10.7 ms and about 42 ms,
+# with no output underflows in three 3.5-minute runs (one with MediaPipe pose on the CPU) and
+# the mic and speaker callbacks' timing unchanged. A value already set (.env, the shell) wins.
+SPEAKER_STREAM = {"BAYMAX_OUTPUT_BLOCKSIZE": "512", "BAYMAX_OUTPUT_LATENCY": "low"}
 # Where each vision child runs while Ember is on the fast cores: which cores, and its nice value.
 VISION_PLACES = {"pose": ("fast", 5), "face": ("slow", 10)}
 
@@ -156,16 +164,17 @@ def gil_switch_ms():
 
 def _fast_core_settings(fast, slow):
     """Only with Ember kept on the fast cores (the RK3588 by default): where the vision
-    children may go, single-threaded library pools, and a 1 ms GIL switch interval instead of
-    Python's 5 ms. The mic callback lets go of the GIL inside each WebRTC frame (2-3 times a
-    block) and has to win it back each time, waiting up to a whole interval: on the Orange Pi
-    5 Max it took about 2.5 ms at the median but 9.3-10.2 ms at p99, just as long with pose on
-    the NPU as on the CPU, so the waits come from the GIL, not from busy cores. Returns the
-    interval in ms (0: Python's own was kept)."""
+    children may go, single-threaded library pools, the 512-frame low-latency speaker stream
+    (SPEAKER_STREAM), and a 1 ms GIL switch interval instead of Python's 5 ms. The mic
+    callback lets go of the GIL inside each WebRTC frame (2-3 times a block) and has to win
+    it back each time, waiting up to a whole interval: on the Orange Pi 5 Max it took about
+    2.5 ms at the median but 9.3-10.2 ms at p99, just as long with pose on the NPU as on the
+    CPU, so the waits come from the GIL, not from busy cores. Returns the interval in ms (0:
+    Python's own was kept)."""
     os.environ.setdefault(FAST_CPUS_ENV, _cpu_text(fast))
     if slow:
         os.environ.setdefault(SLOW_CPUS_ENV, _cpu_text(slow))
-    for name, value in LIBRARY_THREADS.items():
+    for name, value in {**LIBRARY_THREADS, **SPEAKER_STREAM}.items():
         os.environ.setdefault(name, value)
     switch_ms = gil_switch_ms()
     if switch_ms:

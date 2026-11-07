@@ -127,6 +127,13 @@ With Ember on the fast cores, and only then:
   or the shell sets them. ONNX Runtime keeps its two threads for the memory lookup
   (below): a lookup still running when the reply arrives holds back its first audio for
   up to 150 ms.
+- **Speaker stream: 512-frame callbacks and low latency** instead of sounddevice's 1024
+  and `high`. With the 5 Max's USB speaker on PipeWire's default device the speaker's
+  output latency went from about 96 ms to about 42 ms (PortAudio reported 42.7 ms, now
+  10.7 ms), with no output underflows in three 3.5-minute runs (one with MediaPipe pose on
+  the CPU) and the mic and speaker callbacks' timing unchanged. `BAYMAX_OUTPUT_BLOCKSIZE`
+  (64-4096) and `BAYMAX_OUTPUT_LATENCY` (`low`, `high` or up to 0.5 s) in `.env` change it,
+  e.g. 1024 and `high` if another speaker crackles.
 - **The pose process** (NPU or MediaPipe, and the fall toolkit's own with
   `camera.pose_tracking = false`) stays on the fast cores at nice 5, so Ember's audio
   wins any core it shares with pose. On an A55 the NPU path's own CPU work (about 11.5 ms

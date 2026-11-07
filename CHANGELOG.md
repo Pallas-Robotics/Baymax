@@ -39,11 +39,12 @@
   at nice 5 before its model starts, since the NPU path's CPU work would miss the
   100 ms frame budget on an A55; the opt-in eye-contact (face) process goes to
   the slow cores at nice 10. `BAYMAX_VISION_CPUS=fast|slow` moves both, to
-  measure. Nice values only go up; no real-time scheduling, and the audio cleanup
-  and memory stay in Ember's process. The effect on the mic callback's tail is
-  expected, not measured yet: the full-system A/B on the board is pending.
-  `features/pose/benchmark.py`, which pins itself like Ember, now also runs with
-  these settings. Offline tests pass.
+  measure. The speaker stream gets 512-frame callbacks and low latency (see
+  "About 54 ms less speaker latency" below). Nice values only go up; no real-time
+  scheduling, and the audio cleanup and memory stay in Ember's process. The
+  effect on the mic callback's tail is expected, not measured yet: the
+  full-system A/B on the board is pending. `features/pose/benchmark.py`, which
+  pins itself like Ember, now also runs with these settings. Offline tests pass.
 
 - Pose: a pose process that hangs without exiting is now stopped and restarted.
   `features/vision_process.py`'s `Remote` waited for a reply for good, so a child stuck
@@ -195,12 +196,22 @@
   polled every 3 s, even while Gemini was replying, which can cut the reply off. It
   now waits for `available_to_speak()` and stays pending until then.
 
-- Speaker stream knobs for a board A/B of reply latency, documented in `.env.example`
-  and the conversational_ability README: `BAYMAX_OUTPUT_BLOCKSIZE` (frames per speaker
-  callback, default 1024; 0 lets PortAudio choose) and `BAYMAX_OUTPUT_LATENCY` (`low`,
-  `high` or seconds; unset keeps sounddevice's default, `high`). Read once at start; bad
-  values warn and fall back. Unset, the stream is opened exactly as before; when set,
-  the stream's reported latency is logged at each connection.
+- About 54 ms less speaker latency on the Orange Pi 5 Max: with Ember on the RK3588's
+  fast cores the speaker stream uses 512-frame callbacks and PortAudio's `low` latency
+  instead of sounddevice's 1024 frames and `high`. Measured on the 5 Max with its USB
+  speaker on PipeWire's default device: PortAudio reported 42.7 ms before and 10.7 ms
+  after, and the audio cleanup measured about 96 ms and about 42 ms of output latency,
+  with no output underflows (the timing monitor's counter, read every 2 s) in three
+  3.5-minute runs, one with MediaPipe pose on the CPU, and the mic and speaker callbacks'
+  timing unchanged. Two settings, documented in `.env.example` and the
+  conversational_ability README, change it: `BAYMAX_OUTPUT_BLOCKSIZE` (frames per
+  speaker callback, 64-4096) and `BAYMAX_OUTPUT_LATENCY` (`low`, `high` or seconds up to
+  0.5); a value in `.env` or the shell wins. Read once at start; a bad or out-of-range
+  value prints one line and falls back to 1024 / sounddevice's default (a longer block
+  than the echo reference's 250 ms, or more than 0.5 s of latency, would break echo
+  cancellation and the mute during replies). Elsewhere (the Orange Pi 4 Pro unless
+  pinned, x86, macOS, Windows) the stream is opened as before; when it isn't the
+  1024/default one, its reported latency is logged at each connection.
 
 - Less work on the real-time threads. PortAudio's capture callback printed a flushed
   `[MIC LEVEL]` line every 50 blocks, and a `[MIC STATUS]` line for every input status

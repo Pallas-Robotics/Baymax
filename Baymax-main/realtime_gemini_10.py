@@ -1012,19 +1012,23 @@ def _output_callback(outdata, frames, time_info, status):
 
 def _output_stream_settings():
     """(blocksize, latency) for the speaker stream, from BAYMAX_OUTPUT_BLOCKSIZE (frames per
-    callback, default 1024; 0 lets PortAudio choose) and BAYMAX_OUTPUT_LATENCY ('low', 'high'
-    or seconds; unset keeps sounddevice's default, 'high'). Knobs for measuring speaker
-    latency on a board; unset, the stream is opened exactly as before. Bad values warn
-    and use the default."""
+    callback, 64-4096, default 1024) and BAYMAX_OUTPUT_LATENCY ('low', 'high' or seconds up
+    to 0.5; unset keeps sounddevice's default, 'high'). Unset, the stream is opened as
+    sounddevice opens it; with Ember on the RK3588's fast cores pc_hardware sets 512 and
+    'low' first (SPEAKER_STREAM), unless .env or the shell set them. The limits keep the
+    audio cleanup working: its echo reference holds 250 ms (12000 frames, rendered()), so a
+    longer block leaves AEC without its reference, and past 0.5 s (AEC3's delay range;
+    rendered() caps output_latency_ms there) the mute during replies would end while Ember
+    is still audible. A bad or out-of-range value prints one line and uses the default."""
     blocksize, latency = 1024, None
     raw = os.getenv("BAYMAX_OUTPUT_BLOCKSIZE", "").strip()
     if raw:
         try:
             blocksize = int(raw)
-            if not 0 <= blocksize <= 16384:
+            if not 64 <= blocksize <= 4096:
                 raise ValueError
         except ValueError:
-            print(f"[AUDIO] Invalid BAYMAX_OUTPUT_BLOCKSIZE {raw!r}; using 1024.", flush=True)
+            print(f"[AUDIO] Invalid BAYMAX_OUTPUT_BLOCKSIZE {raw!r} (64-4096 frames); using 1024.", flush=True)
             blocksize = 1024
     raw = os.getenv("BAYMAX_OUTPUT_LATENCY", "").strip().lower()
     if raw in ("low", "high"):
@@ -1032,10 +1036,11 @@ def _output_stream_settings():
     elif raw:
         try:
             latency = float(raw)
-            if not 0 < latency <= 2:
+            if not 0 < latency <= 0.5:
                 raise ValueError
         except ValueError:
-            print(f"[AUDIO] Invalid BAYMAX_OUTPUT_LATENCY {raw!r}; using the default.", flush=True)
+            print(f"[AUDIO] Invalid BAYMAX_OUTPUT_LATENCY {raw!r} (low, high or up to 0.5 s); using the default.",
+                  flush=True)
             latency = None
     return blocksize, latency
 
