@@ -14,6 +14,9 @@ ROOT = Path(__file__).resolve().parent
 # A machine's own settings: its .env (Setup, .env.example) or its shell.
 LOCAL_SETTING_PREFIXES = ("BAYMAX_", "EMBER_")
 LOCAL_SETTING_NAMES = {"GOOGLE_API_KEY", "GEMINI_API_KEY", "OPENAI_API_KEY", "FLASK_SECRET_KEY"}
+# Inputs for the tests, not settings of Ember, so they stay: BAYMAX_MEMORY_MODEL_DIR
+# points the real-model memory tests at a downloaded model (they skip without it).
+TEST_INPUT_NAMES = {"BAYMAX_MEMORY_MODEL_DIR"}
 # Checks of the repository's own bookkeeping (every test file listed in one suite.json,
 # the suites --changed picks). The robots run this gate before taking a release and
 # roll back (the 5 Max never retries that commit), so a forgotten suite.json entry
@@ -87,7 +90,8 @@ def local_settings_ignored(root=ROOT):
 
     saved = dict(os.environ)
     for name in [name for name in os.environ
-                 if name.startswith(LOCAL_SETTING_PREFIXES) or name in LOCAL_SETTING_NAMES]:
+                 if (name.startswith(LOCAL_SETTING_PREFIXES) or name in LOCAL_SETTING_NAMES)
+                 and name not in TEST_INPUT_NAMES]:
         del os.environ[name]
     dotenv.main.DotEnv = WithoutLocalEnv
     try:

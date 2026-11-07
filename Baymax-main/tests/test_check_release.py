@@ -111,6 +111,14 @@ class LocalSettingsTests(unittest.TestCase):
         self.assertNotIn("BAYMAX_TEST_OWN", os.environ)
         self.assertEqual(dotenv_values(self.root / ".env")["BAYMAX_VOICE_VOLUME_TOOL"], "0")
 
+    def test_the_model_folder_for_the_real_model_memory_tests_is_kept(self):
+        # Not a setting of Ember: it points test_semantic_embedder's real-model tests at a
+        # downloaded model. Removed, those tests never ran under this gate or tests/run.py.
+        with patch.dict(os.environ, {"BAYMAX_MEMORY_MODEL_DIR": "/models/minilm"}), \
+                local_settings_ignored(self.root):
+            self.assertEqual(os.environ.get("BAYMAX_MEMORY_MODEL_DIR"), "/models/minilm")
+            self.assertNotIn("BAYMAX_CPU_PINNING", os.environ)
+
     def test_the_new_features_pass_on_a_robot_that_changed_their_settings(self):
         names = ["test_voice_volume.VoiceVolumeWiringTests.test_tool_is_offered_and_answered_even_with_the_toolkit_off",
                  "test_voice_volume.VoiceVolumeWiringTests.test_playback_volume_stays_with_the_audiobook_and_listen_tools",

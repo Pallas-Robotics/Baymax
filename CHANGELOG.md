@@ -1,5 +1,10 @@
 # MVP (unreleased)
 
+- `check_release.py` and `tests/run.py` keep `BAYMAX_MEMORY_MODEL_DIR` while they
+  set the machine's own settings aside. It only points the real-model memory tests
+  at a downloaded model (it changes nothing in Ember), and removing it meant those
+  two tests never ran under either command: they always skipped.
+
 - Robot updates: `check_release.py` no longer runs the repository's bookkeeping
   checks (`tests/overall/test_validation.py`: every test file listed in one
   `suite.json`, the suites `tests/run.py --changed` picks) on a robot. The Orange
