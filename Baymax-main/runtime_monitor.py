@@ -32,6 +32,7 @@ transcript_listeners = []  # More (speaker, {'id', 'text'}) consumers (e.g. 'Emb
 waiting_audio = None
 echo_text = {'suspected': False}
 sensors = {}  # Sensor name -> time.monotonic() of its last sign of life (MVP eyes watchdog).
+memory_status = 'Disabled'  # v10 reports its memory state here; v8 has no memory.
 
 
 def sensor_alive(name):
@@ -162,7 +163,7 @@ def snapshot(metrics=None):
                 'transcripts': [dict(message) for message in transcripts],
                 'conversation_timing': timing.snapshot(),
                 'speech_detection': timing.speech_status(),
-                'capabilities': {'memory': 'Disabled in version-8 demo', 'google_search': _search_status(),
+                'capabilities': {'memory': memory_status, 'google_search': _search_status(),
                                  'toolkit': 'Location, weather and optional experimental fall detection',
                                  'fall_detection': fall_status}}
 

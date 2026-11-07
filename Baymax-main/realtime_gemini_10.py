@@ -641,10 +641,12 @@ def _load_memory_embedder():
         )
         count = embedder._collection.count() if embedder._collection else 0
         print(f"[MEMORY] Embedder ready — {count} memories in store")
+        monitor.memory_status = f"On ({count} memories at start)"
         return embedder
     except Exception as e:
         print(f"[MEMORY] WARNING — could not load embedder: {e}")
         print("[MEMORY] Memory retrieval will be disabled this session.")
+        monitor.memory_status = "Unavailable this session (could not load)"
         return None
 
 
@@ -660,11 +662,13 @@ def _download_memory_model():
     has no memories to recall yet."""
     global _memory_embedder
     print("[MEMORY] Downloading the memory model (about 90 MB, once) in the background...")
+    monitor.memory_status = "Downloading the memory model (first start)"
     try:
         download_model(ONNX_MODEL_DIR)
     except Exception as e:
         print(f"[MEMORY] WARNING — could not download the model: {e}")
         print("[MEMORY] Memory retrieval will be disabled this session; the download is retried next start.")
+        monitor.memory_status = "Unavailable this session (model download failed)"
         return
     _memory_embedder = _load_memory_embedder()
 
@@ -2496,6 +2500,7 @@ if __name__ == "__main__":
                 _boot_status("memory", "Memory system failed to load (non-fatal)", error=True)
     else:
         print("[MEMORY] Retrieval OFF (memory.retrieval_enabled = false in device.toml); session summaries are still saved.")
+        monitor.memory_status = "Retrieval off (device.toml); summaries are still saved"
         _boot_status("memory", "Memory retrieval off (device.toml)")
 
     # ── Save memories during uptime, not only at a clean stop ──

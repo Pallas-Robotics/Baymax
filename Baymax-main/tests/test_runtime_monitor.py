@@ -59,6 +59,9 @@ class MonitorTests(unittest.TestCase):
     def test_unavailable_features_are_not_reported_as_running(self):
         capabilities = monitor.snapshot()['capabilities']
         self.assertIn('Disabled', capabilities['memory'])
+        # v10 reports its real memory state (it was always shown as disabled).
+        with patch.object(monitor, 'memory_status', 'On (3 memories at start)'):
+            self.assertEqual(monitor.snapshot()['capabilities']['memory'], 'On (3 memories at start)')
         with patch.dict('os.environ', {'BAYMAX_GOOGLE_SEARCH': '0'}):
             self.assertEqual(monitor.snapshot()['capabilities']['google_search'], 'Disabled')
         with patch.dict('os.environ', {'BAYMAX_GOOGLE_SEARCH': '1', 'BAYMAX_TOOLKIT_ENABLED': '1'}):
