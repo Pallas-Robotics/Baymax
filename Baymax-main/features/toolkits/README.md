@@ -209,8 +209,10 @@ camera stream. Face and pose inference run in a child process
 starving the mic callback and Gemini I/O. Only frames go in and landmark tuples
 come out over local pipes; nothing leaves the device. The face model is downloaded
 before its child starts. If the face child cannot start (or has not loaded in 60 s),
-eye contact reports unavailable; one that stops answering a frame for 5 s is stopped,
-and frames are then skipped (and logged) until Ember restarts. If the core's pose child
+eye contact reports unavailable; one that dies, or stops answering a frame for 5 s and
+is stopped, ends eye-contact greetings until Ember restarts, with one log line
+(`[PRESENCE] Eye-contact greetings stopped until Ember restarts (...)`); a frame the
+face model itself fails is skipped and logged. If the core's pose child
 cannot start, dies or hangs, it is started again once, on the CPU; video continues
 either way. A look counts when the face is turned to the camera, both irises
 are centred, the face is within about 1-1.5 m (detector limit) and it lasts

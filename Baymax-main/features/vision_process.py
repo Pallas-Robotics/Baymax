@@ -59,12 +59,19 @@ def loading_model():
         _send("loading", None)
 
 
+class Stopped(RuntimeError):
+    """The vision process is gone: it died, hung and was stopped by the watchdog, or sent
+    an unreadable reply. Every later call fails the same way, so close the Remote (or
+    start another). A model's own error in a frame is a plain RuntimeError instead, and
+    the child goes on."""
+
+
 class Remote:
     """`factory()` built and run in a child process, with the same detect(frame) call.
 
     A call still waiting for its reply after `timeout` seconds (`start_timeout` while the
     model loads, also when it says so mid-frame: loading_model) kills the child and raises
-    RuntimeError, as if the child had died."""
+    Stopped (a RuntimeError), as if the child had died."""
     timeout = 5.0          # per frame; a 5 Max pose frame took 16-44 ms (NPU / MediaPipe medians)
     start_timeout = 60.0   # imports and model load (NPU setup and warm-up measured 0.6-1.7 s), at
                            # the start or mid-frame (loading_model); callers download models
@@ -113,13 +120,12 @@ class Remote:
                     kind, value = pickle.load(self.child.stdout)
             except (EOFError, OSError, pickle.UnpicklingError) as error:
                 if self.expired:
-                    raise RuntimeError(f"vision process hung: no reply in {limit:g} s, so it was stopped") \
-                        from error
-                raise RuntimeError(f"vision process stopped ({error or 'exited'})") from error
+                    raise Stopped(f"vision process hung: no reply in {limit:g} s, so it was stopped") from error
+                raise Stopped(f"vision process stopped ({error or 'exited'})") from error
             except Exception as error:
                 # Anything else on the reply pipe (e.g. text, which unpickles as a ValueError):
                 # replies are out of step from here on, so callers close it as a stopped process.
-                raise RuntimeError(f"vision process sent an unreadable reply ({type(error).__name__}: {error})") \
+                raise Stopped(f"vision process sent an unreadable reply ({type(error).__name__}: {error})") \
                     from error
             finally:
                 self.deadline = None

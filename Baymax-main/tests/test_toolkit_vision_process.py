@@ -198,8 +198,22 @@ class VisionProcessTests(unittest.TestCase):
             model = Remote.__new__(Remote)
             model.lock = threading.Lock()
             model.child = type("Child", (), {"stdin": io.BytesIO(), "stdout": io.BytesIO(garbage)})()
-            with self.subTest(garbage=garbage), self.assertRaises(RuntimeError):
+            with self.subTest(garbage=garbage), self.assertRaises(vision_process.Stopped):
                 model.detect("frame")
+
+    def test_a_gone_process_raises_stopped_and_a_models_own_error_does_not(self):
+        # Eye contact keeps its child after a frame the model failed, but must stop using
+        # one that is gone: every later frame fails ("[Errno 32] Broken pipe").
+        with Remote(self.fake.Model) as model:
+            with self.assertRaisesRegex(RuntimeError, "bad frame") as caught:
+                model.detect("boom")
+            self.assertNotIsInstance(caught.exception, vision_process.Stopped)
+            self.assertEqual(model.detect(0.5)[0].x, 0.5)          # the child goes on
+            model.child.kill()
+            model.child.wait(timeout=2)
+            for _ in range(2):
+                with self.assertRaisesRegex(vision_process.Stopped, "vision process stopped"):
+                    model.detect(0.5)
 
     def test_a_model_that_cannot_load_raises_and_leaves_no_process(self):
         with self.assertRaisesRegex(RuntimeError, "no mediapipe"):
@@ -248,7 +262,7 @@ class HungVisionProcessTests(unittest.TestCase):
         self.addCleanup(lambda: model.child.poll() is None and model.child.kill())  # runs first
         self.assertIsNone(model.detect("frame"))
         outcome, took = self.finishes(lambda: model.detect("hang"))
-        self.assertIsInstance(outcome.get("error"), RuntimeError)
+        self.assertIsInstance(outcome.get("error"), vision_process.Stopped)   # a RuntimeError
         self.assertIn("vision process hung: no reply in 0.5 s, so it was stopped", str(outcome["error"]))
         self.assertLess(took, 3)
         self.assertIsNotNone(model.child.wait(timeout=2))      # killed, not left running

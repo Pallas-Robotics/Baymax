@@ -17,11 +17,12 @@
   noise (238 vs 219 µs), where a `threading.Timer` per frame (Nate's opi4-demo, ff168ca,
   which this ports without its regrouping) took 441 µs. The fall toolkit's own model and
   the eye-contact face model are now downloaded before their child starts, so a slow
-  download is not taken for a hang. A face child stopped this way is not restarted: its
-  frames are skipped (and logged) until Ember restarts. A child stuck inside a kernel
-  call dies only when the driver returns. Offline tests pass (fake hung children, and
-  the camera thread with real vision processes); a real hung NPU call on the 5 Max is
-  pending.
+  download is not taken for a hang. A face child stopped this way (or one that dies) is
+  not restarted: eye-contact greetings stop with one log line until Ember restarts
+  (every later frame was logged as skipped, up to 4 times a second). A child stuck
+  inside a kernel call dies only when the driver returns. Offline tests pass (fake hung
+  children, and the camera thread with real vision processes); a real hung NPU call on
+  the 5 Max is pending.
 
 - Fall detection: velocities use each frame's capture time. `FallDetector.update()`
   read the clock when the frame's pose came back, so the varying round trip to the pose
