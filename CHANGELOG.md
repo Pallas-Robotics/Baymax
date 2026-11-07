@@ -1,5 +1,11 @@
 # MVP (unreleased)
 
+- The receive loop no longer drops the end of a turn when a message's model turn has no
+  parts: looping over `None` raised, and the rest of that message (its `turn_complete`:
+  the speaking state, the address gate's turn end) was lost, followed by a 0.5 s pause.
+  Messages with several parts (Gemini 3 can send text and audio parts together) were
+  already handled part by part, in order; both are now tested on the real receive loop.
+
 - Weather questions no longer wait on a fetch after Ember's first 10 minutes. The
   weather was cached for 10 minutes and preloaded once at start; the prewarm thread
   now fetches it again every 9 minutes (in each unit asked for, Celsius at least)

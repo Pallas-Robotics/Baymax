@@ -2159,7 +2159,9 @@ async def receive_audio(session):
 
                 model_turn = server_content.model_turn
                 if model_turn:
-                    for part in model_turn.parts:
+                    # Every part, in order (Gemini 3 can send text and audio parts in one
+                    # message); a turn with no parts mustn't lose the rest of the message.
+                    for part in model_turn.parts or []:
                         if part.text:
                             print(f"[GEMINI] {part.text}", flush=True)
                         if (
