@@ -439,6 +439,27 @@ class CreateBackendTests(unittest.TestCase):
         self.assertEqual(cpu.detect.call_count, 2)
         self.assertEqual(len(self.logs), 3)                      # logged once
 
+    def test_the_switch_tells_the_vision_process_before_it_loads_mediapipe(self):
+        # In the pose child that frame imports and loads MediaPipe (seconds on the board):
+        # the vision process's watchdog must give it a start's time, not a frame's 5 s.
+        write_models(self.temp.name)
+        engine, order = FakeEngine(), []
+
+        def cpu_factory():
+            order.append("cpu")
+            return SimpleNamespace(name=backend.CPU_NAME, device="CPU", detect=lambda frame, ms: None)
+        chosen = backend.create_pose_backend(env={"BAYMAX_POSE_MODEL_DIR": self.temp.name}, log=self.logs.append,
+                                             cpu_factory=cpu_factory, probe=lambda env, forced: None,
+                                             engine_factory=lambda d, l, c: engine)
+        frame = np.zeros((480, 640, 3), np.uint8)
+        with patch.object(backend, "loading_model", side_effect=lambda: order.append("loading")):
+            chosen.detect(frame, 5)                              # the NPU works: nothing to say
+            self.assertEqual(order, [])
+            engine.detector = Mock(side_effect=RuntimeError("NPU timeout"))
+            chosen.detect(frame, 6)
+            chosen.detect(frame, 7)
+        self.assertEqual(order, ["loading", "cpu"])              # once, before the load
+
     def test_mediapipe_backend_makes_the_runtime_calls(self):
         landmarker = Mock()
         landmarker.detect_for_video.return_value = SimpleNamespace(pose_landmarks=[["lm"]])

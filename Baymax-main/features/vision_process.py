@@ -17,8 +17,11 @@ else MediaPipe on the CPU. A crash in the NPU runtime ends this child, not Ember
 A child that hangs without exiting (e.g. librknnrt stuck in the NPU driver) is killed
 once a frame has waited Remote.timeout (5 s), or the model's start Remote.start_timeout
 (60 s); that call raises RuntimeError like a child that died, so the camera thread
-restarts pose once on the CPU instead of waiting forever. One watchdog thread per child
-checks twice a second; a frame only stores its deadline (no timer thread per frame).
+restarts pose once on the CPU instead of waiting forever. A frame in which the model
+loads another one (pose switching from the NPU to MediaPipe after an NPU error) calls
+loading_model() first and gets the start's 60 s from then on, so a child that is
+recovering is not stopped as hung. One watchdog thread per child checks twice a
+second; a frame only stores its deadline (no timer thread per frame).
 
 Run as `python -m features.vision_process`; Remote starts it, nothing else should.
 """
@@ -42,14 +45,30 @@ def points(landmarks):
     return [Point(p.x, p.y, p.z, p.visibility or 0.0, p.presence or 0.0) for p in landmarks]
 
 
+_send = None   # in a vision child: main()'s reply, for loading_model()
+
+
+def loading_model():
+    """Called by a model in a vision child just before it loads another model during a
+    frame (features.pose.backend.FallbackBackend switching from the NPU to MediaPipe:
+    the NPU child never imported MediaPipe, which can take seconds on the board). Remote
+    then gives that call the start's limit (start_timeout) instead of a frame's, so the
+    watchdog does not stop a child that is recovering. Does nothing anywhere else
+    (benchmark.py, validate.py and tests run backends in their own process)."""
+    if _send is not None:
+        _send("loading", None)
+
+
 class Remote:
     """`factory()` built and run in a child process, with the same detect(frame) call.
 
     A call still waiting for its reply after `timeout` seconds (`start_timeout` while the
-    model loads) kills the child and raises RuntimeError, as if the child had died."""
+    model loads, also when it says so mid-frame: loading_model) kills the child and raises
+    RuntimeError, as if the child had died."""
     timeout = 5.0          # per frame; a 5 Max pose frame took 16-44 ms (NPU / MediaPipe medians)
-    start_timeout = 60.0   # imports and model load (NPU setup and warm-up measured 0.6-1.7 s);
-                           # callers download models before starting the child
+    start_timeout = 60.0   # imports and model load (NPU setup and warm-up measured 0.6-1.7 s), at
+                           # the start or mid-frame (loading_model); callers download models
+                           # before starting the child
     tick = 0.5             # how often the watchdog looks
     deadline = None        # monotonic time the call in progress must be answered by
     expired = False        # the watchdog killed the child during the call in progress
@@ -80,17 +99,21 @@ class Remote:
                 self.cancel()       # its pipes close, so the waiting call gets EOF or EPIPE
 
     def _call(self, item, timeout=None):
-        timeout = self.timeout if timeout is None else timeout
+        limit = self.timeout if timeout is None else timeout
         with self.lock:
             self.expired = False
-            self.deadline = time.monotonic() + timeout
+            self.deadline = time.monotonic() + limit
             try:
                 pickle.dump(item, self.child.stdin, protocol=pickle.HIGHEST_PROTOCOL)
                 self.child.stdin.flush()
                 kind, value = pickle.load(self.child.stdout)
+                while kind == "loading":    # loading_model(): a load inside this call, not a frame
+                    limit = self.start_timeout
+                    self.deadline = time.monotonic() + limit
+                    kind, value = pickle.load(self.child.stdout)
             except (EOFError, OSError, pickle.UnpicklingError) as error:
                 if self.expired:
-                    raise RuntimeError(f"vision process hung: no reply in {timeout:g} s, so it was stopped") \
+                    raise RuntimeError(f"vision process hung: no reply in {limit:g} s, so it was stopped") \
                         from error
                 raise RuntimeError(f"vision process stopped ({error or 'exited'})") from error
             except Exception as error:
@@ -140,6 +163,7 @@ class Remote:
 
 
 def main():
+    global _send
     requests = sys.stdin.buffer
     # Replies get their own copy of the pipe; descriptor 1 then points at stderr, so
     # native libraries writing to C stdout (e.g. librknnrt's "I RKNN: ..." lines) and
@@ -154,6 +178,7 @@ def main():
     def reply(kind, value):
         pickle.dump((kind, value), replies, protocol=pickle.HIGHEST_PROTOCOL)
         replies.flush()
+    _send = reply
 
     try:
         model = pickle.load(requests)()

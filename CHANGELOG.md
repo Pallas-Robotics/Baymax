@@ -7,15 +7,21 @@
   thread per child that looks twice a second, kills a child that has not answered a
   frame in 5 s, or its start in 60 s (imports and model load; the NPU's setup and
   warm-up measured 0.6-1.7 s). The call then raises like a child that died, so the
-  camera thread restarts pose once on the CPU, as for a crash. A frame only stores its
-  deadline: on a Mac the parent's CPU per round trip stayed within noise (238 vs 219
-  µs), where a `threading.Timer` per frame (Nate's opi4-demo, ff168ca, which this ports
-  without its regrouping) took 441 µs. The fall toolkit's own model and the eye-contact
-  face model are now downloaded before their child starts, so a slow download is not
-  taken for a hang. A face child stopped this way is not restarted: its frames are
-  skipped (and logged) until Ember restarts. A child stuck inside a kernel call dies
-  only when the driver returns. Offline tests pass (fake hung children, and the camera
-  thread with real vision processes); a real hung NPU call on the 5 Max is pending.
+  camera thread restarts pose once on the CPU, as for a crash. An NPU error during a
+  frame still switches to MediaPipe inside the child, without that restart: the frame
+  that imports and loads MediaPipe (the NPU child never had: 1.2-1.3 s on the 5 Max's
+  fast cores with a warm page cache and Ember stopped; longer from a cold SD card or on
+  a busy board, not measured) first tells the parent (`vision_process.loading_model()`)
+  and gets the start's 60 s, so the watchdog does not stop a child that is recovering. A
+  frame only stores its deadline: on a Mac the parent's CPU per round trip stayed within
+  noise (238 vs 219 µs), where a `threading.Timer` per frame (Nate's opi4-demo, ff168ca,
+  which this ports without its regrouping) took 441 µs. The fall toolkit's own model and
+  the eye-contact face model are now downloaded before their child starts, so a slow
+  download is not taken for a hang. A face child stopped this way is not restarted: its
+  frames are skipped (and logged) until Ember restarts. A child stuck inside a kernel
+  call dies only when the driver returns. Offline tests pass (fake hung children, and
+  the camera thread with real vision processes); a real hung NPU call on the 5 Max is
+  pending.
 
 - Fall detection: velocities use each frame's capture time. `FallDetector.update()`
   read the clock when the frame's pose came back, so the varying round trip to the pose

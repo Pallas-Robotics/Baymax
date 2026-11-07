@@ -71,7 +71,13 @@ backend and logs it to Ember's log:
   again, on the CPU.`) or dies later (`[CAM] Pose process failed (...); restarting it
   on the CPU.`), Ember starts it again once, on the CPU; a second failure leaves video
   only until Ember restarts (`[CAM] Pose unavailable; video only ...`). Video to Gemini
-  continues throughout. A pose process that hangs without exiting is not detected yet.
+  continues throughout. A pose process that hangs without exiting is stopped once a
+  frame has had no reply for 5 s (60 s while it starts) and restarted the same way
+  (`[CAM] Pose process failed (vision process hung: no reply in 5 s, so it was
+  stopped); ...`). An NPU error during a frame does not use that restart: the pose
+  process switches to MediaPipe itself (`[POSE] NPU (RK3588) failed during inference
+  (...); switching to CPU (MediaPipe) for the rest of this run.`), and the frame in
+  which it loads MediaPipe is allowed the start's 60 s instead of 5 s.
 
 Eye-contact greetings (`BAYMAX_PRESENCE_GREETING=1`, off by default) run face
 landmarks in a second child process the same way. The annotated live view is drawn

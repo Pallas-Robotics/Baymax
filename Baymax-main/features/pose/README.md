@@ -47,6 +47,17 @@ noise: 242 and 250 µs in another set), but 441 µs with a `threading.Timer` per
 never counts against the 60 s. A child stuck inside a kernel call dies only when the
 driver returns, and the call waits until then.
 
+An NPU error during a frame does not use that restart: `FallbackBackend` switches to
+MediaPipe inside the child for the rest of the run, importing and loading it within that
+frame (the NPU child never imported MediaPipe). On the 5 Max that took 1.2-1.3 s on the
+fast cores at nice 5 with a warm page cache and Ember stopped (MediaPipe 0.10.18, the
+lite .task, up to its first frame); from a cold SD card after a reboot or on a busy board
+it takes longer (not measured). It first calls `vision_process.loading_model()`, and
+the watchdog gives that frame the start's 60 s from then on; later frames have 5 s
+again. With only a frame's 5 s, a slow load would get the child stopped while it
+recovered, and the camera thread would spend its one restart on a second process (a
+later failure then leaves video only).
+
 The camera thread gives `FallDetector.update(landmarks, timestamp=...)` each frame's
 capture time (`time.monotonic()` right after `cap.read()`), and passes it on to the fall
 toolkit (`share(..., captured_at=...)`): fall velocities use when the frames were
@@ -252,11 +263,16 @@ model weights are committed.
 `tests/test_toolkit_vision_process.py`: a fake child that never answers a frame is killed
 and the call raises within the limit; one that never finishes loading is stopped after
 the start limit (not a frame's), and no process is left; a load slower than a frame's
-limit is kept; one watchdog thread per child, no thread or timer per frame.
-`tests/test_v10_runtime.py`: the camera thread with real vision processes, an NPU child
-that hangs on its second frame is stopped and pose restarts once on the CPU while video
-continues; `FallDetector` and the fall toolkit get each frame's capture time, not the
-time its pose came back.
+limit is kept; the real `FallbackBackend` switching to a CPU model that loads slower
+than a frame's limit answers that frame in the same process, later frames have a
+frame's limit again, and a switch that never finishes loading is stopped after the
+start limit; one watchdog thread per child, no thread or timer per frame.
+`tests/test_pose_backend.py`: the switch calls `loading_model()` once, before the CPU
+backend is built. `tests/test_v10_runtime.py`: the camera thread with real vision
+processes, an NPU child that hangs on its second frame is stopped and pose restarts once
+on the CPU while video continues, and an NPU error mid-run switches to the CPU in the
+same process without using that restart; `FallDetector` and the fall toolkit get each
+frame's capture time, not the time its pose came back.
 
 `tests/test_toolkit_fall_detection.py` covers the `NPU (core pose)` status, capture
 times in `FallDetector` and the toolkit, and one check-in per fall with built-in fall

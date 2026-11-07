@@ -88,6 +88,50 @@ FAKE = textwrap.dedent('''
 
         def detect(self, frame):
             return None
+
+    class FailingNpu:
+        """An NPU backend (detect(frame, timestamp_ms)) whose inference fails on the frame "fail"."""
+        name, device = "NPU (fake)", "NPU"
+
+        def detect(self, frame, timestamp_ms):
+            if frame == "fail":
+                raise RuntimeError("RKNN inference failed")
+            return None
+
+        def close(self):
+            pass
+
+    class SlowCpu:
+        """MediaPipe as an NPU child loads it after an NPU error (seconds on the board):
+        SlowCpu.load seconds, longer than a frame may take. Never answers the frame "hang"."""
+        name, device = "CPU (fake)", "CPU"
+        load = 1.5
+
+        def __init__(self):
+            import time
+            time.sleep(SlowCpu.load)
+
+        def detect(self, frame, timestamp_ms):
+            import time
+            if frame == "hang":
+                time.sleep(3600)
+            return None
+
+        def close(self):
+            pass
+
+    class Switches:
+        """The real features.pose.backend.FallbackBackend, from FailingNpu to SlowCpu, as
+        ChildPose runs it in the pose child."""
+        def __init__(self, load=1.5):
+            from features.pose.backend import FallbackBackend
+            SlowCpu.load = load
+            self.backend = FallbackBackend(FailingNpu(), SlowCpu, log=lambda message: None)
+
+        device = property(lambda self: self.backend.device)
+
+        def detect(self, frame):
+            return self.backend.detect(frame, 0)
 ''')
 
 
@@ -234,6 +278,38 @@ class HungVisionProcessTests(unittest.TestCase):
             self.assertEqual(model.device, "CPU")
             self.assertIsNone(model.detect("frame"))
             self.assertIsNone(model.child.poll())
+
+    def test_a_switch_to_the_cpu_inside_a_frame_gets_the_starts_limit(self):
+        # An NPU error mid-run: FallbackBackend imports and loads MediaPipe inside that
+        # frame, seconds on the 5 Max. With a frame's limit the watchdog stopped the child
+        # while it recovered, and the camera thread spent its one restart on a new process.
+        self.quick_watchdog(timeout=0.5, start_timeout=10)
+        model = Remote(self.fake.Switches)                          # the CPU loads in 1.5 s
+        self.addCleanup(model.close)
+        self.addCleanup(lambda: model.child.poll() is None and model.child.kill())  # runs first
+        self.assertEqual(model.device, "NPU")
+        self.assertIsNone(model.detect("frame"))
+        outcome, took = self.finishes(lambda: model.detect("fail"))
+        self.assertEqual(outcome, {"value": None})                  # answered on the CPU
+        self.assertGreater(took, 1.0)                               # longer than a frame may take
+        self.assertEqual(model.device, "CPU")
+        self.assertIsNone(model.child.poll())                       # the same process goes on
+        self.assertIsNone(model.detect("frame"))
+        outcome, took = self.finishes(lambda: model.detect("hang"))   # later frames: a frame's limit
+        self.assertIn("vision process hung: no reply in 0.5 s, so it was stopped", str(outcome.get("error")))
+        self.assertLess(took, 3)
+
+    def test_a_switch_that_never_finishes_loading_is_stopped_after_the_start_limit(self):
+        self.quick_watchdog(timeout=0.3, start_timeout=1.0)
+        model = Remote(partial(self.fake.Switches, load=3600))
+        self.addCleanup(model.close)
+        self.addCleanup(lambda: model.child.poll() is None and model.child.kill())  # runs first
+        outcome, took = self.finishes(lambda: model.detect("fail"))
+        self.assertIsInstance(outcome.get("error"), RuntimeError)
+        self.assertIn("vision process hung: no reply in 1 s, so it was stopped", str(outcome["error"]))
+        self.assertGreater(took, 0.9)                               # not a frame's 0.3 s
+        self.assertLess(took, 5)
+        self.assertIsNotNone(model.child.wait(timeout=2))          # killed, not left running
 
     def test_one_watchdog_per_child_and_no_thread_or_timer_per_frame(self):
         # A threading.Timer per frame doubled the parent's CPU per round trip (pose README).

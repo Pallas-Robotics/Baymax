@@ -860,28 +860,36 @@ class PoseProcessRestartTests(unittest.TestCase):
                 return None
     ''')
 
-    def test_a_hung_pose_process_is_stopped_and_restarted_once_on_the_cpu(self):
-        # Real vision processes: before the watchdog, the camera thread (and so video to
-        # Gemini, face presence and fall detection) waited on a hung child for good.
+    def real_pose_processes(self, name, source, allow_npu, timeout=0.5):
+        """Real vision processes (features.vision_process.Remote), one per allow_npu value,
+        running `source`'s Pose (saved as module `name`), with a frame limit of `timeout` s
+        checked every 50 ms. Hung children are killed when the test ends."""
         from functools import partial
         from features.vision_process import Remote
         import test_toolkit_vision_process as vision_tests
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
-        Path(directory.name, "fake_hanging_pose.py").write_text(self.HANGING)
+        Path(directory.name, name + ".py").write_text(source)
         sys.path.insert(0, directory.name)
         self.addCleanup(sys.path.remove, directory.name)
-        self.addCleanup(sys.modules.pop, "fake_hanging_pose", None)
-        import fake_hanging_pose
+        self.addCleanup(sys.modules.pop, name, None)
+        module = __import__(name)
+        vision_tests.quick_watchdog(self, timeout=timeout)
         path = os.pathsep.join(filter(None, (directory.name, os.environ.get("PYTHONPATH"))))
+        poses = []
         with patch.dict(os.environ, {"PYTHONPATH": path}):
-            vision_tests.quick_watchdog(self, timeout=0.5)
-            npu = Remote(partial(fake_hanging_pose.Pose, "pose_landmarker_lite.task", allow_npu=True))
-            self.addCleanup(npu.close)
-            cpu = Remote(partial(fake_hanging_pose.Pose, "pose_landmarker_lite.task", allow_npu=False))
-            self.addCleanup(cpu.close)
-        for pose in (npu, cpu):    # these run first: never leave a hung child behind
+            for allowed in allow_npu:
+                poses.append(Remote(partial(module.Pose, "pose_landmarker_lite.task", allow_npu=allowed)))
+                self.addCleanup(poses[-1].close)
+        for pose in poses:         # these run first: never leave a hung child behind
             self.addCleanup(lambda child=pose.child: child.poll() is None and child.kill())
+        return poses
+
+    def test_a_hung_pose_process_is_stopped_and_restarted_once_on_the_cpu(self):
+        # Real vision processes: before the watchdog, the camera thread (and so video to
+        # Gemini, face presence and fall detection) waited on a hung child for good.
+        import test_toolkit_vision_process as vision_tests
+        npu, cpu = self.real_pose_processes("fake_hanging_pose", self.HANGING, allow_npu=(True, False))
         outcome, took = vision_tests.finishes(self, lambda: self.run_thread([npu, cpu]))
         ns, latest, faces, opened, logged = outcome["value"]
         self.assertEqual(opened, [False, True])     # NPU allowed first, then forced to the CPU
@@ -892,6 +900,65 @@ class PoseProcessRestartTests(unittest.TestCase):
                          ["NPU", "CPU", "CPU", "CPU"])
         self.assertIsNotNone(npu.child.wait(timeout=2))      # stopped, not left hanging
         self.assertLess(took, 5)
+
+    SWITCHING = textwrap.dedent('''
+        import time
+
+        from features.pose.backend import FallbackBackend
+
+        class Npu:
+            """Its second frame fails, as an RKNN error mid-run would."""
+            name, device = "NPU (fake)", "NPU"
+            frames = 0
+
+            def detect(self, frame, timestamp_ms):
+                self.frames += 1
+                if self.frames == 2:
+                    raise RuntimeError("RKNN inference failed")
+                return None
+
+            def close(self):
+                pass
+
+        class Cpu:
+            """MediaPipe as the NPU child loads it then: 1 s here (seconds on the 5 Max),
+            longer than a frame may take."""
+            name, device = "CPU (fake)", "CPU"
+
+            def __init__(self):
+                time.sleep(1.0)
+
+            def detect(self, frame, timestamp_ms):
+                return None
+
+            def close(self):
+                pass
+
+        class Pose:
+            """Like ChildPose on the NPU: the real FallbackBackend, from Npu to Cpu."""
+            def __init__(self, model_path, allow_npu=True):
+                self.backend = FallbackBackend(Npu(), Cpu, log=lambda message: None)
+
+            device = property(lambda self: self.backend.device)
+
+            def detect(self, frame):
+                return self.backend.detect(frame, 0)
+    ''')
+
+    def test_an_npu_error_mid_run_switches_to_the_cpu_in_the_same_pose_process(self):
+        # FallbackBackend loads MediaPipe inside that frame. With a frame's limit the watchdog
+        # stopped the child while it recovered and the camera thread spent its one restart on
+        # a second process; a later failure then left video only until Ember restarted.
+        import test_toolkit_vision_process as vision_tests
+        npu, = self.real_pose_processes("fake_switching_pose", self.SWITCHING, allow_npu=(True,))
+        outcome, took = vision_tests.finishes(self, lambda: self.run_thread([npu]))
+        ns, latest, faces, opened, logged = outcome["value"]
+        self.assertEqual(opened, [False])           # no second process: the one restart is still there
+        self.assertNotIn("Pose process failed", logged)
+        self.assertEqual([c.kwargs["device"] for c in ns["fall_worker"].share.call_args_list],
+                         ["NPU", "CPU", "CPU", "CPU", "CPU"])
+        self.assertEqual(latest, ["frame2", "frame3", "frame4", "frame5", "frame6", None])
+        self.assertIsNotNone(npu.child.wait(timeout=2))      # closed with the thread
 
 
 class PoseModelDownloadTests(unittest.TestCase):
