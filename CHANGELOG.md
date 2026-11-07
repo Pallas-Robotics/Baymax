@@ -1,5 +1,11 @@
 # MVP (unreleased)
 
+- The SD-card image verifier (`devops/opi4-flash/verify_image.py`) runs on Python
+  3.9 and newer, such as the `python3` that comes with macOS. It hashed with
+  `hashlib.file_digest` (Python 3.11+), so there it passed the other checks and
+  then crashed with a traceback (exit 1). It now hashes in 1 MiB reads; the exit
+  codes stay 0 (verified) and 2 (failed). Checked with macOS's Python 3.9.6.
+
 - Conversation timing can no longer affect audio. An error in it on the capture
   thread switched Ember to the half-duplex fallback (mic muted during every reply)
   and one in the speaker callback stopped the speaker until a restart (sounddevice

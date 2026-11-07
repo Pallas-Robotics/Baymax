@@ -4,9 +4,12 @@ import io
 import json
 from pathlib import Path
 import tempfile
+from types import SimpleNamespace
 import unittest
+from unittest.mock import patch
 
 from image_settings import REPOSITORY, TARGET_BOARD
+import verify_image
 from verify_image import main, verify
 
 
@@ -75,6 +78,17 @@ class VerifyImageTests(unittest.TestCase):
             self.save()
             with self.assertRaisesRegex(ValueError, 'filename'):
                 verify(self.manifest)
+
+    def test_python_before_3_11_verifies_an_image_of_several_reads(self):
+        # macOS's own python3 is 3.9, whose hashlib has no file_digest (added in 3.11).
+        self.image.write_bytes(bytes(range(256)) * 9000)  # 2.2 MiB: three 1 MiB reads
+        self.data.update(length=self.image.stat().st_size, sha256=hashlib.sha256(self.image.read_bytes()).hexdigest())
+        self.save()
+        output = io.StringIO()
+        with patch.object(verify_image, 'hashlib', SimpleNamespace(sha256=hashlib.sha256)), \
+                contextlib.redirect_stdout(output):
+            self.assertEqual(main(['--manifest', str(self.manifest)]), 0)
+        self.assertIn('Verified ember-opi4.img: 2304000 bytes', output.getvalue())
 
     def test_missing_image_and_invalid_json_return_failure(self):
         self.image.unlink()

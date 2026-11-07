@@ -50,7 +50,8 @@ Use a new output directory for another card; builds do not overwrite old outputs
 
 ## 3. Verify before writing
 
-Run this PR's read-only verifier on Linux, Windows or macOS with Python 3.12+:
+Run this PR's read-only verifier on Linux, Windows or macOS with Python 3.9 or
+newer (the `python3` that comes with macOS works):
 
 ```bash
 python3 verify_image.py --manifest output/ready-image.json

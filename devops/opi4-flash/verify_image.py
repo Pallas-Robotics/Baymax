@@ -9,6 +9,16 @@ import sys
 from image_settings import REPOSITORY, TARGET_BOARD
 
 
+def sha256(path):
+    """1 MiB at a time: hashlib.file_digest needs Python 3.11, and the python3 that
+    comes with macOS is 3.9."""
+    digest = hashlib.sha256()
+    with path.open('rb') as stream:
+        for block in iter(lambda: stream.read(1 << 20), b''):
+            digest.update(block)
+    return digest.hexdigest()
+
+
 def verify(manifest):
     manifest = Path(manifest)
     data = json.loads(manifest.read_text(encoding='utf-8'))
@@ -29,8 +39,7 @@ def verify(manifest):
     expected = data.get('sha256')
     if not isinstance(expected, str) or not re.fullmatch(r'[a-f0-9]{64}', expected):
         raise ValueError('Manifest SHA256 must be 64 lowercase hexadecimal characters.')
-    with image.open('rb') as stream:
-        actual = hashlib.file_digest(stream, 'sha256').hexdigest()
+    actual = sha256(image)
     if actual != expected:
         raise ValueError('Image SHA256 does not match; do not flash this file.')
     return {'board': TARGET_BOARD, 'image': name, 'length': size, 'sha256': actual}
