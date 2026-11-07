@@ -496,10 +496,11 @@ _BASE_CONFIG = audio_config(_BASE_CONFIG)
 def _build_config() -> dict:
     """Build session config, injecting all stored memories into the system instruction.
     Called once per connection: the memories it copies are the ones that connection's
-    Gemini has from the start, so recalled memories skip them (_memories_given)."""
+    Gemini has from the start, so recalled memories skip them (_memories_given). A
+    connection that resumes the conversation also has every note given on it before."""
     global _memories_given
     system_instruction = _BASE_SYSTEM_INSTRUCTION
-    _memories_given = set()
+    in_prompt = set()
 
     if _memory_embedder is not None:
         try:
@@ -507,7 +508,7 @@ def _build_config() -> dict:
             # Gemini Flash from earlier conversations.
             docs = _newest_memories()
             if docs:
-                _memories_given = set(docs)
+                in_prompt = set(docs)
                 mem_block = "\n".join(f"- {d}" for d in docs)
                 system_instruction = (
                     "What you know about this user from previous conversations "
@@ -521,7 +522,10 @@ def _build_config() -> dict:
         except Exception as e:
             print(f"[MEMORY] Could not load memories for system instruction: {e}")
 
-    return public_toolkit.extend_config({**_BASE_CONFIG, "system_instruction": system_instruction})
+    config = public_toolkit.extend_config({**_BASE_CONFIG, "system_instruction": system_instruction})
+    resuming = bool((config.get("session_resumption") or {}).get("handle"))  # session.py's choice
+    _memories_given = (_memories_given | in_prompt) if resuming else in_prompt
+    return config
 
 # Audio Config
 SEND_SAMPLE_RATE = 48000

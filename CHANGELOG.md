@@ -224,10 +224,12 @@
   the previous turn's words ("We planted tomatoes Ember," for "Ember, what is my
   dog's name?"), so it looked up the previous topic. The note goes out at the next
   quiet moment, with `turn_complete=False`, and informs the person's next turn.
-  Memories already in the connection's prompt or given on it are skipped; a recall
-  is dropped when the person starts a new turn before it could be given, so speech
-  nearby (a TV) that keeps the room from going quiet for 1 s holds the notes back.
-  Offline tests on the real receive loop and `between_turns()`.
+  Memories already in the connection's prompt or given in its conversation are
+  skipped (a connection that resumes the conversation keeps the list; a fresh one
+  starts from its prompt); a recall is dropped when the person starts a new turn
+  before it could be given, so speech nearby (a TV) that keeps the room from going
+  quiet for 1 s holds the notes back. Offline tests on the real receive loop and
+  `between_turns()`.
 
 - Google Search grounding is off by default; `BAYMAX_GOOGLE_SEARCH=1` turns it on.
   With the built-in `google_search` tool next to Ember's function tools, the

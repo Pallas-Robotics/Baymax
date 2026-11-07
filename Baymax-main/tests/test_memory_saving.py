@@ -640,7 +640,25 @@ class NewestMemoriesTests(unittest.TestCase):
         ns["_memories_given"].add("given on the last connection")
         ns["_memory_embedder"] = None
         ns["_build_config"]()
-        self.assertEqual(ns["_memories_given"], set())   # each connection starts from its own prompt
+        self.assertEqual(ns["_memories_given"], set())   # a fresh conversation starts from its own prompt
+
+    def test_a_connection_resuming_the_conversation_keeps_the_memories_given_on_it(self):
+        resuming = [False]
+        ns = {"_BASE_CONFIG": {}, "_BASE_SYSTEM_INSTRUCTION": "base", "_memories_given": set(),
+              "_memory_embedder": SimpleNamespace(_collection=FakeCollection(memory_rows()[:2])),
+              "MEMORY_PROMPT_COUNT": 50, "public_toolkit": SimpleNamespace(extend_config=lambda c: {
+                  **c, "session_resumption": {"handle": "h1"} if resuming[0] else {}})}  # as session.py adds it
+        for name in ("_newest_memories", "_build_config"):
+            load_function(name, ns)
+        with patch("builtins.print"):
+            ns["_build_config"]()
+            ns["_memories_given"].add("given on the last connection")
+            resuming[0] = True                             # e.g. after a GoAway or a dropped network
+            ns["_build_config"]()
+            self.assertEqual(ns["_memories_given"], {"given on the last connection", "new fact 0", "new fact 1"})
+            resuming[0] = False
+            ns["_build_config"]()
+        self.assertEqual(ns["_memories_given"], {"new fact 0", "new fact 1"})
 
     @unittest.skipUnless(importlib.util.find_spec("chromadb"), "chromadb not installed (desktop profiles)")
     def test_with_chromadb(self):

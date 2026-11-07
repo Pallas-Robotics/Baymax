@@ -139,7 +139,7 @@ def core_session(core=CORE):
             body.append(node)   # v10: `if ONLY_WHEN_ADDRESSED: _BASE_SYSTEM_INSTRUCTION += ...`
         elif isinstance(node, ast.FunctionDef) and node.name == "_build_config":
             body.append(node)
-    namespace = {"types": types, "os": os, "_memory_embedder": None}
+    namespace = {"types": types, "os": os, "_memory_embedder": None, "_memories_given": set()}
     exec(compile(ast.Module(body=body, type_ignores=[]), str(core), "exec"), namespace)
     return namespace["MODEL"], namespace["_build_config"]()
 
