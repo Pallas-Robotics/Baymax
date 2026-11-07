@@ -205,28 +205,29 @@
   works as before), and the stale-audio count uses the real block length.
   `evals/live_eval.py` sends speech in the runtime's own block size.
 
-- Faster, quieter reconnects. Every session end used to wait 2 s, then reset
-  PortAudio with a blocking 5 s `time.sleep` on the event loop and choose the audio
-  devices again: at least 7 s with the mic closed, every ~10 minutes when Google resets
-  the connection. Now a session ended only by lost connections (`connection_lost`)
-  reconnects after 0.3 s without the device reset; connections that keep failing
-  within 60 s back off (0.3, 0.6, 1.2, 2.4 s, then 4.8 s each time) and never reset
-  the devices, which can't help a network. The full reset is kept for device/PortAudio
-  and other errors, now awaited and off the event loop (its worker-thread PortAudio
-  calls are untested on Windows). After a GoAway, Ember moves to a new connection at
-  the next quiet moment (no reply owed, generating or playing, no speech for 1 s), with
-  the newest resume handle, so routine resets don't land mid-utterance. It moves only
-  once Gemini has sent that connection a handle of its own: the one that set it up is
-  not offered twice, so moving with it would start the conversation over. A move from
-  a connection shorter than 60 s backs off like a quick loss, so GoAways soon after
-  every setup can't make Ember reconnect in a loop. A retry that never reached Gemini
-  (DNS, network unreachable, refused, the websocket's open timeout: an `OSError` before
-  setup) no longer uses up the conversation's resume handle (`session.not_tried`): with
-  the first retry 0.3 s after a drop instead of 7 s, a Wi-Fi drop of a few seconds
-  otherwise started the conversation over. Gemini's own refusals still drop the handle.
-  The abandon/resend of Ember's own messages, `MIC_SEND_TIMEOUT_S`, the socket abort and
-  the stop path are unchanged. Offline tests through the real `run()`; live check
-  pending.
+- Faster, quieter reconnects. Every session end used to wait 2 s, then reset PortAudio
+  with a blocking 5 s `time.sleep` on the event loop and choose the audio devices again:
+  at least 7 s with the mic closed, every ~10 minutes when Google resets the connection.
+  Now a session ended only by lost connections (`connection_lost`, or another `OSError`:
+  DNS or "network unreachable" from a reconnect while the Wi-Fi is still down, which
+  each ran the full reset) reconnects after 0.3 s without the device reset; connections
+  that keep failing within 60 s back off (0.3, 0.6, 1.2, 2.4 s, then 4.8 s each time)
+  and never reset the devices, which can't help a network. The full reset is kept for
+  device/PortAudio and other errors, now awaited and off the event loop (its
+  worker-thread PortAudio calls are untested on Windows). After a GoAway, Ember moves to
+  a new connection at the next quiet moment (no reply owed, generating or playing, no
+  speech for 1 s), with the newest resume handle, so routine resets don't land
+  mid-utterance. It moves only once Gemini has sent that connection a handle of its own:
+  the one that set it up is not offered twice, so moving with it would start the
+  conversation over. A move from a connection shorter than 60 s backs off like a quick
+  loss, so GoAways soon after every setup can't make Ember reconnect in a loop. A retry
+  that never reached Gemini (DNS, network unreachable, refused, the websocket's open
+  timeout: an `OSError` before setup) no longer uses up the conversation's resume handle
+  (`session.not_tried`): with the first retry 0.3 s after a drop instead of 7 s, a Wi-Fi
+  drop of a few seconds otherwise started the conversation over. Gemini's own refusals
+  still drop the handle. The abandon/resend of Ember's own messages,
+  `MIC_SEND_TIMEOUT_S`, the socket abort and the stop path are unchanged. Offline tests
+  through the real `run()`; live check pending.
 
 - Recalled memories no longer hold up or cut off Ember's replies. The receive loop
   used to wait up to 150 ms for the memory lookup at the first reply audio and then

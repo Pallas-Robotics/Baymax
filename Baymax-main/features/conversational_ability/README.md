@@ -316,7 +316,9 @@ message keeps the session. The socket is aborted when a session ends, because le
 
 **Fast reconnect.** When every error that ended the session is a lost connection
 (`connection_lost`: Google's reset about every 10 minutes, a dropped network, a stuck
-send) or a GoAway handover, `run()` reconnects without touching the audio devices.
+send), another `OSError` (DNS or "network unreachable" from `connect()` while the Wi-Fi
+is still down) or a GoAway handover, `run()` reconnects without touching the audio
+devices. PortAudio's errors are not `OSError`s, so device errors still get the reset.
 Before, every session end waited 2 s, then reset PortAudio with a 5 s `time.sleep` that
 blocked the event loop and chose the devices again: at least 7 s with the mic closed. A
 handover from a connection that lasted 60 s (`QUICK_SESSION_S`) reconnects at once;

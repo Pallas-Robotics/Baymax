@@ -928,15 +928,19 @@ def _reconnect_plan(error, lasted, quick_failures):
     """How run() goes on after a connection ended with `error`, `lasted` seconds after
     it started: (pause before reconnecting, or None for the full audio reset first;
     quick failures in a row so far). Lost connections and GoAway handovers only (Gemini's
-    ~10-minute resets, a network drop) need no device reset. A handover from a connection
-    that lasted reconnects at once; one from a short connection counts as a quick failure,
-    so GoAways soon after every setup back off instead of reconnecting in a loop."""
+    ~10-minute resets, a network drop) need no device reset. So does any OSError: a
+    reconnect while the Wi-Fi is still down fails in connect() with socket.gaierror or
+    "Network is unreachable", which connection_lost doesn't cover. PortAudio's errors
+    (sounddevice.PortAudioError) are not OSErrors, so device errors still get the reset. A
+    handover from a connection that lasted reconnects at once; one from a short connection
+    counts as a quick failure, so GoAways soon after every setup back off instead of
+    reconnecting in a loop."""
     leaves = _leaves(error)
     handover = all(isinstance(e, _SessionHandover) for e in leaves)
     if handover and lasted >= QUICK_SESSION_S:
         return 0.0, 0
     quick_failures = quick_failures + 1 if lasted < QUICK_SESSION_S else 1
-    if all(isinstance(e, _SessionHandover) or connection_lost(e) for e in leaves):
+    if all(isinstance(e, (_SessionHandover, OSError)) or connection_lost(e) for e in leaves):
         doublings = min(quick_failures - 1, 16)  # far past the cap; hours of failures can't overflow it
         return min(RECONNECT_DELAY_S * 2 ** doublings, RECONNECT_MAX_DELAY_S), quick_failures
     return None, quick_failures

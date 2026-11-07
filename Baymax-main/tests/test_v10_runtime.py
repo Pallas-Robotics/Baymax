@@ -784,6 +784,22 @@ class ReconnectTests(unittest.TestCase):
         # Gemini closed the setup that offered the handle: a bad handle must not block reconnecting.
         self.assertEqual(self.resumed_after(errors.APIError(1008, {"message": "bye"})), [{}, {}])
 
+    def test_a_network_still_down_at_the_retry_backs_off_without_resetting_audio(self):
+        # The Wi-Fi is still down when run() reconnects: connect() raises socket.gaierror or
+        # "Network is unreachable", which connection_lost doesn't cover, so each attempt ran
+        # the device reset (2 s, PortAudio restarted, 5 s) that can't help a network.
+        async def receive(index, session, namespace):
+            if index == 0:
+                raise errors.APIError(1006, {"message": "Abnormal closure."})
+            raise ConnectionResetError()
+        sessions, ns = self.run_connections(4, receive, setup_errors={
+            1: socket.gaierror(-3, "Temporary failure in name resolution"), 2: OSError(101, "Network is unreachable")})
+        self.assertEqual(self.pauses, [0.3, 0.6, 1.2, 2.4])   # was [0.3, 2, 5, 2, 5, 2.4]
+        ns["sd"]._terminate.assert_not_called()
+        ns["sd"]._initialize.assert_not_called()
+        errors_shown = [c for c in ns["_boot_status"].call_args_list if c.kwargs.get("error")]
+        self.assertEqual(errors_shown, [])                    # nor a "Connection failed" boot error
+
     def plan(self):
         ns = {"connection_lost": connection_lost, "RECONNECT_DELAY_S": 0.3, "QUICK_SESSION_S": 60.0,
               "RECONNECT_MAX_DELAY_S": 4.8}
@@ -803,6 +819,21 @@ class ReconnectTests(unittest.TestCase):
         self.assertEqual(plan(lost, 5.0, 5000), (4.8, 5001))  # hours of failures in a row
         self.assertEqual(plan(device, 600.0, 0), (None, 1))   # any device error: the full reset
         self.assertEqual(plan(TimeoutError(), 600.0, 0), (0.3, 1))  # e.g. a mic send stuck 5 s
+        # A reconnect while the network is down: DNS or no route, from connect().
+        for down in (socket.gaierror(-3, "Temporary failure in name resolution"), OSError(101, "Network is unreachable"),
+                     ExceptionGroup("session", [OSError(113, "No route to host"), ConnectionResetError()])):
+            self.assertEqual(plan(down, 1.0, 1), (0.6, 2), down)
+        # PortAudio's own error is no OSError (sounddevice: class PortAudioError(Exception)),
+        # so a device error still gets the full reset.
+        class PortAudioError(Exception):
+            pass
+        self.assertEqual(plan(PortAudioError("Error opening OutputStream"), 600.0, 0), (None, 1))
+        try:
+            import sounddevice
+        except (ImportError, OSError):  # no PortAudio library on this machine
+            pass
+        else:
+            self.assertFalse(issubclass(sounddevice.PortAudioError, OSError))
         moved = ExceptionGroup("session", [handover()])
         self.assertEqual(plan(moved, 600.0, 3), (0.0, 0))     # GoAway after a long connection: at once
         self.assertEqual(plan(moved, 1.0, 3), (2.4, 4))       # GoAway soon after setup: a quick failure
