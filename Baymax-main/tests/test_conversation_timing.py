@@ -1,7 +1,11 @@
+import ast
+from pathlib import Path
 import unittest
 from types import SimpleNamespace
 
 from features.conversational_ability.timing import ConversationTiming
+
+V10 = Path(__file__).resolve().parents[1] / "realtime_gemini_10.py"
 
 
 class TimingTests(unittest.TestCase):
@@ -148,7 +152,16 @@ class TimingTests(unittest.TestCase):
         self.assertEqual(row['delays']['recognition_ms'], 900)  # durations never move
 
 
-BLOCK = 1024 / 48000  # one v10 microphone callback
+def runtime_block():
+    """Seconds in one v10 microphone callback: its CHUNK_SIZE at SEND_SAMPLE_RATE, read
+    from the runtime so the replays follow its block size."""
+    values = {node.targets[0].id: node.value.value for node in ast.parse(V10.read_text(encoding="utf-8")).body
+              if isinstance(node, ast.Assign) and len(node.targets) == 1
+              and isinstance(node.targets[0], ast.Name) and isinstance(node.value, ast.Constant)}
+    return values["CHUNK_SIZE"] / values["SEND_SAMPLE_RATE"]
+
+
+BLOCK = runtime_block()
 
 
 def replay(voice, events, end, latency):
@@ -184,7 +197,7 @@ class ReplyAttributionTests(unittest.TestCase):
     reply's audio starts 0.6 s after their true last word. Mic input latency 0 and 30 ms."""
 
     def assertAnswered(self, row):
-        # The local estimate ends with the last mic block (21 ms) that had voice.
+        # The local estimate ends with the last mic block (about 20 ms) that had voice.
         self.assertAlmostEqual(row['delays']['response_ms'], 600, delta=50)
 
     def test_each_reply_is_charged_to_the_turn_it_answers(self):
