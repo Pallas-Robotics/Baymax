@@ -138,8 +138,8 @@
   one before Gemini finished a turn saying the model is not found, no longer available or out
   of quota: "1011 You exceeded your current quota"), Ember connects with the next one at once,
   logs it once and keeps it until it restarts, without the old model's resume handle. When
-  every model has failed in a row it waits as after any lost connection (0.3 s, doubling,
-  then the audio reset) and tries again: no fast spin. Network drops, Google's resets and
+  every model has failed in a row it waits as after any lost connection (0.3 s, doubling
+  up to 4.8 s) and tries again: no fast spin. Network drops, Google's resets and
   "1011 internal error" never switch. For Gemini 3 the config leaves out `thinking_config`
   and declares Ember's functions `BLOCKING`, as 2.5 runs them; 2.5's config is unchanged.
   `evals/live_eval.py --model gemini-3.8-live` tests a model with the same settings (without
@@ -199,13 +199,18 @@
   devices again: at least 7 s with the mic closed, every ~10 minutes when Google resets
   the connection. Now a session ended only by lost connections (`connection_lost`)
   reconnects after 0.3 s without the device reset; connections that keep failing
-  within 60 s back off (0.3, 0.6, 1.2, 2.4, 4.8 s), and the full reset is kept for
-  device/PortAudio errors and after 5 quick failures in a row, now awaited and off
-  the event loop. After a GoAway, Ember moves to a new connection at the next quiet
-  moment (no reply owed, generating or playing, no speech for 1 s), with the newest
-  resume handle, so routine resets don't land mid-utterance. The abandon/resend of
-  Ember's own messages, `MIC_SEND_TIMEOUT_S`, the socket abort and the stop path are
-  unchanged. Offline tests through the real `run()`; live check pending.
+  within 60 s back off (0.3, 0.6, 1.2, 2.4 s, then 4.8 s each time) and never reset
+  the devices, which can't help a network. The full reset is kept for device/PortAudio
+  and other errors, now awaited and off the event loop (its worker-thread PortAudio
+  calls are untested on Windows). After a GoAway, Ember moves to a new connection at
+  the next quiet moment (no reply owed, generating or playing, no speech for 1 s), with
+  the newest resume handle, so routine resets don't land mid-utterance. It moves only
+  once Gemini has sent that connection a handle of its own: the one that set it up is
+  not offered twice, so moving with it would start the conversation over. A move from
+  a connection shorter than 60 s backs off like a quick loss, so GoAways soon after
+  every setup can't make Ember reconnect in a loop. The abandon/resend of Ember's own
+  messages, `MIC_SEND_TIMEOUT_S`, the socket abort and the stop path are unchanged.
+  Offline tests through the real `run()`; live check pending.
 
 - Recalled memories no longer hold up or cut off Ember's replies. The receive loop
   used to wait up to 150 ms for the memory lookup at the first reply audio and then

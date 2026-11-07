@@ -19,8 +19,8 @@ next one at once when this API key can't use it:
 
 The new model is kept until Ember restarts. The old one's resume handle is dropped:
 a handle belongs to the model that issued it. When every model has failed like that
-in a row, run() waits as after any lost connection (0.3 s, doubling, then the full
-reset; no fast spin) and tries the next one again, so Ember comes back with whichever
+in a row, run() waits as after any lost connection (0.3 s, doubling up to 4.8 s; no
+fast spin) and tries the next one again, so Ember comes back with whichever
 model returns. Any other error (a dropped network, Google's routine resets, "1011
 internal error") never changes the model.
 

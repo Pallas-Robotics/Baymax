@@ -281,14 +281,18 @@ message keeps the session. The socket is aborted when a session ends, because le
 
 **Fast reconnect.** When every error that ended the session is a lost connection
 (`connection_lost`: Google's reset about every 10 minutes, a dropped network, a stuck
-send), `run()` reconnects after 0.3 s (`RECONNECT_DELAY_S`) without touching the audio
-devices. Before, every session end waited 2 s, then reset PortAudio with a 5 s
-`time.sleep` that blocked the event loop and chose the devices again: at least 7 s
-with the mic closed. Connections that keep failing within 60 s of starting
-(`QUICK_SESSION_S`) wait twice as long each time (0.3, 0.6, 1.2, 2.4, 4.8 s); after 5 in a
-row (`FAST_RECONNECTS`), and at once for any other error (a device or PortAudio error),
-the full reset runs as before, but awaited, with the PortAudio calls and the device
-query on a worker thread. A connection that lasted starts the count again.
+send) or a GoAway handover, `run()` reconnects without touching the audio devices.
+Before, every session end waited 2 s, then reset PortAudio with a 5 s `time.sleep` that
+blocked the event loop and chose the devices again: at least 7 s with the mic closed. A
+handover from a connection that lasted 60 s (`QUICK_SESSION_S`) reconnects at once;
+otherwise `run()` waits 0.3 s (`RECONNECT_DELAY_S`), twice as long for each connection in
+a row that ended within 60 s of starting, up to 4.8 s (`RECONNECT_MAX_DELAY_S`): 0.3, 0.6,
+1.2, 2.4, 4.8, 4.8 s. A connection that lasted starts the count again. On Wi-Fi that drops
+every 45 s, each reconnect waits at most 4.8 s and never resets the devices, which can't
+help a network. Any other error (a device or PortAudio error) runs the full reset as
+before, but awaited, with the PortAudio calls and the device query on a worker thread.
+Those worker-thread PortAudio calls are untested on Windows (WASAPI sets up COM per
+thread); the reset only runs after a device or unknown error.
 
 **GoAway.** Gemini warns (GoAway) shortly before it resets a connection. Instead of
 waiting to be cut off, possibly mid-sentence, `between_turns()` ends the session at the
@@ -296,8 +300,13 @@ next quiet moment: Gemini owes no reply and isn't producing one, nothing is queu
 the speaker, nobody has spoken for 1 s and none of Ember's own messages awaits its
 answer. It waits for a resume handle that includes the last turn
 (`session.handle_received_at`), at most 3 s after that turn or the GoAway
-(`GO_AWAY_HANDLE_WAIT_S`), and `run()` reconnects at once with the newest handle. If no
-quiet moment comes in time, Gemini's own close is a lost connection like any other.
+(`GO_AWAY_HANDLE_WAIT_S`), and `run()` reconnects with the newest handle. A handle from
+before this connection was used to set it up, and `session.py` offers a handle only once,
+so moving with it would start the conversation over: Ember waits until Gemini has sent
+this connection a handle of its own (or closes it). A handover from a connection shorter
+than 60 s counts as a quick failure, so GoAways soon after every setup (a backend
+draining, say) back off instead of reconnecting about once a second. If no quiet moment
+comes in time, Gemini's own close is a lost connection like any other.
 
 The reply in progress is abandoned at every session end (`_abandon_reply`): its queued
 audio is cleared, so it can't play after the reconnect with the mic muted. Ember's own
@@ -341,8 +350,8 @@ runtime's `MODEL`). Google's deprecations page lists it for shutdown as early as
   The old model's resume handle is dropped (a handle belongs to the model that issued it),
   so the conversation starts fresh.
 - **No model works.** Once every model has failed like that in a row, `run()` waits as after
-  any lost connection (0.3 s, doubling, then the full audio reset after 5 quick failures) and
-  tries the next model again, so Ember comes back with whichever model returns. No fast spin.
+  any lost connection (0.3 s, doubling up to 4.8 s) and tries the next model again, so Ember
+  comes back with whichever model returns. No fast spin.
 - **Never** for a dropped network, Google's routine resets, "1011 internal error", or any
   error once Gemini has finished a turn on the connection: those reconnect with the same
   model, as before.

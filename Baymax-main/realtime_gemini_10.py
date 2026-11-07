@@ -298,16 +298,19 @@ RECEIVE_FAILURES_BEFORE_RECONNECT = 3  # in a row with no message between them
 # websocket's keepalive gets stuck behind it.
 MIC_SEND_TIMEOUT_S = 5
 # Gemini resets every connection after about 10 minutes. A session ended only by lost
-# connections reconnects after RECONNECT_DELAY_S, doubled for each connection in a row
-# that failed within QUICK_SESSION_S, without resetting the audio devices; the full
-# PortAudio reset is for device errors and after FAST_RECONNECTS quick failures in a row.
+# connections or a GoAway handover never resets the audio devices: a handover from a
+# connection that lasted QUICK_SESSION_S reconnects at once; otherwise run() waits
+# RECONNECT_DELAY_S, doubled for each connection in a row that ended within
+# QUICK_SESSION_S, up to RECONNECT_MAX_DELAY_S. The full PortAudio reset is for device
+# and other errors: it can't help a network or a Gemini backend.
 RECONNECT_DELAY_S = 0.3
+RECONNECT_MAX_DELAY_S = 4.8   # the fifth doubling
 QUICK_SESSION_S = 60.0
-FAST_RECONNECTS = 5
 # After a GoAway, between_turns() moves to a new connection at a quiet moment once the
 # newest resume handle includes the last turn, or this long after that turn ended.
 GO_AWAY_HANDLE_WAIT_S = 3.0
 _go_away_at = None   # time.monotonic() of this connection's GoAway, if any
+_connected_at = 0.0  # time.monotonic() when run() started this connection
 _turn_done_at = 0.0  # time.monotonic() of Gemini's last turn_complete
 
 # ─── Interruption gate ───────────────────────────────────────────────────────
@@ -911,15 +914,18 @@ def _leaves(error):
 def _reconnect_plan(error, lasted, quick_failures):
     """How run() goes on after a connection ended with `error`, `lasted` seconds after
     it started: (pause before reconnecting, or None for the full audio reset first;
-    quick failures in a row so far). A GoAway handover reconnects at once. Lost
-    connections only (Gemini's ~10-minute resets, a network drop) need no device reset."""
+    quick failures in a row so far). Lost connections and GoAway handovers only (Gemini's
+    ~10-minute resets, a network drop) need no device reset. A handover from a connection
+    that lasted reconnects at once; one from a short connection counts as a quick failure,
+    so GoAways soon after every setup back off instead of reconnecting in a loop."""
     leaves = _leaves(error)
-    if all(isinstance(e, _SessionHandover) for e in leaves):
+    handover = all(isinstance(e, _SessionHandover) for e in leaves)
+    if handover and lasted >= QUICK_SESSION_S:
         return 0.0, 0
     quick_failures = quick_failures + 1 if lasted < QUICK_SESSION_S else 1
-    if quick_failures <= FAST_RECONNECTS and all(
-            isinstance(e, _SessionHandover) or connection_lost(e) for e in leaves):
-        return RECONNECT_DELAY_S * 2 ** (quick_failures - 1), quick_failures
+    if all(isinstance(e, _SessionHandover) or connection_lost(e) for e in leaves):
+        doublings = min(quick_failures - 1, 16)  # far past the cap; hours of failures can't overflow it
+        return min(RECONNECT_DELAY_S * 2 ** doublings, RECONNECT_MAX_DELAY_S), quick_failures
     return None, quick_failures
 
 
@@ -1893,11 +1899,25 @@ def _between_turns(now):
                 or _address_gate.prompt_pending())
 
 
+def _handover_due(now):
+    """After a GoAway, at a quiet moment: whether to move to a new connection now. With no
+    resume handle there is no conversation to keep. A handle from before this connection
+    can't resume it again (session.extend_config drops a handle it has offered once), so
+    moving would start the conversation over: wait for this connection's own handle, or
+    Gemini's close. Then wait for one that includes the last turn, at most
+    GO_AWAY_HANDLE_WAIT_S after that turn or the GoAway."""
+    handle_at = handle_received_at()
+    if handle_at is None:
+        return True
+    if handle_at < _connected_at:
+        return False
+    return handle_at >= _turn_done_at or now - max(_go_away_at, _turn_done_at) >= GO_AWAY_HANDLE_WAIT_S
+
+
 async def between_turns(session):
     """At quiet moments between turns (_between_turns):
-    - after a GoAway, ends this connection (_SessionHandover) so run() reconnects at
-      once with the newest resume handle, before Gemini cuts it off mid-sentence. It
-      waits for a handle that includes the last turn, or GO_AWAY_HANDLE_WAIT_S;
+    - after a GoAway, ends this connection (_SessionHandover) so run() reconnects with
+      the newest resume handle, before Gemini cuts it off mid-sentence (_handover_due);
     - gives Gemini the memories recalled for the person's latest turn once its reply
       has been played: they inform the person's next turn. Memories this connection's
       Gemini already has (in its instructions, or given before) are skipped, and a
@@ -1908,13 +1928,10 @@ async def between_turns(session):
         now = time.monotonic()
         if (_recalled is None and _go_away_at is None) or not _between_turns(now):
             continue
-        if _go_away_at is not None:
-            handle_at = handle_received_at()
-            if (handle_at is None or handle_at >= _turn_done_at
-                    or now - max(_go_away_at, _turn_done_at) >= GO_AWAY_HANDLE_WAIT_S):
-                print("[SESSION] Quiet moment: moving to a new connection before Gemini resets this one.",
-                      flush=True)
-                raise _SessionHandover()
+        if _go_away_at is not None and _handover_due(now):
+            print("[SESSION] Quiet moment: moving to a new connection before Gemini resets this one.",
+                  flush=True)
+            raise _SessionHandover()
         if _recalled is None:
             continue
         (turn, memories), _recalled = _recalled, None
@@ -2617,7 +2634,7 @@ def _run_voice_analysis():
 
 # ─── Main ─────────────────────────────────────────────────────────────────────
 async def run():
-    global _last_robot_speech_ts, _stop_started_ts, _go_away_at
+    global _last_robot_speech_ts, _stop_started_ts, _go_away_at, _connected_at
     monitor.start(lambda: {"playback_bytes": len(_playback_buffer), "gemini_generating_audio": _gemini_speaking, "audio_input": dict(_audio_enhancer.metrics) if _audio_enhancer is not None else None})
     public_toolkit.prewarm()
     client = genai.Client(
@@ -2632,7 +2649,7 @@ async def run():
             monitor.emit("connecting", "Connecting to Gemini Live")
             print(f"Connecting to {model}...")
             _boot_status("connecting", f"Connecting to Gemini model...")
-            _go_away_at = None
+            _go_away_at, _connected_at = None, started
             async with client.aio.live.connect(
                 model=model, config=_live_models.adapt(_build_config())  # the settings `model` needs
             ) as live_session:
