@@ -31,7 +31,10 @@ side talk and hesitations) is closed when a new one begins and never takes a lat
 reply. A transcript that arrives after the reply's first audio keeps that reply if
 the person started speaking before it; speech over Ember's own message does not.
 A pause that ends a local segment inside one Gemini turn extends the turn to its
-last segment, whose end is the turn's speech end.
+last segment, whose end is the turn's speech end. Not checked live: a question
+that makes Gemini call a tool while the person speaks during the lookup. If Gemini
+said nothing before the call, the newer turn closes the asked one as unanswered
+and the tool's answer is charged to the newer turn (diagnostics only).
 Gemini's internal recognition time and actual acoustic output are not measured.
 Playback uses callback DAC timing; a missing timestamp falls back to the output
 latency estimate. Interruption clears unplayed timing marks. A reply is timed from
@@ -46,7 +49,9 @@ metadata is local and bounded. Times are kept on the monotonic clock and become
 wall-clock times when the monitor reads them, so a clock corrected after start
 (NTP) moves them with the heartbeat. Offline tests: `test_conversation_timing.py`
 (including replayed Live API orderings), `test_runtime_monitor.py`,
-`test_v10_runtime.py`. Live confirmation requires restarting v10 and speaking.
+`test_v10_runtime.py`. Live confirmation requires restarting v10 and speaking;
+include a tool question (the weather) with a few words during the lookup and
+check which turn the reply is charged to.
 From the repository root, `node test/monitor-chat.cjs` checks inline timing
 updates and one stable toolkit bubble per invocation without opening devices.
 
