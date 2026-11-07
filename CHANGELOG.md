@@ -26,12 +26,13 @@
   keeps that reply; a pause that splits one turn's speech ends the turn at its last
   words. "Speech end → transcript" (`recognition_ms`) now runs to the transcript's
   last piece: the first piece streams in while the person speaks, so it was negative
-  and never shown. Times stay on the monotonic clock until the monitor reads them,
-  so an NTP correction after start no longer shifts them. `check.py` counts only
-  answered turns as `speech_turns` (`unanswered_turns` reports the rest), so
-  `--min-turns` no longer fails on a turn Gemini chose not to answer. Replayed Live
-  API orderings now measure 580-625 ms for a true 600 ms (previously up to 10.6 s).
-  Diagnostics only; audio is unchanged.
+  and never shown. `check.py` reports are format 2 for this; against a format-1
+  baseline they leave out the `recognition_ms` delta. Times stay on the monotonic
+  clock until the monitor reads them, so an NTP correction after start no longer
+  shifts them. `check.py` counts only answered turns as `speech_turns`
+  (`unanswered_turns` reports the rest), so `--min-turns` no longer fails on a turn
+  Gemini chose not to answer. Replayed Live API orderings now measure 580-625 ms for
+  a true 600 ms (previously up to 10.6 s). Diagnostics only; audio is unchanged.
 
 - `check_release.py` and `tests/run.py` keep `BAYMAX_MEMORY_MODEL_DIR` while they
   set the machine's own settings aside. It only points the real-model memory tests

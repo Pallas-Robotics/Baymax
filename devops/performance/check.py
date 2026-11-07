@@ -13,6 +13,9 @@ import time
 ROOT = Path(__file__).resolve().parents[2]
 METRICS = ('cpu_percent', 'process_cpu_percent', 'rss_mib', 'system_used_mib',
            'temperature_c', 'npu_percent', 'recognition_ms', 'response_ms', 'audible_ms')
+# Report format 2: recognition_ms runs to the transcript's last piece. In format 1 it ran
+# to the first piece, so a format-1 baseline's recognition_ms is not compared.
+FORMAT = 2
 
 
 def read(path):
@@ -136,12 +139,14 @@ def report(samples, turns, baseline=None):
     if baseline:
         for key, value in metrics.items():
             old = baseline['metrics'].get(key)
+            if key == 'recognition_ms' and baseline.get('format') == 1:
+                continue
             if value and old:
                 deltas[key] = {stat: round(value[stat] - old[stat], 2) for stat in ('mean', 'p95', 'max')}
     # A speech turn is one Gemini answered with audio. With proactive audio (on by
     # default) it stays silent on side talk and hesitations: no playback is coming.
     answered = sum('reply_audio' in row for row in turns.values())
-    return dict(format=1, metrics=metrics, delta_from_baseline=deltas,
+    return dict(format=FORMAT, metrics=metrics, delta_from_baseline=deltas,
                 speech_turns=answered, unanswered_turns=len(turns) - answered,
                 completed_turns=sum('playback' in row for row in turns.values()),
                 unavailable=[key for key, value in metrics.items() if value is None])
@@ -171,9 +176,9 @@ def violations(result, limits, min_turns=0, require_npu=False, max_added_latency
 
 
 def validate_baseline(data, board):
-    if (not isinstance(data, dict) or data.get('format') != 1
+    if (not isinstance(data, dict) or type(data.get('format')) is not int or data['format'] not in (1, FORMAT)
             or not isinstance(data.get('metrics'), dict) or data.get('status') == 'FAIL'):
-        raise ValueError('Expected a successful format-1 performance baseline')
+        raise ValueError('Expected a successful format-1 or format-2 performance baseline')
     if data.get('board') != board:
         raise ValueError('Baseline board does not match; collect both runs on the same board.')
     for metric, value in data['metrics'].items():

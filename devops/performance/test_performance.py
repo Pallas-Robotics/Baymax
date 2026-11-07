@@ -109,12 +109,26 @@ class PerformanceTests(unittest.TestCase):
         self.assertEqual((result['speech_turns'], result['unanswered_turns'], result['completed_turns']), (1, 1, 1))
 
     def test_baseline_rejects_other_board_failed_run_and_invalid_metrics(self):
-        good = dict(format=1, board='OPi4', status='MEASURED', metrics={'rss_mib': check.summary([100])})
+        good = dict(format=2, board='OPi4', status='MEASURED', metrics={'rss_mib': check.summary([100])})
         self.assertEqual(check.validate_baseline(good, 'OPi4'), good)
+        self.assertEqual(check.validate_baseline(dict(good, format=1), 'OPi4')['format'], 1)
         for data in [[], dict(good, board='OPi5'), dict(good, status='FAIL'),
-                     dict(good, metrics={'rss_mib': {'mean': 'bad'}})]:
+                     dict(good, metrics={'rss_mib': {'mean': 'bad'}}), dict(good, format=3),
+                     dict(good, format=True), dict(good, format=None)]:
             with self.assertRaises(ValueError):
                 check.validate_baseline(data, 'OPi4')
+
+    def test_a_format_1_baseline_gives_no_recognition_delta(self):
+        # Format 1 measured recognition_ms to the transcript's first piece; now it runs
+        # to the last piece, so the two are different measurements.
+        turns = {1: dict(reply_audio=1, playback=2, delays={'recognition_ms': 900, 'audible_ms': 1200})}
+        old = {'recognition_ms': check.summary([150]), 'audible_ms': check.summary([1000])}
+        result = check.report([], turns, dict(format=1, metrics=old))
+        self.assertEqual(result['format'], 2)
+        self.assertNotIn('recognition_ms', result['delta_from_baseline'])
+        self.assertEqual(result['delta_from_baseline']['audible_ms']['p95'], 200)
+        result = check.report([], turns, dict(format=2, metrics=old))
+        self.assertEqual(result['delta_from_baseline']['recognition_ms']['p95'], 750)
 
     def test_sampler_cli_writes_only_aggregate_report(self):
         with tempfile.TemporaryDirectory() as folder:

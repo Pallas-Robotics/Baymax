@@ -70,7 +70,9 @@ normal warmed scenario does not measure boot time.
   transcribed turns it left without a reply (with proactive audio, on by default,
   it stays silent on side talk and hesitations). Only an answered turn that never
   reached the speaker fails `--min-turns`. `recognition_ms` runs from the local
-  speech end to the transcript's last piece.
+  speech end to the transcript's last piece. Reports are format 2; in format 1
+  it ran to the first piece, so against a format-1 baseline the report leaves out
+  the `recognition_ms` delta (format-1 baselines are still accepted for the rest).
 - The sampler is not a stress generator or automatic feature toggle. Use bounded
   realistic scenarios, then the full normal feature mix. Stop the scenario if
   hardware becomes unstable; do not deliberately overheat the board.
