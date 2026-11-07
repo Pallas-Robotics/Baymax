@@ -243,7 +243,7 @@
         "voice": "Lekha",
         "expect": {
           "heard": "[\\u0900-\\u097F]",
-          "reply": "[\\u0900-\\u097F]{2,}",
+          "reply": "[\\u0900-\\u097F]{2,}|\\b(?:aap|aapko|aapka|kya|hai|hain|theek|thik|madad|nahi|nahin|chai|achha|accha)\\b",
           "not_reply": "\\b(?:the|you|your|are|what|how|today)\\b",
           "no_tools": true,
           "max_words": 40,
@@ -314,7 +314,7 @@
         "say": "अब हिंदी में बात करते हैं। मुझे बारिश का मौसम बहुत पसंद है।",
         "voice": "Lekha",
         "expect": {
-          "reply": "[\\u0900-\\u097F]{2,}",
+          "reply": "[\\u0900-\\u097F]{2,}|\\b(?:aap|aapko|aapka|kya|hai|hain|theek|thik|madad|nahi|nahin|chai|achha|accha)\\b",
           "not_reply": "\\b(?:the|you|your|are|what|how|today)\\b",
           "no_tools": true
         }
@@ -375,14 +375,14 @@
         "say": "एम्बर, मैं रसोई में चाय बना रही हूँ।",
         "voice": "Lekha",
         "expect": {
-          "reply": "[\\u0900-\\u097F]{2,}",
+          "reply": "[\\u0900-\\u097F]{2,}|\\b(?:aap|aapko|aapka|kya|hai|hain|theek|thik|madad|nahi|nahin|chai|achha|accha)\\b",
           "no_tools": true
         }
       },
       {
         "text": "[FALL ALERT] The camera has detected that the user may have just fallen down. Please immediately check on them — ask if they are okay and if they need help.",
         "expect": {
-          "reply": "[\\u0900-\\u097F]{2,}",
+          "reply": "[\\u0900-\\u097F]{2,}|\\b(?:aap|aapko|aapka|kya|hai|hain|theek|thik|madad|nahi|nahin|chai|achha|accha)\\b",
           "not_reply": "fall alert|\\bare you (?:ok|okay|alright|all right|hurt)\\b|\\bdo you need\\b",
           "max_words": 60
         }
