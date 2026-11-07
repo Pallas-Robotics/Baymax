@@ -172,7 +172,7 @@ def _search_status():
     # On unless turned off, like features/toolkits/gemini_tools.search_enabled().
     if os.getenv('BAYMAX_TOOLKIT_ENABLED', '1') == '0' or os.getenv('BAYMAX_GOOGLE_SEARCH', '1') == '0':
         return 'Disabled'
-    return 'Gemini built-in grounding'
+    return 'Google Search grounding through the search_web tool'
 
 
 def write_status(metrics=None):

@@ -805,7 +805,7 @@ class RecalledMemoryTests(unittest.TestCase):
             "tracker_roundtrip": SimpleNamespace(record=Mock()), "_last_mic_send_ts": 0.0,
             "_last_robot_speech_ts": 0.0, "_last_user_speech_ts": 0.0, "_last_loud_mic_ts": 0.0,
             "_user_turn": None, "_user_turn_words": [], "_looked_up": None, "_recalled": None,
-            "_memories_given": set(), "_reply_owed_since": None,
+            "_memories_given": set(), "_reply_owed_since": None, "_tool_calls_running": 0,
             "BETWEEN_TURNS_POLL_S": 0.01, "BETWEEN_TURNS_QUIET_S": 0.05, "REPLY_OWED_MAX_S": 15.0,
             "_go_away_at": None, "_turn_done_at": 0.0,  # no GoAway here (see test_v10_runtime)
             "live_models": live_models, "MEMORY_NOTES_ENABLED": True,  # the opt-in these tests exercise
@@ -868,6 +868,27 @@ class RecalledMemoryTests(unittest.TestCase):
         # Each wait gives the lookup and between_turns() (polling every 10 ms) time to act.
         return [message(user=words), wait(0.1), message(ember="Mm.", audio=self.PCM), wait(0.05),
                 message(done=True), wait(0.05), self.played_out(ns), wait(0.2)]
+
+    def test_a_slow_tool_keeps_the_reply_owed_from_when_its_result_went_back(self):
+        # A web search takes up to 13 s (web_search.TOTAL_S): REPLY_OWED_MAX_S must count from
+        # when the result went back, or between_turns() could take Gemini's answer time for a
+        # quiet moment (a GoAway handover, a memory note) once the tool had used most of it.
+        ns = self.runtime(lambda query: [])
+        finished = []
+
+        async def handle_tool_call(session, call):
+            owed_at_call = (ns["_reply_owed_since"], ns["_tool_calls_running"])
+            await asyncio.sleep(0.05)
+            finished.append((owed_at_call, time.monotonic()))
+        ns["public_toolkit"] = SimpleNamespace(handle_tool_call=handle_tool_call)
+        call = SimpleNamespace(tool_call=SimpleNamespace(function_calls=[]), session_resumption_update=None,
+                               go_away=None, server_content=None)
+        self.converse(ns, [call, wait(0.05)], between_turns=False)
+        ((owed_since, running), done), = finished
+        self.assertIsNotNone(owed_since)                         # owed while the tool runs,
+        self.assertEqual(running, 1)                             # however long it takes,
+        self.assertEqual(ns["_tool_calls_running"], 0)
+        self.assertGreaterEqual(ns["_reply_owed_since"], done)   # and again from its result
 
     def test_nothing_is_sent_or_looked_up_during_the_reply(self):
         ns = self.runtime(lambda query: [self.TOMATOES])
@@ -969,12 +990,13 @@ class RecalledMemoryTests(unittest.TestCase):
         ns = {"time": clock, "_gemini_speaking_lock": threading.Lock(), "_gemini_speaking": False,
               "_playback_lock": threading.Lock(), "_playback_buffer": b"", "_initiation_ts_lock": threading.Lock(),
               "_last_loud_mic_ts": 0.0, "_last_user_speech_ts": 0.0, "_reply_owed_since": None,
-              "BETWEEN_TURNS_QUIET_S": 1.0, "REPLY_OWED_MAX_S": 15.0,
+              "_tool_calls_running": 0, "BETWEEN_TURNS_QUIET_S": 1.0, "REPLY_OWED_MAX_S": 15.0,
               "_address_gate": AddressGate(enabled=False, clock=gate_clock.monotonic, log=Mock())}
         quiet = load_function("_between_turns", ns)
         self.assertTrue(quiet(100.0))
         for name, value in (("_gemini_speaking", True), ("_playback_buffer", b"\x01\x00"),
-                            ("_reply_owed_since", 90.0), ("_last_loud_mic_ts", 99.5), ("_last_user_speech_ts", 99.5)):
+                            ("_reply_owed_since", 90.0), ("_last_loud_mic_ts", 99.5), ("_last_user_speech_ts", 99.5),
+                            ("_tool_calls_running", 1)):   # a tool still running, however long
             with self.subTest(name=name), patch.dict(ns, {name: value}):
                 self.assertFalse(quiet(100.0))
         ns["_reply_owed_since"] = 80.0                   # no reply came within REPLY_OWED_MAX_S

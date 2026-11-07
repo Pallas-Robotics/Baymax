@@ -3,6 +3,7 @@
   "sources": [
     "Baymax-main/features/toolkits/gemini_tools.py",
     "Baymax-main/features/toolkits/*.py",
+    "Baymax-main/features/conversational_ability/live_models.py",
     "Baymax-main/features/vision_process.py"
   ],
   "python": [

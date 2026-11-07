@@ -70,7 +70,9 @@ release approval.
 - **Not used:** no microphone, camera or speaker is opened, and no recordings are made.
 - **Tools.** Tool calls get the scenario's `tool_results` stubs (default `{"result": "ok"}`).
   `--real-tools` runs the real toolkit instead. That contacts its providers (weather,
-  discovery services) and audio tools may play sound, so use it deliberately.
+  discovery services) and audio tools may play sound, so use it deliberately. `search_web`
+  then opens its own Gemini Live lookup sessions on the same key (its text model, else the
+  model under test).
 - **Key.** `GOOGLE_API_KEY` is read from the environment, else `Baymax-main/.env` of the tested branch, this checkout or the main checkout (when run from a git worktree). Never
   paste it into chat or a PR. Runs use your API quota.
 - **Output.** `.local-review/live-eval.md` and `.json` (gitignored), holding transcripts

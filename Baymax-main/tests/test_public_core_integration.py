@@ -54,15 +54,17 @@ class CoreIntegrationTests(unittest.TestCase):
                                           session_resumption_update=None, go_away=None)
                 return stream()
         handler = AsyncMock()
-        receive = load_function("receive_audio", {"asyncio": asyncio, "time": time,
+        namespace = {"asyncio": asyncio, "time": time,
             "_TurnTranscript": lambda *a: SimpleNamespace(flush=lambda: None),
             "monitor": SimpleNamespace(timing=Mock()),
             "public_toolkit": SimpleNamespace(handle_tool_call=handler),
-            "_address_gate": SimpleNamespace(tool_call=lambda: None)})
+            "_address_gate": SimpleNamespace(tool_call=lambda: None), "_tool_calls_running": 0}
+        receive = load_function("receive_audio", namespace)
         session = Session()
         with self.assertRaises(asyncio.CancelledError):
             asyncio.run(receive(session))
         handler.assert_awaited_once_with(session, calls)
+        self.assertEqual(namespace["_tool_calls_running"], 0)   # counted only while the call ran
 
     def test_container_allowlist_includes_toolkit_python_only(self):
         rules = (CORE.parent / ".dockerignore").read_text()

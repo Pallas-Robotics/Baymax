@@ -110,9 +110,9 @@ public_radio only finds stations: play one only with the listen tool, when it is
 available. Do not invent episode dates.
 Unavailable or disabled tools are unavailable; continue the conversation normally.
 """
-# With Google Search on (gemini_tools.search_enabled) show ideas may come from it too; without
-# the search tool the instruction must not offer it.
-SHOWS_WITH_SEARCH = ("suggest titles from your own\nknowledge;", "suggest titles from your own\nknowledge (or Google Search);")
+# With Google Search on (gemini_tools.search_enabled: the search_web tool) show ideas may come
+# from it too; without the search tool the instruction must not offer it.
+SHOWS_WITH_SEARCH = ("suggest titles from your own\nknowledge;", "suggest titles from your own\nknowledge (or search_web);")
 GAMES_INSTRUCTION = """
 [BRAIN GAMES]
 Play brain games (word association, twenty questions either way, categories,
@@ -215,7 +215,7 @@ def extend_config(config):
     if additions:
         tools.append({"function_declarations": additions})
     instruction = INSTRUCTION
-    if any("google_search" in tool for tool in tools):
+    if any(d.get("name") == "search_web" for tool in tools for d in tool.get("function_declarations", [])):
         instruction = INSTRUCTION.replace(*SHOWS_WITH_SEARCH)
     if instruction not in result["system_instruction"]:
         result["system_instruction"] += instruction

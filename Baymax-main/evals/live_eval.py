@@ -523,7 +523,8 @@ def disclosure(model, config, plan, repeat, real_tools):
              f"  - Ember's MVP system prompt ({len(config.get('system_instruction', ''))} characters) and "
              f"{len(tools)} tool declarations{' plus ' + ', '.join(built_in) if built_in else ''}",
              "  - Synthetic text-to-speech audio of the scripted lines, generated picture cards, text notes",
-             "  - " + ("REAL tool results (network providers may be contacted; audio tools may play)"
+             "  - " + ("REAL tool results (network providers may be contacted; audio tools may play; "
+                       "search_web opens its own Gemini Live lookup sessions on this key)"
                        if real_tools else "Stub tool results from the scenarios (no providers contacted)"),
              "No microphone, camera or speaker is opened. Uses your Gemini API quota.", ""]
     for scenario in plan:
@@ -542,6 +543,19 @@ def main_checkout(root):
     except (OSError, subprocess.SubprocessError):
         return None
     return Path(common).parent / ROOT.name
+
+
+def prepare_real_tools(key, model):
+    """--real-tools runs the real toolkit, which reads the key from the environment as on the
+    robot (search_web's lookup session, the family link), and search_web's fallback looks up
+    with the model under test (live_models.in_use). Process-local only."""
+    if not os.environ.get("GOOGLE_API_KEY", "").strip():   # unset, or GOOGLE_API_KEY= from .env.example
+        os.environ["GOOGLE_API_KEY"] = key
+    try:
+        from features.conversational_ability import live_models
+    except ImportError:   # an older branch under --root
+        return
+    live_models.in_use = model
 
 
 def api_key(root=ROOT):
@@ -623,6 +637,8 @@ def main(argv=None, connect=None, confirm=input):
             return 2
         from google import genai
         connect = genai.Client(api_key=key, http_options={"api_version": "v1alpha"}).aio.live.connect
+        if args.real_tools:
+            prepare_real_tools(key, model)
     if not args.yes and confirm("Send this to Gemini? [y/N] ").strip().lower() not in ("y", "yes"):
         print("Nothing was sent.")
         return 1

@@ -1923,6 +1923,7 @@ BETWEEN_TURNS_POLL_S = 0.2
 BETWEEN_TURNS_QUIET_S = 1.0   # nobody heard on the mic or in the transcript for this long
 REPLY_OWED_MAX_S = 15.0       # stop waiting for a reply after this (e.g. it was only noise)
 _reply_owed_since = None      # time.monotonic() Gemini last heard something it should answer
+_tool_calls_running = 0       # tool calls in progress: their reply is owed however long they take
 
 
 def _between_turns(now):
@@ -1936,7 +1937,8 @@ def _between_turns(now):
         buffered = len(_playback_buffer) > 0
     with _initiation_ts_lock:
         heard = max(_last_loud_mic_ts, _last_user_speech_ts)
-    owed = _reply_owed_since is not None and now - _reply_owed_since < REPLY_OWED_MAX_S
+    owed = ((_reply_owed_since is not None and now - _reply_owed_since < REPLY_OWED_MAX_S)
+            or _tool_calls_running > 0)   # e.g. a batch of web searches, each up to 13 s
     return not (speaking or buffered or owed or now - heard < BETWEEN_TURNS_QUIET_S
                 or _address_gate.prompt_pending())
 
@@ -2178,6 +2180,7 @@ async def receive_audio(session):
     waits for a lookup or sends anything while Gemini is replying."""
     global _last_mic_send_ts, _last_robot_speech_ts, _last_user_speech_ts, _gemini_speaking
     global _user_turn, _user_turn_words, _recalled, _reply_owed_since, _go_away_at, _turn_done_at
+    global _tool_calls_running
     _is_new_turn = True
     _reply_audio_started = False
     _user_turn_open = False   # the person's current turn has begun
@@ -2200,7 +2203,14 @@ async def receive_audio(session):
                 if response.tool_call:
                     _reply_owed_since = time.monotonic()  # Gemini answers once it has the result
                     _address_gate.tool_call()
-                    await public_toolkit.handle_tool_call(session, response.tool_call)
+                    _tool_calls_running += 1
+                    try:
+                        await public_toolkit.handle_tool_call(session, response.tool_call)
+                    finally:
+                        _tool_calls_running -= 1
+                    # ...owed from when the result went back: a slow tool (a web search takes
+                    # up to 13 s) must not use up REPLY_OWED_MAX_S before Gemini can answer.
+                    _reply_owed_since = time.monotonic()
                 server_content = response.server_content
                 if server_content is None:
                     continue

@@ -104,19 +104,35 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(config["realtime_input_config"]["activity_handling"], "NO_INTERRUPTION")
         self.assertIn("get_weather", live_eval.declared_tools(config))
 
-    def test_the_real_config_thinks_a_little_only_while_google_search_is_on(self):
-        # The runtime's own config (as the robot builds it): search on by default with a
-        # small thinking budget, which keeps tool calls from closing the session; search
-        # off goes back to no thinking, the fastest replies.
-        for search, budget in ((None, 128), ("0", 0)):
+    def test_the_real_config_never_thinks_and_searches_through_search_web(self):
+        # The runtime's own config (as the robot builds it): no thinking, the fastest
+        # replies, with search on (the default) or off. Search is the search_web tool, never
+        # Gemini's built-in google_search, which closed the session on tool calls unless
+        # Gemini could think (features/toolkits/web_search.py).
+        for search in (None, "0"):
             with self.subTest(search=search), patch.dict(os.environ, {}, clear=False):
-                os.environ.pop("BAYMAX_SEARCH_THINKING_BUDGET", None)
                 os.environ.pop("BAYMAX_GOOGLE_SEARCH", None)
                 if search is not None:
                     os.environ["BAYMAX_GOOGLE_SEARCH"] = search
                 model, config = live_eval.mvp_session()
-            self.assertEqual(config["thinking_config"], {"thinking_budget": budget})
-            self.assertEqual(any("google_search" in t for t in config["tools"]), search is None)
+            self.assertEqual(config["thinking_config"], {"thinking_budget": 0})
+            self.assertFalse(any("google_search" in t for t in config["tools"]))
+            self.assertEqual("search_web" in live_eval.declared_tools(config), search is None)
+
+    def test_real_tools_get_the_key_and_the_model_under_test(self):
+        # search_web reads the key from the environment, as on the robot; a key read from a
+        # .env file reached only the eval's own connection, so every search said "not set up".
+        from features.conversational_ability import live_models
+        with patch.dict(os.environ, {}, clear=False), patch.object(live_models, "in_use", None):
+            os.environ.pop("GOOGLE_API_KEY", None)
+            live_eval.prepare_real_tools("key-from-a-file", "gemini-3.8-live")
+            self.assertEqual(os.environ["GOOGLE_API_KEY"], "key-from-a-file")
+            self.assertEqual(live_models.in_use, "gemini-3.8-live")   # the fallback looks up with it
+            live_eval.prepare_real_tools("another-key", "m")
+            self.assertEqual(os.environ["GOOGLE_API_KEY"], "key-from-a-file")   # the environment's own wins
+            os.environ["GOOGLE_API_KEY"] = ""                    # load_dotenv of .env.example's empty line
+            live_eval.prepare_real_tools("key-from-a-file", "m")
+            self.assertEqual(os.environ["GOOGLE_API_KEY"], "key-from-a-file")
 
     def test_uses_the_runtime_the_launcher_runs(self):
         import tempfile

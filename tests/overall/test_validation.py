@@ -50,9 +50,10 @@ class SuiteSelectionTests(unittest.TestCase):
                 # test_memory_saving runs the real receive loop and between_turns with an AddressGate.
                 ('Baymax-main/features/conversational_ability/addressing.py', ['conversational_ability', 'memory_palace', 'runtime']),
                 # Imported by test_v10_runtime, test_gemini_preflight, test_memory_saving and
-                # test_toolkit_family (whether Ember sends notes without turn_complete).
+                # test_toolkit_family (whether Ember sends notes without turn_complete), and
+                # by test_toolkit's search fallback (web_search uses in_use and adapt).
                 ('Baymax-main/features/conversational_ability/live_models.py',
-                 ['conversational_ability', 'family', 'memory_palace', 'runtime', 'startup']),
+                 ['conversational_ability', 'family', 'information', 'memory_palace', 'runtime', 'startup']),
                 # test_engage, test_live_eval, test_v10_runtime and test_toolkit_eyes read the persona.
                 ('Baymax-main/features/persona.py', ['conversational_ability', 'eyes', 'languages', 'runtime']),
                 # test_language_eval imports the live eval and test_live_eval's fake session.

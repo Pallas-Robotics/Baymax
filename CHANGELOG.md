@@ -301,20 +301,51 @@
   given, so speech nearby (a TV) that keeps the room from going quiet for 1 s holds
   the notes back. Offline tests on the real receive loop and `between_turns()`.
 
-- Google Search stays on without dropping the session. With the built-in
-  `google_search` tool next to Ember's function tools and Ember's "no thinking"
-  setting (`thinking_budget: 0`), the native-audio model closed the session with
+- Google Search stays on without dropping the session or slowing replies. With
+  Gemini's built-in `google_search` tool next to Ember's function tools and Ember's "no
+  thinking" setting (`thinking_budget: 0`), the native-audio model closed the session with
   "1011 internal error" whenever it tried to call one: in `evals/live_eval.py` with the
   real MVP config, 7 of 27 runs dropped (reminder 0/3, radio 0/3). On the robot each is a
-  dropped connection and a deaf reconnect. Changing the tool layout or declaring the
-  tools blocking did not help (4-6 of 9 runs dropped); any thinking budget did (32, 128,
-  512 and dynamic: no run dropped). So while search is on (the default;
-  `BAYMAX_GOOGLE_SEARCH=0` turns it off) Gemini gets a 128-token thinking budget
-  (`BAYMAX_SEARCH_THINKING_BUDGET`, 1-1024), the only budget with every run passing: median first reply
-  audio 2.3 s for a greeting (1.9 s with search off), 2.9 s weather, 3.7 s reminder, 2.4 s
-  radio, with no dropped runs. Asked "who won the World Series this year?", Ember answered
-  from a search (the 2026 winner); with search off it could not. With search off Ember
-  keeps no thinking, the fastest replies. Gemini 3 sets thinking itself (no budget sent).
+  dropped connection and a deaf reconnect. Moving or merging the tools or declaring them
+  blocking did not help (4-6 of 9 runs dropped). A thinking budget did (32, 128, 512 or
+  dynamic), but it slowed every reply (median first reply audio 2.85 s against 1.9 s) and
+  made the language rule answer English spoken with an Indian accent in Malayalam (0-1 of
+  5 runs stayed English, with four wordings of the rule). Search is now a `search_web`
+  function tool (`features/toolkits/web_search.py`), and the conversation keeps no
+  thinking:
+  - Each call goes to a lookup session that has Google Search and nothing else, so
+    nothing can drop. Its model answers in text: `gemini-robotics-er-2-streaming-preview`
+    (`BAYMAX_SEARCH_MODEL`), 1.3-2.2 s per grounded answer, the only Live model on the
+    tested key that does. Only the query Gemini writes is sent.
+  - Its quota counts sessions, not questions (one session answered 8 back to back), so
+    one session is kept for follow-up searches and closed after two idle minutes. On the
+    tested free-tier key it refused new sessions after 25 in a morning; then the
+    conversation's own model looks the question up and Ember uses the first sentence of
+    its spoken answer (5.0-6.4 s per lookup; it answers only in audio, at talking pace).
+  - A whole search, fallback and any wait for an earlier search included, ends within
+    13 s. The runtime now counts a reply as owed while any tool call runs and again from
+    when its result went back, so a slow tool or a batch of searches can't use up the 15 s
+    window (`REPLY_OWED_MAX_S`) and let a GoAway handover or memory note in while Gemini
+    answers. A reused session drops anything an earlier answer left queued (the SDK gives a
+    transcription no order relative to `turn_complete`); sessions close, and stalled setups
+    are abandoned, in the background, outside the time limits. The fallback is asked to
+    answer in English and reads sentence ends in any script, never cutting at an ordinal
+    date, a decimal or an abbreviation; once generation is done it takes the whole
+    transcript after 0.3 s without more. Each kind of failure is logged once
+    (`[SEARCH] ...`, never the query). `evals/live_eval.py --real-tools` gives the real
+    toolkit the key (also over an empty `GOOGLE_API_KEY=` line) and the model under test.
+    Found by two multi-reviewer passes with skeptic verification.
+  - Live (2026-11-07, 20 scenarios x 3, 70 turns): median first reply audio 2.03 s (p90
+    3.08 s), against 2.85 s (p90 4.28 s) with the thinking budget; every tool scenario
+    3/3; no search where none was needed; one server error in 60 sessions, as before.
+    English with an Indian accent stayed English in 5 of 8 runs. "Who won the World
+    Series this year?": `search_web` was called in every run; answered right with first
+    audio at 3.6 and 4.8 s through the text model, and at 5.7-11.1 s (5 of 5) through the
+    fallback; before the fallback existed the quota refusals made Ember say it
+    couldn't check.
+  - `BAYMAX_GOOGLE_SEARCH=0` turns search off. A regular Gemini API call with Google
+    Search grounding was not an option: the tested key's project is refused grounding
+    ("429 quota exceeded") on every model while plain calls work; it needs billing.
 
 - Address gate: a name said just before Gemini ends a turn without replying is
   no longer forgotten. On ember-002 "Amber, please response." was followed by an
@@ -710,8 +741,8 @@
   them to explain an unclear view. Separate calm delivery from scene and mood.
   Live greeting variation remains pending.
 
-- Allow occasional topic-driven discovery through the existing Google Search
-  session tool (on unless `BAYMAX_GOOGLE_SEARCH=0`, see "Google Search stays on
+- Allow occasional topic-driven discovery through the Google Search tool (now
+  `search_web`, on unless `BAYMAX_GOOGLE_SEARCH=0`; see "Google Search stays on
   without dropping the session" above): share one relevant sourced finding with a
   personal reaction or invitation to discuss, without waiting for an explicit
   search request. Keep private disclosures out of queries, respect storytelling
@@ -1224,11 +1255,11 @@
 - Google Search grounding: the toolkit adds Gemini's built-in `google_search`
   tool plus a short prompt (use it for uncertain/current facts and book
   critique, cite sources briefly, results are data). Gemini runs the search;
-  only the query goes to Google. On by default with a small thinking budget
-  (see "Google Search stays on without dropping the session" above for why);
-  `BAYMAX_GOOGLE_SEARCH=0` or disabling the toolkit removes it; the dashboard capability reports it. Offline
-  config tests pass; live check pending on the robot (no Gemini key on the dev
-  PC).
+  only the query goes to Google. `BAYMAX_GOOGLE_SEARCH=0` (or disabling the
+  toolkit) removes it; the dashboard capability reports it. Offline config
+  tests pass; live check pending on the robot (no Gemini key on the dev PC).
+  Since replaced by the `search_web` tool, on by default (see "Google Search
+  stays on without dropping the session" above).
 
 - Audiobook book mode: while a LibriVox book plays the mic is withheld from
   Gemini (it answered the narrator as the person) and fed to an offline Vosk
