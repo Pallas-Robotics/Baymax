@@ -268,8 +268,11 @@ MEMORY_MAX_DISTANCE = 1.0        # cosine distance threshold (0=identical, 2=opp
 MEMORY_WORD_WINDOW = 30          # use last N words of user speech for retrieval query
 MEMORY_PROMPT_COUNT = 50         # newest memories copied into the system instruction
 # Memories recalled for what the person says reach Gemini between turns, never
-# during a reply (between_turns): the recall for their latest turn waits here.
+# during a reply (between_turns). They are looked up from the person's whole turn
+# once its reply has played; the recall for their latest turn waits here.
 _user_turn = None                # a new object at the start of each of the person's turns
+_user_turn_words = []            # its words so far (the last MEMORY_WORD_WINDOW): the query
+_looked_up = None                # the latest turn whose memories have been looked up
 _recalled = None                 # (turn, memories recalled for it) not given to Gemini yet
 _memories_given = set()          # memory texts this connection's Gemini already has
 
@@ -603,7 +606,7 @@ def _transcript_add(speaker, text):
             print(f"[MEMORY] Dropped the oldest {dropped} characters of unsaved conversation: "
                   f"over {MEMORY_MAX_UNSAVED_CHARS} were waiting to be saved")
 
-# Rolling buffer of recent user words for memory retrieval queries
+# Rolling buffer of recent user words: the initiation opener's memory lookup
 _recent_user_words = []
 _recent_user_words_lock = threading.Lock()
 
@@ -747,11 +750,14 @@ def _memory_context(memories) -> str:
 
 
 def _recall_memories(turn):
-    """The person started a new turn: look up memories for it on a worker thread.
-    Never awaited: the receive loop must not wait for it. The result waits in
-    _recalled for between_turns(), unless the person has started another turn."""
-    with _recent_user_words_lock:
-        query = " ".join(_recent_user_words[-MEMORY_WORD_WINDOW:])
+    """Look up memories for the person's latest turn, `turn`, from all its words, on a
+    worker thread. between_turns() calls it at the first quiet moment after the turn,
+    once its reply has played: a lookup still running when a reply starts holds back
+    that reply's first audio on the robot. Not awaited: the result waits in _recalled
+    for the next quiet moment, unless the person has started another turn by then."""
+    global _looked_up
+    _looked_up = turn
+    query = " ".join(_user_turn_words[-MEMORY_WORD_WINDOW:])
     if not query.strip():
         return
     lookup = asyncio.get_running_loop().run_in_executor(None, _retrieve_memories, query)
@@ -1918,20 +1924,25 @@ async def between_turns(session):
     """At quiet moments between turns (_between_turns):
     - after a GoAway, ends this connection (_SessionHandover) so run() reconnects with
       the newest resume handle, before Gemini cuts it off mid-sentence (_handover_due);
-    - gives Gemini the memories recalled for the person's latest turn once its reply
-      has been played: they inform the person's next turn. Memories this connection's
+    - looks up memories for the person's latest turn, from all its words, once its reply
+      has been played (_recall_memories), and gives what it finds to Gemini at the next
+      quiet moment: they inform the person's next turn. Memories this connection's
       Gemini already has (in its instructions, or given before) are skipped, and a
       recall whose turn the person has moved on from is dropped."""
     global _recalled
     while True:
         await asyncio.sleep(BETWEEN_TURNS_POLL_S)
         now = time.monotonic()
-        if (_recalled is None and _go_away_at is None) or not _between_turns(now):
+        lookup_due = _user_turn is not _looked_up and _memory_embedder is not None
+        if (_recalled is None and _go_away_at is None and not lookup_due) or not _between_turns(now):
             continue
         if _go_away_at is not None and _handover_due(now):
             print("[SESSION] Quiet moment: moving to a new connection before Gemini resets this one.",
                   flush=True)
             raise _SessionHandover()
+        if lookup_due:
+            _recall_memories(_user_turn)  # what it finds is given at a later quiet poll
+            continue
         if _recalled is None:
             continue
         (turn, memories), _recalled = _recalled, None
@@ -2121,14 +2132,14 @@ class _TurnTranscript:
 async def receive_audio(session):
     """Receives audio from Gemini, upsamples 24kHz -> 48kHz, appends to buffer.
     Also captures input_transcription and output_transcription side-channel data.
-    The first words of each user turn start a memory lookup on a worker thread;
-    between_turns() gives what it finds to Gemini after the reply, so nothing here
-    waits for it or sends anything while Gemini is replying."""
+    It collects the words of each user turn; between_turns() looks up memories for
+    them once the reply has played and gives what it finds to Gemini, so nothing here
+    waits for a lookup or sends anything while Gemini is replying."""
     global _last_mic_send_ts, _last_robot_speech_ts, _last_user_speech_ts, _gemini_speaking
-    global _user_turn, _recalled, _reply_owed_since, _go_away_at, _turn_done_at
+    global _user_turn, _user_turn_words, _recalled, _reply_owed_since, _go_away_at, _turn_done_at
     _is_new_turn = True
     _reply_audio_started = False
-    _user_turn_open = False   # the person's current turn has begun (and its memory lookup)
+    _user_turn_open = False   # the person's current turn has begun
 
     user_said = _TurnTranscript("user")
     gemini_said = _TurnTranscript("gemini")
@@ -2186,7 +2197,7 @@ async def receive_audio(session):
                             _last_user_speech_ts = time.monotonic()
                         _reply_owed_since = time.monotonic()
 
-                        # Accumulate words for memory retrieval
+                        # The last words heard, for the opener's memory hint (initiation)
                         with _recent_user_words_lock:
                             _recent_user_words.extend(text.strip().split())
                             if len(_recent_user_words) > MEMORY_WORD_WINDOW:
@@ -2196,9 +2207,11 @@ async def receive_audio(session):
                             # The first words of a new turn: memories recalled for an
                             # earlier one and not given yet are stale.
                             _user_turn_open = True
-                            _user_turn, _recalled = object(), None
-                            if _memory_embedder is not None:
-                                _recall_memories(_user_turn)
+                            _user_turn, _user_turn_words, _recalled = object(), [], None
+                        # The lookup's query: this turn's own words, all of them, not
+                        # its first fragment after the previous turn's.
+                        _user_turn_words.extend(text.split())
+                        del _user_turn_words[:-MEMORY_WORD_WINDOW]
 
                 if server_content.interrupted:
                     continue  # Audio/text on this cancellation message belongs to the cancelled reply.

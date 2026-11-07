@@ -752,8 +752,9 @@ def wait(seconds):
 
 class RecalledMemoryTests(unittest.TestCase):
     """Memories recalled for what the person says reach Gemini only between turns:
-    anything sent as client content interrupts a reply Gemini is generating. The real
-    receive loop and between_turns() on a scripted session, with a fake store."""
+    anything sent as client content interrupts a reply Gemini is generating. They are
+    looked up from the person's whole turn once its reply has played. The real receive
+    loop and between_turns() on a scripted session, with a fake store."""
 
     PCM = b"\x01\x00\x02\x00"
     TOMATOES = {"document": "Joe grows tomatoes", "distance": 0.2}
@@ -761,10 +762,15 @@ class RecalledMemoryTests(unittest.TestCase):
 
     def runtime(self, found):
         """The receive loop and between_turns() sharing one namespace; `found(query)`
-        is what the memory store finds."""
+        is what the memory store finds. `self.searched` lists (time.monotonic(), query)."""
         import numpy as np
         from features.conversational_ability.addressing import AddressGate
         self.played = []  # time.monotonic() when each reply chunk was queued for the speaker
+        self.searched = []
+
+        def search(query, n_results):
+            self.searched.append((time.monotonic(), query))
+            return found(query)
         ns = {
             "asyncio": asyncio, "time": time, "np": np,
             "monitor": SimpleNamespace(emit=Mock(), transcribe=Mock(), finish_transcripts=Mock(), timing=Mock()),
@@ -772,14 +778,15 @@ class RecalledMemoryTests(unittest.TestCase):
             "_transcript_add": Mock(), "_TurnTranscript": lambda *a: SimpleNamespace(add=Mock(), flush=Mock()),
             "_initiation_ts_lock": threading.Lock(), "_recent_user_words_lock": threading.Lock(),
             "_recent_user_words": [], "MEMORY_WORD_WINDOW": 30, "MEMORY_TOP_K": 3, "MEMORY_MAX_DISTANCE": 1.0,
-            "_memory_embedder": SimpleNamespace(search=lambda query, n_results: found(query)),
+            "_memory_embedder": SimpleNamespace(search=search),
             "_gemini_speaking_lock": threading.Lock(), "_gemini_speaking": False,
             "_playback_lock": threading.Lock(), "_playback_buffer": b"", "_flush_playback": Mock(),
             "RECEIVE_SAMPLE_RATE": 48000, "OUTPUT_CHANNELS": 1,
             "tracker_receive": SimpleNamespace(record=Mock()), "tracker_first_audio": SimpleNamespace(record=Mock()),
             "tracker_roundtrip": SimpleNamespace(record=Mock()), "_last_mic_send_ts": 0.0,
             "_last_robot_speech_ts": 0.0, "_last_user_speech_ts": 0.0, "_last_loud_mic_ts": 0.0,
-            "_user_turn": None, "_recalled": None, "_memories_given": set(), "_reply_owed_since": None,
+            "_user_turn": None, "_user_turn_words": [], "_looked_up": None, "_recalled": None,
+            "_memories_given": set(), "_reply_owed_since": None,
             "BETWEEN_TURNS_POLL_S": 0.01, "BETWEEN_TURNS_QUIET_S": 0.05, "REPLY_OWED_MAX_S": 15.0,
             "_go_away_at": None, "_turn_done_at": 0.0,  # no GoAway here (see test_v10_runtime)
         }
@@ -842,36 +849,45 @@ class RecalledMemoryTests(unittest.TestCase):
         return [message(user=words), wait(0.1), message(ember="Mm.", audio=self.PCM), wait(0.05),
                 message(done=True), wait(0.05), self.played_out(ns), wait(0.2)]
 
-    def test_nothing_is_sent_during_the_reply(self):
+    def test_nothing_is_sent_or_looked_up_during_the_reply(self):
         ns = self.runtime(lambda query: [self.TOMATOES])
         sent = self.converse(ns, [message(user="Ember, how is my garden doing?"), wait(0.1),
                                   message(ember="Your tomatoes", audio=self.PCM), message(done=True)],
                              between_turns=False)
-        self.assertEqual(sent, [])               # the old loop sent the memories here, cutting the reply off
+        self.assertEqual(sent, [])               # an older loop sent the memories here, cutting the reply off
         self.assertEqual(len(self.played), 1)
-        self.assertEqual(ns["_recalled"][1], [self.TOMATOES])   # kept for between turns
+        self.assertEqual(self.searched, [])      # the receive loop leaves the lookup to between_turns()
+        self.assertIsNone(ns["_recalled"])
 
-    def test_the_reply_never_waits_for_the_lookup(self):
-        release = threading.Event()
-        self.addCleanup(release.set)
+    def test_the_lookup_waits_until_the_reply_has_played(self):
+        # A lookup (ONNX on the robot) still running when a reply starts holds back its first
+        # audio (u3, Orange Pi 5 Max); once the reply has played nothing is waiting on the cores.
+        ns = self.runtime(lambda query: [self.TOMATOES])
+        played_out = []
 
-        def slow(query):                         # still looking when the reply arrives
-            release.wait(5)
-            return [self.TOMATOES]
-        ns = self.runtime(slow)
-        replied = []
-
-        async def reply_arrives():
-            replied.append(time.monotonic())
-
-        async def lookup_finishes():
-            release.set()
-        sent = self.converse(ns, [message(user="Ember, how is my garden doing?"), reply_arrives,
+        async def speaker_done():
+            with ns["_playback_lock"]:
+                ns["_playback_buffer"] = b""
+            played_out.append(time.monotonic())
+        sent = self.converse(ns, [message(user="Ember, how is my garden doing?"), wait(0.1),
                                   message(ember="Your tomatoes", audio=self.PCM), wait(0.05), message(done=True),
-                                  wait(0.05), self.played_out(ns), lookup_finishes, wait(0.2)])
-        self.assertLess(self.played[0] - replied[0], 0.1)    # the old loop waited up to 150 ms
-        self.assertEqual(len(sent), 1)                      # and then gave up on the memories
+                                  wait(0.05), speaker_done, wait(0.2)])
+        self.assertEqual(len(self.searched), 1)
+        self.assertGreater(self.searched[0][0], played_out[0])   # was at the first words, before the reply
+        self.assertEqual(len(sent), 1)
         self.assertIn("Joe grows tomatoes", sent[0]["turns"]["parts"][0]["text"])
+
+    def test_the_lookup_uses_the_whole_turn_not_its_first_words(self):
+        # Gemini transcribes a turn in fragments. The lookup used to start on the first one,
+        # with the previous turn's words: "We planted tomatoes Ember," found nothing new.
+        ns = self.runtime(lambda query: [self.REX] if "dog" in query else [self.TOMATOES])
+        sent = self.converse(ns, self.reply(ns, "We planted tomatoes")
+                             + [message(user="Ember,"), message(user=" what is my dog's"), message(user=" name?"),
+                                *self.reply(ns, None)[1:]])
+        self.assertEqual([query for _, query in self.searched], ["We planted tomatoes", "Ember, what is my dog's name?"])
+        self.assertEqual(len(sent), 2)
+        self.assertIn("Joe's dog is Rex", sent[1]["turns"]["parts"][0]["text"])
+        self.assertNotIn("tomatoes", sent[1]["turns"]["parts"][0]["text"])
 
     def test_recalled_memories_are_given_after_the_reply_has_played(self):
         ns = self.runtime(lambda query: [self.TOMATOES])

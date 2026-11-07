@@ -804,7 +804,8 @@ class ReconnectTests(unittest.TestCase):
         clock = SimpleNamespace(monotonic=lambda: now)
         ns = {"asyncio": asyncio, "time": clock, "_between_turns": lambda at: quiet, "_recalled": None,
               "_go_away_at": go_away_at, "_turn_done_at": turn_done_at, "handle_received_at": lambda: handle_at,
-              "_connected_at": connected_at, "BETWEEN_TURNS_POLL_S": 0.001, "GO_AWAY_HANDLE_WAIT_S": 3.0}
+              "_connected_at": connected_at, "BETWEEN_TURNS_POLL_S": 0.001, "GO_AWAY_HANDLE_WAIT_S": 3.0,
+              "_user_turn": None, "_looked_up": None, "_memory_embedder": None}
         with patch("test_public_core_integration.CORE", V10):
             for name in ("_SessionHandover", "_handover_due", "between_turns"):
                 load_function(name, ns)
@@ -865,7 +866,7 @@ class ReconnectTests(unittest.TestCase):
         from features.conversational_ability import session as resumption
         options = dict(load=("_between_turns", "_handover_due", "between_turns"),
                        _build_config=lambda: resumption.extend_config({}),
-                       _recalled=None, _user_turn=None, _memories_given=set(),
+                       _recalled=None, _user_turn=None, _looked_up=None, _memories_given=set(),
                        _reply_owed_since=None, _last_loud_mic_ts=0.0, _last_user_speech_ts=0.0, _turn_done_at=0.0,
                        handle_received_at=resumption.handle_received_at, BETWEEN_TURNS_POLL_S=0.001,
                        BETWEEN_TURNS_QUIET_S=1.0, REPLY_OWED_MAX_S=15.0, GO_AWAY_HANDLE_WAIT_S=3.0)
