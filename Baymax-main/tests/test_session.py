@@ -59,6 +59,15 @@ class SessionTests(unittest.TestCase):
         session.remember(SimpleNamespace(new_handle="", resumable=True))
         self.assertEqual(self.build()["session_resumption"], {"handle": "h2"})
 
+    def test_the_runtime_can_tell_when_the_newest_handle_arrived(self):
+        # After a GoAway the runtime waits for a handle newer than the last turn.
+        self.assertIsNone(session.handle_received_at())
+        session.remember(update("h1"), clock=lambda: 5.0)
+        session.remember(update("h2", resumable=False), clock=lambda: 9.0)   # not resumable: ignored
+        self.assertEqual(session.handle_received_at(), 5.0)
+        session.forget()
+        self.assertIsNone(session.handle_received_at())
+
     def test_failed_resume_falls_back_to_a_fresh_session(self):
         session.remember(update("h1"), clock=lambda: self.now)
         self.assertEqual(self.build()["session_resumption"], {"handle": "h1"})

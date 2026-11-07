@@ -777,6 +777,7 @@ class RecalledMemoryTests(unittest.TestCase):
             "_last_robot_speech_ts": 0.0, "_last_user_speech_ts": 0.0, "_last_loud_mic_ts": 0.0,
             "_user_turn": None, "_recalled": None, "_memories_given": set(), "_reply_owed_since": None,
             "BETWEEN_TURNS_POLL_S": 0.01, "BETWEEN_TURNS_QUIET_S": 0.05, "REPLY_OWED_MAX_S": 15.0,
+            "_go_away_at": None, "_turn_done_at": 0.0,  # no GoAway here (see test_v10_runtime)
         }
 
         def append_playback(data, *, new_turn=False, timing_id=None):

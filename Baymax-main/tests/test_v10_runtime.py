@@ -25,6 +25,7 @@ from test_public_core_integration import load_function
 
 ROOT = Path(__file__).resolve().parents[1]
 V10 = ROOT / "realtime_gemini_10.py"
+REAL_SLEEP = asyncio.sleep  # before any test patches it
 
 
 class V10WaitingCueTests(test_waiting_cue.WaitingCueTests):
@@ -359,17 +360,19 @@ class ReconnectTests(unittest.TestCase):
 
     FALL_ALERT = {"turns": {"role": "user", "parts": [{"text": "[FALL ALERT] check on them"}]}, "turn_complete": True}
 
-    def run_connections(self, count, receive, failing=()):
+    def run_connections(self, count, receive, failing=(), load=(), **overrides):
         """The real run(), with its real cleanup, the real gate and the real watched
         session, for `count` connections. `receive(index, session, namespace)` is each
-        connection's receive loop; every send on a connection in `failing` fails."""
+        connection's receive loop; every send on a connection in `failing` fails.
+        `load` names more real runtime functions; `overrides` replace namespace entries.
+        `self.pauses` lists every asyncio.sleep awaited (each returns after 1 ms)."""
         class Stop(BaseException):
             pass
         sessions = []
 
         class Session:
-            def __init__(self, index):
-                self.index, self.attempted, self.sent = index, [], []
+            def __init__(self, index, config):
+                self.index, self.config, self.attempted, self.sent = index, config, [], []
                 self._ws = SimpleNamespace(transport=SimpleNamespace(abort=Mock()))
             async def send_client_content(self, **kwargs):
                 self.attempted.append(kwargs)
@@ -378,10 +381,12 @@ class ReconnectTests(unittest.TestCase):
                 self.sent.append(kwargs)
 
         class Connect:
+            def __init__(self, config):
+                self.config = config
             async def __aenter__(self):
                 if len(sessions) == count:
                     raise Stop()
-                sessions.append(Session(len(sessions)))
+                sessions.append(Session(len(sessions), self.config))
                 return sessions[-1]
             async def __aexit__(self, *exc):
                 return False
@@ -396,7 +401,7 @@ class ReconnectTests(unittest.TestCase):
             "_initiation_ts_lock": threading.Lock(), "_last_robot_speech_ts": 0.0,
             "_address_gate": AddressGate(enabled=False), "monitor": Mock(), "public_toolkit": Mock(),
             "genai": SimpleNamespace(Client=lambda **kw: SimpleNamespace(aio=SimpleNamespace(
-                live=SimpleNamespace(connect=lambda **kw: Connect())))),
+                live=SimpleNamespace(connect=lambda **kw: Connect(kw["config"]))))),
             "API_KEY": "test", "MODEL": "m", "_build_config": dict, "_boot_status": Mock(),
             "_memory_embedder": None, "MEMORY_RETRIEVAL_ENABLED": False, "FALL_DETECTION_ENABLED": False,
             "FALL_ANGLE_THRESHOLD": 0, "FALL_STAY_DOWN_SECONDS": 0, "FALL_DETECTION_FPS": 0,
@@ -406,11 +411,21 @@ class ReconnectTests(unittest.TestCase):
             "receive_audio": lambda session: receive(len(sessions) - 1, session, namespace),
             "fall_alert_monitor": forever, "monitor_queues": forever, "between_turns": forever,
             "fall_worker": SimpleNamespace(alert_monitor=forever), "_shutdown_event": None,
+            "connection_lost": connection_lost, "RECONNECT_DELAY_S": 0.3, "QUICK_SESSION_S": 60.0,
+            "FAST_RECONNECTS": 5, "_go_away_at": None,
         }
+        namespace.update(overrides)
         with patch("test_public_core_integration.CORE", V10):
-            for name in ("_flush_playback", "_abandon_reply", "_send_cut_off_prompts", "_abort_connection", "run"):
+            for name in ("_flush_playback", "_abandon_reply", "_send_cut_off_prompts", "_abort_connection",
+                         "_SessionHandover", "_leaves", "_reconnect_plan", "_reselect_audio_devices",
+                         "_reset_audio", "run", *load):
                 load_function(name, namespace)
-        with patch("builtins.print"), patch("asyncio.sleep", AsyncMock()), self.assertRaises(Stop):
+        self.pauses = []
+
+        async def pause(seconds):
+            self.pauses.append(seconds)
+            await REAL_SLEEP(0.001)
+        with patch("builtins.print"), patch("asyncio.sleep", pause), self.assertRaises(Stop):
             asyncio.run(namespace["run"]())
         return sessions, namespace
 
@@ -536,6 +551,151 @@ class ReconnectTests(unittest.TestCase):
             asyncio.run(send(SimpleNamespace(send_client_content=second_fails)))
         self.assertEqual(sent, [first[1]])
         self.assertEqual(namespace["_cut_off_prompts"], [second])  # the sent one isn't sent twice
+
+    # ── Fast reconnect: Gemini resets every connection after about 10 minutes ──
+    def test_a_lost_connection_reconnects_at_once_without_resetting_audio(self):
+        async def receive(index, session, namespace):
+            raise errors.APIError(1011, {"message": "internal error"})
+        sessions, ns = self.run_connections(1, receive)   # the reconnect attempt ends the test
+        self.assertEqual(self.pauses, [0.3])         # was 2 s, a 5 s block of the event loop and a reset
+        ns["time"].sleep.assert_not_called()
+        ns["sd"]._terminate.assert_not_called()
+        ns["sd"]._initialize.assert_not_called()
+
+    def test_a_device_error_still_resets_audio_but_never_blocks_the_event_loop(self):
+        class PortAudioError(Exception):
+            pass
+        on_main_thread = []
+
+        def select():
+            on_main_thread.append(threading.current_thread() is threading.main_thread())
+            return 3, 4
+
+        async def receive(index, session, namespace):
+            raise PortAudioError("Error opening InputStream: Device unavailable")
+        sessions, ns = self.run_connections(1, receive, get_default_device_id=select)
+        self.assertEqual(self.pauses, [2, 5])        # awaited: a stop still ends Ember at once
+        ns["time"].sleep.assert_not_called()
+        ns["sd"]._terminate.assert_called_once()
+        ns["sd"]._initialize.assert_called_once()
+        self.assertEqual(on_main_thread, [False])    # the device query runs on a worker thread
+        self.assertEqual(ns["sd"].default.device, [3, 4])
+
+    def test_connections_that_keep_failing_back_off_then_reset_audio(self):
+        async def receive(index, session, namespace):
+            raise ConnectionResetError()
+        sessions, ns = self.run_connections(7, receive)
+        self.assertEqual(self.pauses, [0.3, 0.6, 1.2, 2.4, 4.8, 2, 5, 2, 5])
+        self.assertEqual(ns["sd"]._terminate.call_count, 2)
+
+    def plan(self):
+        ns = {"connection_lost": connection_lost, "RECONNECT_DELAY_S": 0.3, "QUICK_SESSION_S": 60.0,
+              "FAST_RECONNECTS": 5}
+        with patch("test_public_core_integration.CORE", V10):
+            for name in ("_SessionHandover", "_leaves", "_reconnect_plan"):
+                load_function(name, ns)
+        return ns
+
+    def test_only_lost_connections_skip_the_reset_and_a_long_session_starts_the_backoff_over(self):
+        ns = self.plan()
+        plan, handover = ns["_reconnect_plan"], ns["_SessionHandover"]
+        lost = ExceptionGroup("session", [errors.APIError(1011, {"message": "x"}), ConnectionClosedError(None, None)])
+        device = ExceptionGroup("session", [errors.APIError(1011, {"message": "x"}), RuntimeError("PortAudio")])
+        self.assertEqual(plan(lost, 600.0, 4), (0.3, 1))      # Gemini's routine reset after ~10 minutes
+        self.assertEqual(plan(lost, 5.0, 1), (0.6, 2))        # failing again quickly: wait longer
+        self.assertEqual(plan(lost, 5.0, 5), (None, 6))       # too many in a row: the full reset
+        self.assertEqual(plan(device, 600.0, 0), (None, 1))   # any device error: the full reset
+        self.assertEqual(plan(TimeoutError(), 600.0, 0), (0.3, 1))  # e.g. a mic send stuck 5 s
+        self.assertEqual(plan(ExceptionGroup("session", [handover()]), 1.0, 3), (0.0, 0))
+        self.assertTrue(issubclass(handover, Exception))      # run() catches it like the others
+
+    # ── GoAway: move to a new connection at a quiet moment ──
+    def test_the_receive_loop_notes_a_goaway_and_each_turn_end(self):
+        class Session:
+            def receive(self):
+                async def stream():
+                    yield SimpleNamespace(tool_call=None, server_content=None, session_resumption_update=None,
+                                          go_away=SimpleNamespace(time_left="50s"))
+                    yield SimpleNamespace(tool_call=None, session_resumption_update=None, go_away=None,
+                                          server_content=SimpleNamespace(
+                                              input_transcription=None, output_transcription=None,
+                                              model_turn=None, turn_complete=True, interrupted=False))
+                    raise asyncio.CancelledError()
+                return stream()
+        ns = {"asyncio": asyncio, "time": time, "monitor": SimpleNamespace(emit=Mock(), finish_transcripts=Mock(),
+                                                                         timing=Mock()),
+              "_TurnTranscript": lambda *a: SimpleNamespace(flush=lambda: None), "_address_gate": Mock(),
+              "_gemini_speaking_lock": threading.Lock(), "_gemini_speaking": False, "_go_away_at": None}
+        with patch("test_public_core_integration.CORE", V10), patch("builtins.print"):
+            receive = load_function("receive_audio", ns)
+            before = time.monotonic()
+            with self.assertRaises(asyncio.CancelledError):
+                asyncio.run(receive(Session()))
+        self.assertGreaterEqual(ns["_go_away_at"], before)
+        self.assertGreaterEqual(ns["_turn_done_at"], ns["_go_away_at"])
+
+    def handed_over(self, quiet=True, handle_at=None, turn_done_at=0.0, go_away_at=100.0, now=101.0):
+        """Whether the real between_turns() ends the connection within a few polls."""
+        clock = SimpleNamespace(monotonic=lambda: now)
+        ns = {"asyncio": asyncio, "time": clock, "_between_turns": lambda at: quiet, "_recalled": None,
+              "_go_away_at": go_away_at, "_turn_done_at": turn_done_at, "handle_received_at": lambda: handle_at,
+              "BETWEEN_TURNS_POLL_S": 0.001, "GO_AWAY_HANDLE_WAIT_S": 3.0}
+        with patch("test_public_core_integration.CORE", V10):
+            for name in ("_SessionHandover", "between_turns"):
+                load_function(name, ns)
+
+        async def watch():
+            try:
+                await asyncio.wait_for(ns["between_turns"](Mock()), 0.05)
+            except TimeoutError:
+                return False
+            except ns["_SessionHandover"]:
+                return True
+        with patch("builtins.print"):
+            return asyncio.run(watch())
+
+    def test_after_a_goaway_the_connection_ends_only_at_a_quiet_moment(self):
+        self.assertTrue(self.handed_over())                                # quiet, nothing to resume yet
+        self.assertFalse(self.handed_over(quiet=False))                    # replying, playing or someone talking
+        self.assertFalse(self.handed_over(go_away_at=None))                # no GoAway: keep the connection
+        # Wait for a resume handle that includes the last turn...
+        self.assertFalse(self.handed_over(handle_at=99.0, turn_done_at=99.5))
+        self.assertTrue(self.handed_over(handle_at=99.8, turn_done_at=99.5))
+        # ...but not for ever (GO_AWAY_HANDLE_WAIT_S after the GoAway or the turn): Gemini resets it soon anyway.
+        self.assertFalse(self.handed_over(handle_at=99.0, turn_done_at=99.5, now=102.9))
+        self.assertTrue(self.handed_over(handle_at=99.0, turn_done_at=99.5, now=103.1))
+
+    def test_after_a_goaway_ember_moves_once_the_reply_has_played_and_resumes(self):
+        from features.conversational_ability import session as resumption
+        resumption.forget()
+        self.addCleanup(resumption.forget)
+        connected = []
+
+        async def receive(index, session, ns):
+            if index == 0:
+                resumption.remember(SimpleNamespace(resumable=True, new_handle="h1"))
+                ns["_playback_buffer"] = b"the end of a reply"
+                ns["_go_away_at"] = time.monotonic()      # as receive_audio does on a GoAway
+                await REAL_SLEEP(0.05)                   # still playing: no move yet
+                connected.append(index)
+                with ns["_playback_lock"]:
+                    ns["_playback_buffer"] = b""         # played
+                await REAL_SLEEP(2)
+                raise AssertionError("still on the old connection")
+            raise ConnectionResetError()                 # ends the test's second connection
+        with patch.dict(os.environ, {"BAYMAX_SESSION_RESUMPTION": "1", "BAYMAX_CONTEXT_COMPRESSION": "0"}):
+            sessions, ns = self.run_connections(
+                2, receive, load=("_between_turns", "between_turns"),
+                _build_config=lambda: resumption.extend_config({}),
+                _recalled=None, _user_turn=None, _memories_given=set(),
+                _reply_owed_since=None, _last_loud_mic_ts=0.0, _last_user_speech_ts=0.0, _turn_done_at=0.0,
+                handle_received_at=resumption.handle_received_at, BETWEEN_TURNS_POLL_S=0.001,
+                BETWEEN_TURNS_QUIET_S=1.0, REPLY_OWED_MAX_S=15.0, GO_AWAY_HANDLE_WAIT_S=3.0)
+        self.assertEqual(connected, [0])                              # stayed while the reply played
+        self.assertEqual(sessions[1].config["session_resumption"], {"handle": "h1"})
+        self.assertEqual([p for p in self.pauses if p != 0.001], [0.3])   # only the second one's loss
+        ns["sd"]._terminate.assert_not_called()
+        sessions[0]._ws.transport.abort.assert_called_once()
 
     def test_a_stop_reaches_the_shutdown_summary_after_a_reconnect(self):
         # After a TaskGroup child fails, Python 3.11/3.12 end asyncio.run with

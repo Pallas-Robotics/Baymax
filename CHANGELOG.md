@@ -1,5 +1,18 @@
 # MVP (unreleased)
 
+- Faster, quieter reconnects. Every session end used to wait 2 s, then reset
+  PortAudio with a blocking 5 s `time.sleep` on the event loop and choose the audio
+  devices again: at least 7 s with the mic closed, every ~10 minutes when Google resets
+  the connection. Now a session ended only by lost connections (`connection_lost`)
+  reconnects after 0.3 s without the device reset; connections that keep failing
+  within 60 s back off (0.3, 0.6, 1.2, 2.4, 4.8 s), and the full reset is kept for
+  device/PortAudio errors and after 5 quick failures in a row, now awaited and off
+  the event loop. After a GoAway, Ember moves to a new connection at the next quiet
+  moment (no reply owed, generating or playing, no speech for 1 s), with the newest
+  resume handle, so routine resets don't land mid-utterance. The abandon/resend of
+  Ember's own messages, `MIC_SEND_TIMEOUT_S`, the socket abort and the stop path are
+  unchanged. Offline tests through the real `run()`; live check pending.
+
 - Recalled memories no longer hold up or cut off Ember's replies. The receive loop
   used to wait up to 150 ms for the memory lookup at the first reply audio and then
   send the `[MEMORY CONTEXT]` note while Gemini was generating, which per the Live

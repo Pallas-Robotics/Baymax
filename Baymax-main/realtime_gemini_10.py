@@ -286,6 +286,18 @@ RECEIVE_FAILURES_BEFORE_RECONNECT = 3  # in a row with no message between them
 # reset, a send waits until the kernel gives up (about 15 minutes on Linux), and the
 # websocket's keepalive gets stuck behind it.
 MIC_SEND_TIMEOUT_S = 5
+# Gemini resets every connection after about 10 minutes. A session ended only by lost
+# connections reconnects after RECONNECT_DELAY_S, doubled for each connection in a row
+# that failed within QUICK_SESSION_S, without resetting the audio devices; the full
+# PortAudio reset is for device errors and after FAST_RECONNECTS quick failures in a row.
+RECONNECT_DELAY_S = 0.3
+QUICK_SESSION_S = 60.0
+FAST_RECONNECTS = 5
+# After a GoAway, between_turns() moves to a new connection at a quiet moment once the
+# newest resume handle includes the last turn, or this long after that turn ended.
+GO_AWAY_HANDLE_WAIT_S = 3.0
+_go_away_at = None   # time.monotonic() of this connection's GoAway, if any
+_turn_done_at = 0.0  # time.monotonic() of Gemini's last turn_complete
 
 # ─── Interruption gate ───────────────────────────────────────────────────────
 INTERRUPT_RMS_THRESHOLD = 1000
@@ -435,7 +447,7 @@ if ONLY_WHEN_ADDRESSED:
 # Optional strict transcript gate. Off by default: its name/20 s rule drops
 # direct questions after an ordinary pause. Gemini still judges conversational intent.
 from features.conversational_ability.addressing import AddressGate
-from features.conversational_ability.session import connection_lost
+from features.conversational_ability.session import connection_lost, handle_received_at
 _address_gate = AddressGate(enabled=bool(ONLY_WHEN_ADDRESSED) and os.getenv("BAYMAX_ADDRESS_GATE", "0") == "1")
 
 _BASE_CONFIG = {
@@ -847,6 +859,57 @@ def _abort_connection(session):
         session._ws.transport.abort()
     except Exception as e:
         print(f"[SESSION] Could not abort the connection: {e}", flush=True)
+
+
+class _SessionHandover(Exception):
+    """Ends a connection Gemini has said it will reset (GoAway), at a quiet moment."""
+
+
+def _leaves(error):
+    """The exceptions in `error`: itself, or each one in a TaskGroup's group."""
+    if isinstance(error, BaseExceptionGroup):
+        return [leaf for e in error.exceptions for leaf in _leaves(e)]
+    return [error]
+
+
+def _reconnect_plan(error, lasted, quick_failures):
+    """How run() goes on after a connection ended with `error`, `lasted` seconds after
+    it started: (pause before reconnecting, or None for the full audio reset first;
+    quick failures in a row so far). A GoAway handover reconnects at once. Lost
+    connections only (Gemini's ~10-minute resets, a network drop) need no device reset."""
+    leaves = _leaves(error)
+    if all(isinstance(e, _SessionHandover) for e in leaves):
+        return 0.0, 0
+    quick_failures = quick_failures + 1 if lasted < QUICK_SESSION_S else 1
+    if quick_failures <= FAST_RECONNECTS and all(
+            isinstance(e, _SessionHandover) or connection_lost(e) for e in leaves):
+        return RECONNECT_DELAY_S * 2 ** (quick_failures - 1), quick_failures
+    return None, quick_failures
+
+
+def _reselect_audio_devices():
+    sd._initialize()
+    mic, spk = get_default_device_id()
+    sd.default.device = [mic, spk]
+    return mic, spk
+
+
+async def _reset_audio():
+    """Recover from ALSA/PipeWire device errors: restart PortAudio and choose the devices
+    again. The PortAudio calls and device query run on a worker thread and the pause is
+    awaited, so the event loop never blocks (a stop still ends Ember at once)."""
+    print("[AUDIO] Resetting PortAudio state...")
+    loop = asyncio.get_running_loop()
+    try:
+        await loop.run_in_executor(None, sd._terminate)
+    except Exception:
+        pass
+    await asyncio.sleep(5)
+    try:
+        mic, spk = await loop.run_in_executor(None, _reselect_audio_devices)
+        print(f"[AUDIO] PortAudio reset. Input→{mic}, Output→{spk}")
+    except Exception as reinit_err:
+        print(f"[AUDIO] PortAudio reinit failed: {reinit_err}")
 
 # ─── Callback-based output stream ────────────────────────────────────────────
 def _output_callback(outdata, frames, time_info, status):
@@ -1712,7 +1775,8 @@ async def fall_alert_monitor(session):
 # generation", and with turn_complete=False "the server awaits additional messages
 # before starting generation" (Live API reference). Gemini starts a reply while the
 # person may still be talking, so notes that can wait (recalled memories) are sent
-# only at a quiet moment between turns.
+# only at a quiet moment between turns. Gemini's routine connection resets (GoAway)
+# are moved to such a moment too, so they don't land mid-sentence.
 BETWEEN_TURNS_POLL_S = 0.2
 BETWEEN_TURNS_QUIET_S = 1.0   # nobody heard on the mic or in the transcript for this long
 REPLY_OWED_MAX_S = 15.0       # stop waiting for a reply after this (e.g. it was only noise)
@@ -1736,14 +1800,28 @@ def _between_turns(now):
 
 
 async def between_turns(session):
-    """Gives Gemini the memories recalled for the person's latest turn once its reply
-    has been played and they are quiet: they inform the person's next turn. Memories
-    this connection's Gemini already has (in its instructions, or given before) are
-    skipped. A recall whose turn the person has moved on from is dropped."""
+    """At quiet moments between turns (_between_turns):
+    - after a GoAway, ends this connection (_SessionHandover) so run() reconnects at
+      once with the newest resume handle, before Gemini cuts it off mid-sentence. It
+      waits for a handle that includes the last turn, or GO_AWAY_HANDLE_WAIT_S;
+    - gives Gemini the memories recalled for the person's latest turn once its reply
+      has been played: they inform the person's next turn. Memories this connection's
+      Gemini already has (in its instructions, or given before) are skipped, and a
+      recall whose turn the person has moved on from is dropped."""
     global _recalled
     while True:
         await asyncio.sleep(BETWEEN_TURNS_POLL_S)
-        if _recalled is None or not _between_turns(time.monotonic()):
+        now = time.monotonic()
+        if (_recalled is None and _go_away_at is None) or not _between_turns(now):
+            continue
+        if _go_away_at is not None:
+            handle_at = handle_received_at()
+            if (handle_at is None or handle_at >= _turn_done_at
+                    or now - max(_go_away_at, _turn_done_at) >= GO_AWAY_HANDLE_WAIT_S):
+                print("[SESSION] Quiet moment: moving to a new connection before Gemini resets this one.",
+                      flush=True)
+                raise _SessionHandover()
+        if _recalled is None:
             continue
         (turn, memories), _recalled = _recalled, None
         new = [m for m in memories if m["document"] not in _memories_given]
@@ -1936,7 +2014,7 @@ async def receive_audio(session):
     between_turns() gives what it finds to Gemini after the reply, so nothing here
     waits for it or sends anything while Gemini is replying."""
     global _last_mic_send_ts, _last_robot_speech_ts, _last_user_speech_ts, _gemini_speaking
-    global _user_turn, _recalled, _reply_owed_since
+    global _user_turn, _recalled, _reply_owed_since, _go_away_at, _turn_done_at
     _is_new_turn = True
     _reply_audio_started = False
     _user_turn_open = False   # the person's current turn has started its memory lookup
@@ -1954,6 +2032,8 @@ async def receive_audio(session):
                 if response.session_resumption_update or response.go_away:
                     from features.conversational_ability.session import on_server_message
                     on_server_message(response)
+                    if response.go_away:
+                        _go_away_at = time.monotonic()  # between_turns() moves on at a quiet moment
                 if response.tool_call:
                     _reply_owed_since = time.monotonic()  # Gemini answers once it has the result
                     _address_gate.tool_call()
@@ -2092,6 +2172,7 @@ async def receive_audio(session):
                     _reply_audio_started = False
                     _user_turn_open = False
                     _reply_owed_since = None
+                    _turn_done_at = time.monotonic()
 
         except asyncio.CancelledError:
             # The send side saw the disconnect first: still post what was said so far.
@@ -2438,18 +2519,21 @@ def _run_voice_analysis():
 
 # ─── Main ─────────────────────────────────────────────────────────────────────
 async def run():
-    global _last_robot_speech_ts, _stop_started_ts
+    global _last_robot_speech_ts, _stop_started_ts, _go_away_at
     monitor.start(lambda: {"playback_bytes": len(_playback_buffer), "gemini_generating_audio": _gemini_speaking, "audio_input": dict(_audio_enhancer.metrics) if _audio_enhancer is not None else None})
     public_toolkit.prewarm()
     client = genai.Client(
         api_key=API_KEY, http_options={"api_version": "v1alpha"}
     )
+    quick_failures = 0  # connections in a row that ended within QUICK_SESSION_S
     while True:
+        started = time.monotonic()
         try:
             monitor.finish_transcripts()
             monitor.emit("connecting", "Connecting to Gemini Live")
             print(f"Connecting to {MODEL}...")
             _boot_status("connecting", f"Connecting to Gemini model...")
+            _go_away_at = None
             async with client.aio.live.connect(
                 model=MODEL, config=_build_config()
             ) as live_session:
@@ -2513,27 +2597,22 @@ async def run():
                     _abort_connection(live_session)
                     output_stream.stop()
                     output_stream.close()
-                    # Give ALSA/PipeWire time to release the device before reconnect
-                    # (nothing reconnects when stopping).
-                    if not _shutdown_event.is_set():
-                        await asyncio.sleep(2)
         except Exception as e:
-            print(f"connection failed {e}. retrying...")
-            _boot_status("connecting", f"Connection failed: {e}", error=True)
-            # Reset PortAudio to recover from ALSA/PipeWire device errors
-            print("[AUDIO] Resetting PortAudio state...")
-            try:
-                sd._terminate()
-            except Exception:
-                pass
-            time.sleep(5)
-            try:
-                sd._initialize()
-                mic, spk = get_default_device_id()
-                sd.default.device = [mic, spk]
-                print(f"[AUDIO] PortAudio reset. Input→{mic}, Output→{spk}")
-            except Exception as reinit_err:
-                print(f"[AUDIO] PortAudio reinit failed: {reinit_err}")
+            reason = "; ".join(repr(error) for error in _leaves(e))
+            pause, quick_failures = _reconnect_plan(e, time.monotonic() - started, quick_failures)
+            if pause is not None:
+                # Gemini's routine reset or a lost connection: the audio devices are fine.
+                if pause:
+                    print(f"[SESSION] Connection to Gemini lost ({reason}); reconnecting in {pause:.1f} s.",
+                          flush=True)
+                    await asyncio.sleep(pause)
+                continue
+            print(f"connection failed {reason}. retrying...")
+            _boot_status("connecting", f"Connection failed: {reason}", error=True)
+            # Give ALSA/PipeWire time to release the device, then reset PortAudio
+            # to recover from ALSA/PipeWire device errors.
+            await asyncio.sleep(2)
+            await _reset_audio()
 
 def _boot_status(stage: str, message: str, ready: bool = False, error: bool = False):
     _notify_webapp("/api/boot-status", {"stage": stage, "message": message, "ready": ready, "error": error})

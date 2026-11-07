@@ -252,6 +252,26 @@ after 3 errors in a row with no message between them; a one-off error handling a
 message keeps the session. The socket is aborted when a session ends, because leaving
 `connect()` otherwise waits on the same silent network.
 
+**Fast reconnect.** When every error that ended the session is a lost connection
+(`connection_lost`: Google's reset about every 10 minutes, a dropped network, a stuck
+send), `run()` reconnects after 0.3 s (`RECONNECT_DELAY_S`) without touching the audio
+devices. Before, every session end waited 2 s, then reset PortAudio with a 5 s
+`time.sleep` that blocked the event loop and chose the devices again: at least 7 s
+with the mic closed. Connections that keep failing within 60 s of starting
+(`QUICK_SESSION_S`) wait twice as long each time (0.3, 0.6, 1.2, 2.4, 4.8 s); after 5 in a
+row (`FAST_RECONNECTS`), and at once for any other error (a device or PortAudio error),
+the full reset runs as before, but awaited, with the PortAudio calls and the device
+query on a worker thread. A connection that lasted starts the count again.
+
+**GoAway.** Gemini warns (GoAway) shortly before it resets a connection. Instead of
+waiting to be cut off, possibly mid-sentence, `between_turns()` ends the session at the
+next quiet moment: Gemini owes no reply and isn't producing one, nothing is queued for
+the speaker, nobody has spoken for 1 s and none of Ember's own messages awaits its
+answer. It waits for a resume handle that includes the last turn
+(`session.handle_received_at`), at most 3 s after that turn or the GoAway
+(`GO_AWAY_HANDLE_WAIT_S`), and `run()` reconnects at once with the newest handle. If no
+quiet moment comes in time, Gemini's own close is a lost connection like any other.
+
 The reply in progress is abandoned at every session end (`_abandon_reply`): its queued
 audio is cleared, so it can't play after the reconnect with the mic muted. Ember's own
 messages (a fall check-in, a family message, a reminder) that reached Gemini are sent
@@ -267,8 +287,10 @@ stopped.
 Tests: `tests/test_session.py` (fake handles; full config validated by the SDK) and
 `ReconnectTests` in `tests/test_v10_runtime.py` (the real send and receive loops on
 the real SDK session over a local websocket, closed with each close code or left
-unread; a cut-off fall check-in through the real `run()`, also when its resend fails),
-and the resend rules in `tests/test_address_gate.py`.
+unread; a cut-off fall check-in through the real `run()`, also when its resend fails;
+the fast path, the backoff, the full reset off the event loop and the GoAway handover
+through the real `run()`), and the resend rules in `tests/test_address_gate.py`. Live
+pending: the reconnect time and Google's GoAway timing on the robot.
 
 ### Local waiting acknowledgement (MVP)
 
