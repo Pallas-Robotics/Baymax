@@ -184,6 +184,13 @@ class AddressGate:
     def _prompt_waiting(self):
         return self._prompted_at is not None and self.clock() - self._prompted_at <= PROMPT_TTL_S
 
+    def prompt_pending(self):
+        """One of Ember's own messages (or a tool result from an addressed turn) is
+        still waiting for its reply, within PROMPT_TTL_S: a note sent to Gemini now
+        could cut that reply off."""
+        with self._lock:
+            return self._prompt_waiting()
+
     def _addressed(self, prompt=True):
         # A prompt counts only when a reply starts: one sent mid-reply is
         # answered by the next reply, not the one being held.

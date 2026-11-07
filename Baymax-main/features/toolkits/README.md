@@ -13,7 +13,21 @@ monitor. Robot v10 supports the same public tools through its adapter. See
 
 ## Conversational web discovery
 
-The existing Gemini Google Search tool can be used without an explicit search
+**Off by default; `BAYMAX_GOOGLE_SEARCH=1` turns it on.** With the built-in
+`google_search` tool next to Ember's function tools, the native-audio model
+(`gemini-2.5-flash-native-audio-preview-12-2025`) closed the session with "1011
+internal error" whenever it tried to call a function tool. Measured on 2026-11-06
+with `evals/live_eval.py` and Ember's real MVP config, 27 runs per setting: with
+search on, reminder 0/3, radio 0/3 and weather 1/3 passed (7 errors); with it off,
+26 of 27 runs passed with no errors, and the median time to the first reply audio
+was about the same (1.78-1.79 s). On the robot each such error is a dropped
+connection and a reconnect during which Ember can't hear. Turn it on again only to
+check whether a newer model has fixed this. A `.env` copied from an older
+`.env.example` may still say `BAYMAX_GOOGLE_SEARCH=1`, which keeps it on: remove that
+line. While it is off, no instruction mentions Google Search (the public tools' show
+suggestions offer it only when the search tool is there).
+
+When turned on, the existing Gemini Google Search tool can be used without an explicit search
 request when a public topic in an engaged conversation merits a relevant lookup.
 Ember is guided to share one sourced finding, connect it to the person's interest,
 and contribute a reaction or invite their view. It avoids research during venting
@@ -21,16 +35,16 @@ or ongoing storytelling, repeated searches, and invented sources or familiarity.
 Queries should contain public topic terms, not personal disclosures or transcripts;
 Google receives the query through Gemini's existing built-in search integration.
 No new provider, dependency, background worker or recording is added.
-`BAYMAX_GOOGLE_SEARCH=0` or `BAYMAX_TOOLKIT_ENABLED=0` disables this search tool.
-Offline coverage is in `tests/test_toolkit.py` (registration, idempotence and
-disabled behavior); relevant results, latency and natural spoken follow-ups still
-require live evaluation.
+Only `BAYMAX_GOOGLE_SEARCH=1` adds this search tool; `BAYMAX_TOOLKIT_ENABLED=0` removes
+it either way. Offline coverage is in `tests/test_toolkit.py` (off by default,
+registration, idempotence and disabled behavior); relevant results, latency and
+natural spoken follow-ups still require live evaluation.
 
 ## Location and weather
 
 - `location.py`: `Location.get()` estimates city/region via HTTPS IPWho (`ipwho.is`), cached for one hour. It does not return or save the public IP. `set_city(city, country_code, region)` resolves a city explicitly supplied by the user through Open-Meteo geocoding. Multiple results require clarification; nothing changes until one place matches.
 - `weather.py`: `Weather.get(units)` returns Open-Meteo current model-based conditions and today's forecast with timestamps, units and provider attribution. Cache lasts ten minutes; new coordinates or units have separate entries. Service failures return an error, not invented or expired conditions.
-- `gemini_tools.py`: declares `get_location`, `set_location`, and `get_weather` for Gemini Live, dispatches HTTP work off the audio event loop, and preloads default location/weather in a background thread at startup. Weather questions go straight to `get_weather`, which finds the location itself; `get_location`'s result carries a note saying it has no weather, because Gemini sometimes stopped after it and guessed the conditions.
+- `gemini_tools.py`: declares `get_location`, `set_location`, and `get_weather` for Gemini Live, dispatches HTTP work off the audio event loop, and preloads default location/weather in a background thread at startup. That thread then keeps them cached so a weather question never waits on a fetch: the weather is fetched again every 9 minutes (`WEATHER_REFRESH_S`, before the 10-minute copy expires; in each unit asked for at the user's location, Celsius at least) and the IP location every 54 minutes (`LOCATION_REFRESH_S`; not while a city the user gave is in use). A failed refresh keeps the copy that is still valid; routine refreshes add no monitor events. Weather questions go straight to `get_weather`, which finds the location itself; `get_location`'s result carries a note saying it has no weather, because Gemini sometimes stopped after it and guessed the conditions.
 
 No extra API key or package is required beyond the existing `requests` and Gemini SDK. No location data is written to disk by these tools. Confirmed cities last for the current process only. Gemini's existing transcript/recording behavior still applies.
 
@@ -38,7 +52,7 @@ IP location is approximate and can be wrong, particularly with a VPN or mobile n
 
 ### Data sent to services
 
-IPWho sees the requesting device's public IP. Open-Meteo receives approximate coordinates for weather and user-provided city/region queries for geocoding. Tool results (including approximate coordinates) go to Gemini so it can speak the answer. Tools do not send audio, images, Gemini keys or email credentials to these providers.
+IPWho sees the requesting device's public IP. Open-Meteo receives approximate coordinates for weather and user-provided city/region queries for geocoding. While the toolkit is on, Ember sends these lookups on its own to keep the cache fresh: about 27 IPWho and 160 Open-Meteo forecast requests a day per robot (more if both temperature units are used), whether or not anyone asks. Tool results (including approximate coordinates) go to Gemini so it can speak the answer. Tools do not send audio, images, Gemini keys or email credentials to these providers.
 
 ### Try it
 

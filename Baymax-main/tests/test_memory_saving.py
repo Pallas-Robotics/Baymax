@@ -16,6 +16,7 @@ import unittest
 from unittest.mock import Mock, patch
 import uuid
 
+from features.conversational_ability import live_models
 from test_public_core_integration import CORE, load_function
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -486,7 +487,8 @@ class TeardownTests(unittest.TestCase):
                 return False
         client = SimpleNamespace(aio=SimpleNamespace(live=SimpleNamespace(connect=lambda **kw: Connect())))
         ns = {"asyncio": asyncio, "time": time, "monitor": Mock(), "public_toolkit": SimpleNamespace(prewarm=Mock()),
-              "genai": SimpleNamespace(Client=lambda **kw: client), "API_KEY": "k", "MODEL": "m",
+              "genai": SimpleNamespace(Client=lambda **kw: client), "API_KEY": "k",
+              "_live_models": live_models.ModelChoice(["m"]),  # run()'s Gemini Live model
               "_build_config": dict, "_boot_status": Mock(), "_address_gate": SimpleNamespace(watch=lambda s: s),
               "_memory_embedder": None, "MEMORY_RETRIEVAL_ENABLED": False, "FALL_DETECTION_ENABLED": False,
               "POSE_TRACKING_ENABLED": True, "IDLE_THRESHOLD_SECONDS": 60.0, "F_MIDPOINT": 30.0,
@@ -498,9 +500,11 @@ class TeardownTests(unittest.TestCase):
               "listen_audio": forever, "send_audio_realtime": forever, "send_video_realtime": forever,
               "receive_audio": forever, "fall_alert_monitor": forever, "initiation_monitor": forever,
               "fall_worker": SimpleNamespace(alert_monitor=forever), "monitor_queues": forever,
+              "between_turns": forever,
               # The reconnect fix's per-session steps (tested in test_v10_runtime.ReconnectTests).
               "_send_cut_off_prompts": forever, "_abandon_reply": Mock(), "_abort_connection": Mock()}
         load_function("run", ns)
+        self.addCleanup(setattr, live_models, "in_use", live_models.in_use)  # run() sets the model in use
         return ns
 
     def test_a_stop_starts_the_clock_and_skips_the_reconnect_pause(self):
@@ -631,6 +635,31 @@ class NewestMemoriesTests(unittest.TestCase):
         self.assertNotIn("old fact 0\n", instruction)
         self.assertTrue(instruction.endswith("\n\nbase"))
         self.assertEqual(config["speech_config"], "unchanged")
+        # This connection's Gemini has them: recalled memories skip them.
+        self.assertEqual(ns["_memories_given"], set(ns["_newest_memories"]()))
+        self.assertIn("new fact 29", ns["_memories_given"])
+        ns["_memories_given"].add("given on the last connection")
+        ns["_memory_embedder"] = None
+        ns["_build_config"]()
+        self.assertEqual(ns["_memories_given"], set())   # a fresh conversation starts from its own prompt
+
+    def test_a_connection_resuming_the_conversation_keeps_the_memories_given_on_it(self):
+        resuming = [False]
+        ns = {"_BASE_CONFIG": {}, "_BASE_SYSTEM_INSTRUCTION": "base", "_memories_given": set(),
+              "_memory_embedder": SimpleNamespace(_collection=FakeCollection(memory_rows()[:2])),
+              "MEMORY_PROMPT_COUNT": 50, "public_toolkit": SimpleNamespace(extend_config=lambda c: {
+                  **c, "session_resumption": {"handle": "h1"} if resuming[0] else {}})}  # as session.py adds it
+        for name in ("_newest_memories", "_build_config"):
+            load_function(name, ns)
+        with patch("builtins.print"):
+            ns["_build_config"]()
+            ns["_memories_given"].add("given on the last connection")
+            resuming[0] = True                             # e.g. after a GoAway or a dropped network
+            ns["_build_config"]()
+            self.assertEqual(ns["_memories_given"], {"given on the last connection", "new fact 0", "new fact 1"})
+            resuming[0] = False
+            ns["_build_config"]()
+        self.assertEqual(ns["_memories_given"], {"new fact 0", "new fact 1"})
 
     @unittest.skipUnless(importlib.util.find_spec("chromadb"), "chromadb not installed (desktop profiles)")
     def test_with_chromadb(self):
@@ -721,6 +750,228 @@ class ReceiveLoopTests(unittest.TestCase):
         with patch("builtins.print"), self.assertRaises(asyncio.CancelledError):
             asyncio.run(ns["receive_audio"](Session()))
         self.assertEqual(added, [("user", " A"), ("user", "mber"), ("gemini", " Hi!")])
+
+
+def message(user=None, ember=None, audio=None, done=False):
+    """One Gemini Live message for the real receive loop."""
+    turn = SimpleNamespace(parts=[SimpleNamespace(text=None, inline_data=SimpleNamespace(
+        mime_type="audio/pcm;rate=24000", data=audio))]) if audio else None
+    return SimpleNamespace(tool_call=None, session_resumption_update=None, go_away=None,
+                           server_content=SimpleNamespace(
+                               input_transcription=SimpleNamespace(text=user) if user else None,
+                               output_transcription=SimpleNamespace(text=ember) if ember else None,
+                               model_turn=turn, turn_complete=done, interrupted=False))
+
+
+def wait(seconds):
+    async def step():
+        await asyncio.sleep(seconds)
+    return step
+
+
+class RecalledMemoryTests(unittest.TestCase):
+    """Memories recalled for what the person says reach Gemini only between turns:
+    anything sent as client content interrupts a reply Gemini is generating. They are
+    looked up from the person's whole turn once its reply has played. The real receive
+    loop and between_turns() on a scripted session, with a fake store."""
+
+    PCM = b"\x01\x00\x02\x00"
+    TOMATOES = {"document": "Joe grows tomatoes", "distance": 0.2}
+    REX = {"document": "Joe's dog is Rex", "distance": 0.4}
+
+    def runtime(self, found):
+        """The receive loop and between_turns() sharing one namespace; `found(query)`
+        is what the memory store finds. `self.searched` lists (time.monotonic(), query)."""
+        import numpy as np
+        from features.conversational_ability.addressing import AddressGate
+        self.played = []  # time.monotonic() when each reply chunk was queued for the speaker
+        self.searched = []
+
+        def search(query, n_results):
+            self.searched.append((time.monotonic(), query))
+            return found(query)
+        ns = {
+            "asyncio": asyncio, "time": time, "np": np,
+            "monitor": SimpleNamespace(emit=Mock(), transcribe=Mock(), finish_transcripts=Mock(), timing=Mock()),
+            "_address_gate": AddressGate(enabled=False, log=Mock()), "public_toolkit": SimpleNamespace(),
+            "_transcript_add": Mock(), "_TurnTranscript": lambda *a: SimpleNamespace(add=Mock(), flush=Mock()),
+            "_initiation_ts_lock": threading.Lock(), "_recent_user_words_lock": threading.Lock(),
+            "_recent_user_words": [], "MEMORY_WORD_WINDOW": 30, "MEMORY_TOP_K": 3, "MEMORY_MAX_DISTANCE": 1.0,
+            "_memory_embedder": SimpleNamespace(search=search),
+            "_gemini_speaking_lock": threading.Lock(), "_gemini_speaking": False,
+            "_playback_lock": threading.Lock(), "_playback_buffer": b"", "_flush_playback": Mock(),
+            "RECEIVE_SAMPLE_RATE": 48000, "OUTPUT_CHANNELS": 1,
+            "tracker_receive": SimpleNamespace(record=Mock()), "tracker_first_audio": SimpleNamespace(record=Mock()),
+            "tracker_roundtrip": SimpleNamespace(record=Mock()), "_last_mic_send_ts": 0.0,
+            "_last_robot_speech_ts": 0.0, "_last_user_speech_ts": 0.0, "_last_loud_mic_ts": 0.0,
+            "_user_turn": None, "_user_turn_words": [], "_looked_up": None, "_recalled": None,
+            "_memories_given": set(), "_reply_owed_since": None,
+            "BETWEEN_TURNS_POLL_S": 0.01, "BETWEEN_TURNS_QUIET_S": 0.05, "REPLY_OWED_MAX_S": 15.0,
+            "_go_away_at": None, "_turn_done_at": 0.0,  # no GoAway here (see test_v10_runtime)
+            "live_models": live_models,
+        }
+
+        def append_playback(data, *, new_turn=False, timing_id=None):
+            with ns["_playback_lock"]:
+                ns["_playback_buffer"] += data
+            self.played.append(time.monotonic())
+        ns["_append_playback"] = append_playback
+        for name in ("receive_audio", "_retrieve_memories", "_recall_memories", "_memory_context",
+                     "_between_turns", "between_turns"):
+            load_function(name, ns)
+        return ns
+
+    def converse(self, ns, steps, between_turns=True):
+        """Plays `steps` (messages, or coroutine functions run in between them) through
+        the real receive loop, with between_turns() alongside. Returns what was sent,
+        each with whether Gemini was replying, audio was still queued or a reply owed."""
+        class Done(BaseException):
+            pass
+        sent = []
+
+        class Session:
+            def receive(self):
+                async def stream():
+                    for step in steps:
+                        if callable(step):
+                            await step()
+                        else:
+                            yield step
+                    raise Done()
+                return stream()
+
+            async def send_client_content(self, **kwargs):
+                sent.append({**kwargs, "speaking": ns["_gemini_speaking"], "playing": bool(ns["_playback_buffer"]),
+                             "owed": ns["_reply_owed_since"] is not None})
+
+        async def talk():
+            session = Session()
+            helper = asyncio.create_task(ns["between_turns"](session)) if between_turns else None
+            try:
+                await ns["receive_audio"](session)
+            except Done:
+                pass
+            finally:
+                if helper is not None:
+                    helper.cancel()
+        with patch("builtins.print"):
+            asyncio.run(talk())
+        return sent
+
+    def played_out(self, ns):
+        async def step():  # the speaker has played the queued reply
+            with ns["_playback_lock"]:
+                ns["_playback_buffer"] = b""
+        return step
+
+    def reply(self, ns, words):
+        # Each wait gives the lookup and between_turns() (polling every 10 ms) time to act.
+        return [message(user=words), wait(0.1), message(ember="Mm.", audio=self.PCM), wait(0.05),
+                message(done=True), wait(0.05), self.played_out(ns), wait(0.2)]
+
+    def test_nothing_is_sent_or_looked_up_during_the_reply(self):
+        ns = self.runtime(lambda query: [self.TOMATOES])
+        sent = self.converse(ns, [message(user="Ember, how is my garden doing?"), wait(0.1),
+                                  message(ember="Your tomatoes", audio=self.PCM), message(done=True)],
+                             between_turns=False)
+        self.assertEqual(sent, [])               # an older loop sent the memories here, cutting the reply off
+        self.assertEqual(len(self.played), 1)
+        self.assertEqual(self.searched, [])      # the receive loop leaves the lookup to between_turns()
+        self.assertIsNone(ns["_recalled"])
+
+    def test_the_lookup_waits_until_the_reply_has_played(self):
+        # A lookup (ONNX on the robot) still running when a reply starts holds back its first
+        # audio (u3, Orange Pi 5 Max); once the reply has played nothing is waiting on the cores.
+        ns = self.runtime(lambda query: [self.TOMATOES])
+        played_out = []
+
+        async def speaker_done():
+            with ns["_playback_lock"]:
+                ns["_playback_buffer"] = b""
+            played_out.append(time.monotonic())
+        sent = self.converse(ns, [message(user="Ember, how is my garden doing?"), wait(0.1),
+                                  message(ember="Your tomatoes", audio=self.PCM), wait(0.05), message(done=True),
+                                  wait(0.05), speaker_done, wait(0.2)])
+        self.assertEqual(len(self.searched), 1)
+        self.assertGreater(self.searched[0][0], played_out[0])   # was at the first words, before the reply
+        self.assertEqual(len(sent), 1)
+        self.assertIn("Joe grows tomatoes", sent[0]["turns"]["parts"][0]["text"])
+
+    def test_the_lookup_uses_the_whole_turn_not_its_first_words(self):
+        # Gemini transcribes a turn in fragments. The lookup used to start on the first one,
+        # with the previous turn's words: "We planted tomatoes Ember," found nothing new.
+        ns = self.runtime(lambda query: [self.REX] if "dog" in query else [self.TOMATOES])
+        sent = self.converse(ns, self.reply(ns, "We planted tomatoes")
+                             + [message(user="Ember,"), message(user=" what is my dog's"), message(user=" name?"),
+                                *self.reply(ns, None)[1:]])
+        self.assertEqual([query for _, query in self.searched], ["We planted tomatoes", "Ember, what is my dog's name?"])
+        self.assertEqual(len(sent), 2)
+        self.assertIn("Joe's dog is Rex", sent[1]["turns"]["parts"][0]["text"])
+        self.assertNotIn("tomatoes", sent[1]["turns"]["parts"][0]["text"])
+
+    def test_recalled_memories_are_given_after_the_reply_has_played(self):
+        ns = self.runtime(lambda query: [self.TOMATOES])
+        sent = self.converse(ns, self.reply(ns, "Ember, how is my garden doing?"))
+        self.assertEqual(len(sent), 1)
+        note = sent[0]
+        self.assertTrue(note["turns"]["parts"][0]["text"].startswith("[MEMORY CONTEXT]"))
+        self.assertIn("- Joe grows tomatoes (relevance: 0.80)", note["turns"]["parts"][0]["text"])
+        self.assertIs(note["turn_complete"], False)
+        self.assertFalse(note["speaking"] or note["playing"] or note["owed"])
+        self.assertEqual(ns["_memories_given"], {"Joe grows tomatoes"})
+
+    def test_memories_gemini_already_has_are_not_given_again(self):
+        ns = self.runtime(lambda query: [self.TOMATOES, self.REX])
+        ns["_memories_given"] = {"Joe's dog is Rex"}       # in this connection's instructions
+        sent = self.converse(ns, self.reply(ns, "Ember, how is my garden doing?")
+                             + self.reply(ns, "Ember, what should I plant next?"))
+        self.assertEqual(len(sent), 1)                   # the second turn found nothing new
+        self.assertIn("Joe grows tomatoes", sent[0]["turns"]["parts"][0]["text"])
+        self.assertNotIn("Rex", sent[0]["turns"]["parts"][0]["text"])
+
+    def test_a_recall_is_dropped_once_the_person_starts_a_new_turn(self):
+        ns = self.runtime(lambda query: [self.REX] if query.endswith("dog?") else [self.TOMATOES])
+        sent = self.converse(ns, [message(user="Ember, how is my garden doing?"), wait(0.1),
+                                  message(ember="Mm.", audio=self.PCM), message(done=True), wait(0.05),
+                                  # They talk again while the reply is still playing.
+                                  *self.reply(ns, "And my dog?")])
+        self.assertEqual(len(sent), 1)
+        self.assertIn("Rex", sent[0]["turns"]["parts"][0]["text"])
+        self.assertNotIn("tomatoes", sent[0]["turns"]["parts"][0]["text"])
+
+    def test_on_gemini_3_no_memory_note_goes_until_checked_live(self):
+        # Sent without turn_complete: whether 3.x still answers the person's next words after
+        # one is untested (live_models.takes_quiet_notes), so nothing is looked up or sent there.
+        ns = self.runtime(lambda query: [self.TOMATOES])
+        with patch.object(live_models, "in_use", "gemini-3.8-live"):
+            sent = self.converse(ns, self.reply(ns, "Ember, how is my garden doing?"))
+        self.assertEqual((sent, self.searched), ([], []))
+        with patch.object(live_models, "in_use", "gemini-2.5-flash-native-audio-preview-12-2025"):
+            sent = self.converse(ns, self.reply(ns, "Ember, how is my garden doing?"))
+        self.assertEqual(len(sent), 1)                       # 2.5, as before
+
+    def test_a_quiet_moment_needs_no_reply_owed_queued_or_heard(self):
+        clock = Clock(100.0)
+        gate_clock = Clock(100.0)
+        from features.conversational_ability.addressing import AddressGate
+        ns = {"time": clock, "_gemini_speaking_lock": threading.Lock(), "_gemini_speaking": False,
+              "_playback_lock": threading.Lock(), "_playback_buffer": b"", "_initiation_ts_lock": threading.Lock(),
+              "_last_loud_mic_ts": 0.0, "_last_user_speech_ts": 0.0, "_reply_owed_since": None,
+              "BETWEEN_TURNS_QUIET_S": 1.0, "REPLY_OWED_MAX_S": 15.0,
+              "_address_gate": AddressGate(enabled=False, clock=gate_clock.monotonic, log=Mock())}
+        quiet = load_function("_between_turns", ns)
+        self.assertTrue(quiet(100.0))
+        for name, value in (("_gemini_speaking", True), ("_playback_buffer", b"\x01\x00"),
+                            ("_reply_owed_since", 90.0), ("_last_loud_mic_ts", 99.5), ("_last_user_speech_ts", 99.5)):
+            with self.subTest(name=name), patch.dict(ns, {name: value}):
+                self.assertFalse(quiet(100.0))
+        ns["_reply_owed_since"] = 80.0                   # no reply came within REPLY_OWED_MAX_S
+        self.assertTrue(quiet(100.0))
+        ns["_address_gate"].prompted()                   # e.g. a reminder sent, its reply not over
+        self.assertFalse(quiet(100.0))
+        ns["_address_gate"].end()
+        gate_clock.now += 31                             # unanswered for PROMPT_TTL_S
+        self.assertTrue(quiet(100.0))
 
 
 if __name__ == "__main__":

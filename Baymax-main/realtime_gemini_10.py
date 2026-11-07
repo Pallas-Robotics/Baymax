@@ -11,7 +11,8 @@ Optimised for low latency:
 Added features:
 - Gemini built-in input/output audio transcription (no local ASR model needed).
 - Memory retrieval: on each user turn, retrieves semantically similar memories
-  from ChromaDB and injects them as context via send_client_content.
+  from ChromaDB and gives them to Gemini as context via send_client_content at a
+  quiet moment after the reply (never during one, which would interrupt it).
 - During uptime (every MEMORY_SAVE_USER_TURNS user turns, or after a quiet spell)
   and on Ctrl+C: Gemini Flash summarises the conversation since the last save and
   the summaries are embedded into ChromaDB.
@@ -247,6 +248,12 @@ sd.default.device = [target_device_microphone, target_device_speaker]
 # ________________________________________________________________________________________________________________________________________________________________
 
 MODEL = "gemini-2.5-flash-native-audio-preview-12-2025"
+# Google shuts MODEL down as early as 2026-11-17 (replacement: gemini-3.8-live).
+# BAYMAX_LIVE_MODELS lists the Live models to use, in order (default: MODEL, then
+# gemini-3.8-live); run() moves on from one this API key can't use and adapts the
+# config to each (features/conversational_ability/live_models.py).
+from features.conversational_ability import live_models
+_live_models = live_models.ModelChoice(live_models.configured(MODEL))
 # gemini-2.5-flash now returns 404 ("no longer available to new users").
 SUMMARY_MODEL = "gemini-3.5-flash"  # lighter model for memory summaries
 
@@ -260,6 +267,14 @@ MEMORY_TOP_K = 3                 # how many memories to retrieve per turn
 MEMORY_MAX_DISTANCE = 1.0        # cosine distance threshold (0=identical, 2=opposite)
 MEMORY_WORD_WINDOW = 30          # use last N words of user speech for retrieval query
 MEMORY_PROMPT_COUNT = 50         # newest memories copied into the system instruction
+# Memories recalled for what the person says reach Gemini between turns, never
+# during a reply (between_turns). They are looked up from the person's whole turn
+# once its reply has played; the recall for their latest turn waits here.
+_user_turn = None                # a new object at the start of each of the person's turns
+_user_turn_words = []            # its words so far (the last MEMORY_WORD_WINDOW): the query
+_looked_up = None                # the latest turn whose memories have been looked up
+_recalled = None                 # (turn, memories recalled for it) not given to Gemini yet
+_memories_given = set()          # memory texts this connection's Gemini already has
 
 # ─── Memory saving during uptime ─────────────────────────────────────────────
 # The conversation since the last save is summarised (SUMMARY_MODEL) and stored
@@ -285,6 +300,21 @@ RECEIVE_FAILURES_BEFORE_RECONNECT = 3  # in a row with no message between them
 # reset, a send waits until the kernel gives up (about 15 minutes on Linux), and the
 # websocket's keepalive gets stuck behind it.
 MIC_SEND_TIMEOUT_S = 5
+# Gemini resets every connection after about 10 minutes. A session ended only by lost
+# connections or a GoAway handover never resets the audio devices: a handover from a
+# connection that lasted QUICK_SESSION_S reconnects at once; otherwise run() waits
+# RECONNECT_DELAY_S, doubled for each connection in a row that ended within
+# QUICK_SESSION_S, up to RECONNECT_MAX_DELAY_S. The full PortAudio reset is for device
+# and other errors: it can't help a network or a Gemini backend.
+RECONNECT_DELAY_S = 0.3
+RECONNECT_MAX_DELAY_S = 4.8   # the fifth doubling
+QUICK_SESSION_S = 60.0
+# After a GoAway, between_turns() moves to a new connection at a quiet moment once the
+# newest resume handle includes the last turn, or this long after that turn ended.
+GO_AWAY_HANDLE_WAIT_S = 3.0
+_go_away_at = None   # time.monotonic() of this connection's GoAway, if any
+_connected_at = 0.0  # time.monotonic() when run() started this connection
+_turn_done_at = 0.0  # time.monotonic() of Gemini's last turn_complete
 
 # ─── Interruption gate ───────────────────────────────────────────────────────
 INTERRUPT_RMS_THRESHOLD = 1000
@@ -434,7 +464,7 @@ if ONLY_WHEN_ADDRESSED:
 # Optional strict transcript gate. Off by default: its name/20 s rule drops
 # direct questions after an ordinary pause. Gemini still judges conversational intent.
 from features.conversational_ability.addressing import AddressGate
-from features.conversational_ability.session import connection_lost
+from features.conversational_ability.session import connection_lost, handle_received_at
 _address_gate = AddressGate(enabled=bool(ONLY_WHEN_ADDRESSED) and os.getenv("BAYMAX_ADDRESS_GATE", "0") == "1")
 
 _BASE_CONFIG = {
@@ -464,8 +494,13 @@ _BASE_CONFIG = audio_config(_BASE_CONFIG)
 
 
 def _build_config() -> dict:
-    """Build session config, injecting all stored memories into the system instruction."""
+    """Build session config, injecting all stored memories into the system instruction.
+    Called once per connection: the memories it copies are the ones that connection's
+    Gemini has from the start, so recalled memories skip them (_memories_given). A
+    connection that resumes the conversation also has every note given on it before."""
+    global _memories_given
     system_instruction = _BASE_SYSTEM_INSTRUCTION
+    in_prompt = set()
 
     if _memory_embedder is not None:
         try:
@@ -473,6 +508,7 @@ def _build_config() -> dict:
             # Gemini Flash from earlier conversations.
             docs = _newest_memories()
             if docs:
+                in_prompt = set(docs)
                 mem_block = "\n".join(f"- {d}" for d in docs)
                 system_instruction = (
                     "What you know about this user from previous conversations "
@@ -486,7 +522,10 @@ def _build_config() -> dict:
         except Exception as e:
             print(f"[MEMORY] Could not load memories for system instruction: {e}")
 
-    return public_toolkit.extend_config({**_BASE_CONFIG, "system_instruction": system_instruction})
+    config = public_toolkit.extend_config({**_BASE_CONFIG, "system_instruction": system_instruction})
+    resuming = bool((config.get("session_resumption") or {}).get("handle"))  # session.py's choice
+    _memories_given = (_memories_given | in_prompt) if resuming else in_prompt
+    return config
 
 # Audio Config
 SEND_SAMPLE_RATE = 48000
@@ -502,7 +541,9 @@ _waiting_cue = create_waiting_cue(_audio_enhancer is not None and _audio_enhance
 monitor.waiting_audio = _waiting_cue
 
 OUTPUT_CHANNELS = 1 # Gemini returns mono
-CHUNK_SIZE = 1024
+# Mic block: 20 ms at 48 kHz, two whole 10 ms frames for the WebRTC audio cleanup
+# (processing.py). 1024 samples left it carrying 10 ms of every block to the next.
+CHUNK_SIZE = 960
 
 # ─── Queues & Buffers ─────────────────────────────────────────────────────────
 audio_queue_mic = asyncio.Queue()
@@ -569,7 +610,7 @@ def _transcript_add(speaker, text):
             print(f"[MEMORY] Dropped the oldest {dropped} characters of unsaved conversation: "
                   f"over {MEMORY_MAX_UNSAVED_CHARS} were waiting to be saved")
 
-# Rolling buffer of recent user words for memory retrieval queries
+# Rolling buffer of recent user words: the initiation opener's memory lookup
 _recent_user_words = []
 _recent_user_words_lock = threading.Lock()
 
@@ -593,6 +634,10 @@ _face_state_lock = threading.Lock()
 _last_robot_speech_ts = time.monotonic()  # last time the robot produced audio
 _last_user_speech_ts = 0.0                # last time the user was heard (transcription)
 _last_loud_mic_ts = 0.0                   # last mic frame above the speech RMS floor
+_mic_level = None                         # (rms, peak) of the latest mic block; monitor_queues prints it
+_mic_statuses = 0                         # PortAudio input statuses so far (e.g. input overflow)
+_mic_status = ""                          # the latest one; monitor_queues prints them
+_mic_statuses_shown = 0                   # how many of them monitor_queues has reported
 _initiation_ts_lock = threading.Lock()
 
 # ─── Audio recording for voice biomarker analysis ───────────────────────────
@@ -681,11 +726,13 @@ def _download_memory_model():
     _memory_embedder = _load_memory_embedder()
 
 
-def _retrieve_memories(query_text: str) -> str:
+def _retrieve_memories(query_text: str) -> list:
+    """Stored memories close to what the person said ({"document", "distance"}).
+    Runs on a worker thread: it embeds the query and reads Chroma."""
     if _memory_embedder is None:
-        return ""
+        return []
     if not query_text.strip():
-        return ""
+        return []
 
     try:
         results = _memory_embedder.search(
@@ -694,30 +741,41 @@ def _retrieve_memories(query_text: str) -> str:
         )
     except Exception as e:
         print(f"[MEMORY] Search error: {e}")
-        return ""
-
-    if not results:
-        return ""
+        return []
 
     # Filter by distance threshold
-    relevant = [r for r in results if r["distance"] <= MEMORY_MAX_DISTANCE]
-    if not relevant:
-        return ""
+    return [r for r in results or [] if r["distance"] <= MEMORY_MAX_DISTANCE]
 
-    # Build context string
-    memory_lines = []
-    for r in relevant:
-        memory_lines.append(f"- {r['document']} (relevance: {1 - r['distance']:.2f})")
 
-    context = (
+def _memory_context(memories) -> str:
+    """The [MEMORY CONTEXT] note for recalled memories."""
+    return (
         "[MEMORY CONTEXT] Here are things you remember about this user "
         "from previous conversations:\n"
-        + "\n".join(memory_lines)
+        + "\n".join(f"- {m['document']} (relevance: {1 - m['distance']:.2f})" for m in memories)
     )
-    print(f"[MEMORY] Retrieved {len(relevant)} memories for context")
-    for line in memory_lines:
-        print(f"  {line}")
-    return context
+
+
+def _recall_memories(turn):
+    """Look up memories for the person's latest turn, `turn`, from all its words, on a
+    worker thread. between_turns() calls it at the first quiet moment after the turn,
+    once its reply has played: a lookup still running when a reply starts holds back
+    that reply's first audio on the robot. Not awaited: the result waits in _recalled
+    for the next quiet moment, unless the person has started another turn by then."""
+    global _looked_up
+    _looked_up = turn
+    query = " ".join(_user_turn_words[-MEMORY_WORD_WINDOW:])
+    if not query.strip():
+        return
+    lookup = asyncio.get_running_loop().run_in_executor(None, _retrieve_memories, query)
+
+    def recalled(done):
+        global _recalled
+        if done.cancelled() or done.exception() is not None or not done.result():
+            return
+        if turn is _user_turn:  # still their latest turn
+            _recalled = (turn, done.result())
+    lookup.add_done_callback(recalled)
 
 
 def _newest_memories(limit=MEMORY_PROMPT_COUNT):
@@ -739,6 +797,8 @@ def _newest_memories(limit=MEMORY_PROMPT_COUNT):
 
 # ─── Latency Profiling ────────────────────────────────────────────────────────
 PROFILE_WINDOW = 50
+# The mic trackers fill a window every second: print each summary at most this often.
+PROFILE_REPORT_S = 10.0
 
 class LatencyTracker:
     def __init__(self, name: str, window: int = PROFILE_WINDOW):
@@ -746,11 +806,13 @@ class LatencyTracker:
         self.samples = collections.deque(maxlen=window)
         self._count = 0
         self._report_every = window
+        self._reported = float("-inf")  # time.monotonic() of the last summary
 
     def record(self, duration_ms: float):
         self.samples.append(duration_ms)
         self._count += 1
-        if self._count % self._report_every == 0:
+        if self._count % self._report_every == 0 and time.monotonic() - self._reported >= PROFILE_REPORT_S:
+            self._reported = time.monotonic()
             self._print_summary()
 
     def _print_summary(self):
@@ -813,8 +875,10 @@ def _flush_playback():
 def _abandon_reply():
     """A lost connection ends the reply it was streaming. Without this the rest of
     the queued audio plays after the reconnect, with the mic muted, out of nowhere.
-    Ember's own messages (a fall check-in, a family message) are sent again instead."""
-    global _gemini_speaking
+    Ember's own messages (a fall check-in, a family message) are sent again instead.
+    The next connection owes nobody a reply: it never heard them."""
+    global _gemini_speaking, _reply_owed_since
+    _reply_owed_since = None
     with _playback_lock:
         audio_cut_off = bool(_playback_buffer)
     _flush_playback()
@@ -847,6 +911,60 @@ def _abort_connection(session):
         session._ws.transport.abort()
     except Exception as e:
         print(f"[SESSION] Could not abort the connection: {e}", flush=True)
+
+
+class _SessionHandover(Exception):
+    """Ends a connection Gemini has said it will reset (GoAway), at a quiet moment."""
+
+
+def _leaves(error):
+    """The exceptions in `error`: itself, or each one in a TaskGroup's group."""
+    if isinstance(error, BaseExceptionGroup):
+        return [leaf for e in error.exceptions for leaf in _leaves(e)]
+    return [error]
+
+
+def _reconnect_plan(error, lasted, quick_failures):
+    """How run() goes on after a connection ended with `error`, `lasted` seconds after
+    it started: (pause before reconnecting, or None for the full audio reset first;
+    quick failures in a row so far). Lost connections and GoAway handovers only (Gemini's
+    ~10-minute resets, a network drop) need no device reset. A handover from a connection
+    that lasted reconnects at once; one from a short connection counts as a quick failure,
+    so GoAways soon after every setup back off instead of reconnecting in a loop."""
+    leaves = _leaves(error)
+    handover = all(isinstance(e, _SessionHandover) for e in leaves)
+    if handover and lasted >= QUICK_SESSION_S:
+        return 0.0, 0
+    quick_failures = quick_failures + 1 if lasted < QUICK_SESSION_S else 1
+    if all(isinstance(e, _SessionHandover) or connection_lost(e) for e in leaves):
+        doublings = min(quick_failures - 1, 16)  # far past the cap; hours of failures can't overflow it
+        return min(RECONNECT_DELAY_S * 2 ** doublings, RECONNECT_MAX_DELAY_S), quick_failures
+    return None, quick_failures
+
+
+def _reselect_audio_devices():
+    sd._initialize()
+    mic, spk = get_default_device_id()
+    sd.default.device = [mic, spk]
+    return mic, spk
+
+
+async def _reset_audio():
+    """Recover from ALSA/PipeWire device errors: restart PortAudio and choose the devices
+    again. The PortAudio calls and device query run on a worker thread and the pause is
+    awaited, so the event loop never blocks (a stop still ends Ember at once)."""
+    print("[AUDIO] Resetting PortAudio state...")
+    loop = asyncio.get_running_loop()
+    try:
+        await loop.run_in_executor(None, sd._terminate)
+    except Exception:
+        pass
+    await asyncio.sleep(5)
+    try:
+        mic, spk = await loop.run_in_executor(None, _reselect_audio_devices)
+        print(f"[AUDIO] PortAudio reset. Input→{mic}, Output→{spk}")
+    except Exception as reinit_err:
+        print(f"[AUDIO] PortAudio reinit failed: {reinit_err}")
 
 # ─── Callback-based output stream ────────────────────────────────────────────
 def _output_callback(outdata, frames, time_info, status):
@@ -882,14 +1000,51 @@ def _output_callback(outdata, frames, time_info, status):
     if _audio_enhancer is not None:
         _audio_enhancer.rendered(chunk, time_info)
 
+def _output_stream_settings():
+    """(blocksize, latency) for the speaker stream, from BAYMAX_OUTPUT_BLOCKSIZE (frames per
+    callback, default 1024; 0 lets PortAudio choose) and BAYMAX_OUTPUT_LATENCY ('low', 'high'
+    or seconds; unset keeps sounddevice's default, 'high'). Knobs for measuring speaker
+    latency on a board; unset, the stream is opened exactly as before. Bad values warn
+    and use the default."""
+    blocksize, latency = 1024, None
+    raw = os.getenv("BAYMAX_OUTPUT_BLOCKSIZE", "").strip()
+    if raw:
+        try:
+            blocksize = int(raw)
+            if not 0 <= blocksize <= 16384:
+                raise ValueError
+        except ValueError:
+            print(f"[AUDIO] Invalid BAYMAX_OUTPUT_BLOCKSIZE {raw!r}; using 1024.", flush=True)
+            blocksize = 1024
+    raw = os.getenv("BAYMAX_OUTPUT_LATENCY", "").strip().lower()
+    if raw in ("low", "high"):
+        latency = raw
+    elif raw:
+        try:
+            latency = float(raw)
+            if not 0 < latency <= 2:
+                raise ValueError
+        except ValueError:
+            print(f"[AUDIO] Invalid BAYMAX_OUTPUT_LATENCY {raw!r}; using the default.", flush=True)
+            latency = None
+    return blocksize, latency
+
+
+OUTPUT_BLOCKSIZE, OUTPUT_LATENCY = _output_stream_settings()  # read once, at start
+
+
 def start_output_stream() -> sd.OutputStream:
     stream = sd.OutputStream(
         samplerate=RECEIVE_SAMPLE_RATE,
         channels=OUTPUT_CHANNELS,
         dtype="int16",
-        blocksize=1024,
+        blocksize=OUTPUT_BLOCKSIZE,
         callback=_output_callback,
+        **({"latency": OUTPUT_LATENCY} if OUTPUT_LATENCY is not None else {}),
     )
+    if (OUTPUT_BLOCKSIZE, OUTPUT_LATENCY) != (1024, None):
+        print(f"[AUDIO] Speaker stream: blocksize {OUTPUT_BLOCKSIZE}, latency setting "
+              f"{OUTPUT_LATENCY or 'default'}, reported latency {float(stream.latency) * 1000:.1f} ms", flush=True)
     if _audio_enhancer is not None:
         _audio_enhancer.output_latency_ms = float(stream.latency) * 1000
     stream.start()
@@ -897,6 +1052,7 @@ def start_output_stream() -> sd.OutputStream:
 
 # ─── Queue monitor ────────────────────────────────────────────────────────────
 async def monitor_queues(interval: float = 3.0):
+    global _mic_statuses_shown
     while True:
         await asyncio.sleep(interval)
         with _playback_lock:
@@ -910,6 +1066,13 @@ async def monitor_queues(interval: float = 3.0):
             f"playback_buf={pbuf_len:>6d} bytes  "
             f"unsaved utterances: user={user_count} gemini={gemini_count}"
         )
+        level = _mic_level
+        if level is not None:
+            print(f"[MIC LEVEL] rms={level[0]:.0f}  peak={level[1]}  (max=32767)", flush=True)
+        statuses = _mic_statuses
+        if statuses != _mic_statuses_shown:
+            print(f"[MIC STATUS] {_mic_status} ({statuses - _mic_statuses_shown} since the last report)", flush=True)
+            _mic_statuses_shown = statuses
 
 # ─── Audio Writer Thread (records user speech to WAV) ────────────────────────
 def _audio_writer_thread():
@@ -1523,8 +1686,11 @@ async def listen_audio():
     #           flush=True)
 
     def audio_callback(indata, frames, time_info, status):
+        global _last_loud_mic_ts, _mic_level, _mic_status, _mic_statuses
         if status:
-            print(f"[MIC STATUS] {status}", flush=True)
+            # monitor_queues reports it, like the level: a flushed print here, on PortAudio's
+            # capture thread, can stall the capture when the log is slow.
+            _mic_status, _mic_statuses = str(status), _mic_statuses + 1
 
         # Downmix stereo to mono for Gemini if hardware requires 2 channels
         if INPUT_CHANNELS > 1:
@@ -1563,13 +1729,10 @@ async def listen_audio():
         # opening a conversation while the user is mid-utterance.
         if rms > INTERRUPT_RMS_THRESHOLD:
             with _initiation_ts_lock:
-                global _last_loud_mic_ts
                 _last_loud_mic_ts = time.monotonic()
-        if not hasattr(audio_callback, '_count'):
-            audio_callback._count = 0
-        audio_callback._count += 1
-        if audio_callback._count % 50 == 0:
-            print(f"[MIC LEVEL] rms={rms:.0f}  peak={peak}  (max=32767)", flush=True)
+        # monitor_queues prints it: a flushed print here, on PortAudio's capture thread,
+        # can stall the capture when the log is slow.
+        _mic_level = (rms, peak)
 
         loop.call_soon_threadsafe(
             audio_queue_mic.put_nowait,
@@ -1635,8 +1798,18 @@ async def send_audio_realtime(session):
             tracker_send_audio.record(send_ms)
             _last_mic_send_ts = time.perf_counter()
 
+def _encode_video_frame(frame):
+    """The 320x240 JPEG Gemini gets (fall detection runs at 640x480). On a worker thread:
+    resizing and encoding on the event loop held up the mic sender and receive loop."""
+    small = cv2.resize(frame, (320, 240))
+    _, buffer = cv2.imencode(
+        ".jpg", small, [int(cv2.IMWRITE_JPEG_QUALITY), 50]
+    )
+    return buffer.tobytes()
+
 async def send_video_realtime(session):
     """Reads shared frames from the fall detection thread and sends to Gemini every 3s."""
+    loop = asyncio.get_running_loop()
     # Wait for fall detection thread to start capturing
     for _ in range(50):
         with _latest_frame_lock:
@@ -1660,12 +1833,7 @@ async def send_video_realtime(session):
         if frame is None:
             continue
 
-        # Resize to 320x240 for Gemini (fall detection runs at 640x480)
-        small = cv2.resize(frame, (320, 240))
-        _, buffer = cv2.imencode(
-            ".jpg", small, [int(cv2.IMWRITE_JPEG_QUALITY), 50]
-        )
-        jpg_bytes = buffer.tobytes()
+        jpg_bytes = await loop.run_in_executor(None, _encode_video_frame, frame)
         encode_ms = (time.perf_counter() - t0) * 1000
 
         t1 = time.perf_counter()
@@ -1721,6 +1889,97 @@ async def fall_alert_monitor(session):
                 raise
             print(f"[FALL] Failed to inject alert: {e}; asking again shortly")
             await asyncio.sleep(2)
+
+# ─── Between turns ───────────────────────────────────────────────────────────
+# Anything sent to Gemini as client content "will interrupt any current model
+# generation", and with turn_complete=False "the server awaits additional messages
+# before starting generation" (Live API reference). Gemini starts a reply while the
+# person may still be talking, so notes that can wait (recalled memories) are sent
+# only at a quiet moment between turns. Gemini's routine connection resets (GoAway)
+# are moved to such a moment too, so they don't land mid-sentence.
+BETWEEN_TURNS_POLL_S = 0.2
+BETWEEN_TURNS_QUIET_S = 1.0   # nobody heard on the mic or in the transcript for this long
+REPLY_OWED_MAX_S = 15.0       # stop waiting for a reply after this (e.g. it was only noise)
+_reply_owed_since = None      # time.monotonic() Gemini last heard something it should answer
+
+
+def _between_turns(now):
+    """A quiet moment between turns, when a note can't interrupt or hold up a reply:
+    Gemini owes no reply (to the person, a tool result or one of Ember's own messages),
+    isn't producing one, none is queued for the speaker, and nobody has spoken for
+    BETWEEN_TURNS_QUIET_S."""
+    with _gemini_speaking_lock:
+        speaking = _gemini_speaking
+    with _playback_lock:
+        buffered = len(_playback_buffer) > 0
+    with _initiation_ts_lock:
+        heard = max(_last_loud_mic_ts, _last_user_speech_ts)
+    owed = _reply_owed_since is not None and now - _reply_owed_since < REPLY_OWED_MAX_S
+    return not (speaking or buffered or owed or now - heard < BETWEEN_TURNS_QUIET_S
+                or _address_gate.prompt_pending())
+
+
+def _handover_due(now):
+    """After a GoAway, at a quiet moment: whether to move to a new connection now. With no
+    resume handle there is no conversation to keep. A handle from before this connection
+    can't resume it again (session.extend_config drops a handle it has offered once), so
+    moving would start the conversation over: wait for this connection's own handle, or
+    Gemini's close. Then wait for one that includes the last turn, at most
+    GO_AWAY_HANDLE_WAIT_S after that turn or the GoAway."""
+    handle_at = handle_received_at()
+    if handle_at is None:
+        return True
+    if handle_at < _connected_at:
+        return False
+    return handle_at >= _turn_done_at or now - max(_go_away_at, _turn_done_at) >= GO_AWAY_HANDLE_WAIT_S
+
+
+async def between_turns(session):
+    """At quiet moments between turns (_between_turns):
+    - after a GoAway, ends this connection (_SessionHandover) so run() reconnects with
+      the newest resume handle, before Gemini cuts it off mid-sentence (_handover_due);
+    - looks up memories for the person's latest turn, from all its words, once its reply
+      has been played (_recall_memories), and gives what it finds to Gemini at the next
+      quiet moment: they inform the person's next turn. Memories this connection's
+      Gemini already has (in its instructions, or given before) are skipped, and a
+      recall whose turn the person has moved on from is dropped. Not on Gemini 3 and later
+      until checked live (live_models.takes_quiet_notes): the note is sent without
+      turn_complete, and whether 3.x still answers the person's next words after one is
+      untested."""
+    global _recalled
+    while True:
+        await asyncio.sleep(BETWEEN_TURNS_POLL_S)
+        now = time.monotonic()
+        notes = live_models.takes_quiet_notes()  # not on Gemini 3 until checked live
+        lookup_due = notes and _user_turn is not _looked_up and _memory_embedder is not None
+        if (_recalled is None and _go_away_at is None and not lookup_due) or not _between_turns(now):
+            continue
+        if _go_away_at is not None and _handover_due(now):
+            print("[SESSION] Quiet moment: moving to a new connection before Gemini resets this one.",
+                  flush=True)
+            raise _SessionHandover()
+        if lookup_due:
+            _recall_memories(_user_turn)  # what it finds is given at a later quiet poll
+            continue
+        if _recalled is None:
+            continue
+        (turn, memories), _recalled = _recalled, None
+        new = [m for m in memories if m["document"] not in _memories_given]
+        if turn is not _user_turn or not new or not notes:
+            continue
+        try:
+            await session.send_client_content(
+                turns={"role": "user", "parts": [{"text": _memory_context(new)}]},
+                turn_complete=False,
+            )
+        except Exception as e:
+            print(f"[MEMORY] Could not give recalled memories: {e}")
+            continue
+        _memories_given.update(m["document"] for m in new)
+        print(f"[MEMORY] Gave Gemini {len(new)} recalled memories for the next turn", flush=True)
+        for m in new:
+            print(f"  - {m['document']} (relevance: {1 - m['distance']:.2f})")
+
 
 # ─── Conversation initiation ─────────────────────────────────────────────────
 def _safe_to_initiate(now: float) -> bool:
@@ -1891,15 +2150,15 @@ class _TurnTranscript:
 async def receive_audio(session):
     """Receives audio from Gemini, upsamples 24kHz -> 48kHz, appends to buffer.
     Also captures input_transcription and output_transcription side-channel data.
-    On each completed user turn, retrieves relevant memories and injects them."""
+    It collects the words of each user turn; between_turns() looks up memories for
+    them once the reply has played and gives what it finds to Gemini, so nothing here
+    waits for a lookup or sends anything while Gemini is replying."""
     global _last_mic_send_ts, _last_robot_speech_ts, _last_user_speech_ts, _gemini_speaking
+    global _user_turn, _user_turn_words, _recalled, _reply_owed_since, _go_away_at, _turn_done_at
     _is_new_turn = True
     _reply_audio_started = False
+    _user_turn_open = False   # the person's current turn has begun
 
-    _memory_injected_this_turn = False
-    _current_turn_fragments = []
-    # Future for background memory retrieval started during transcription
-    _retrieval_future: asyncio.Future = None
     user_said = _TurnTranscript("user")
     gemini_said = _TurnTranscript("gemini")
 
@@ -1913,7 +2172,10 @@ async def receive_audio(session):
                 if response.session_resumption_update or response.go_away:
                     from features.conversational_ability.session import on_server_message
                     on_server_message(response)
+                    if response.go_away:
+                        _go_away_at = time.monotonic()  # between_turns() moves on at a quiet moment
                 if response.tool_call:
+                    _reply_owed_since = time.monotonic()  # Gemini answers once it has the result
                     _address_gate.tool_call()
                     await public_toolkit.handle_tool_call(session, response.tool_call)
                 server_content = response.server_content
@@ -1932,9 +2194,8 @@ async def receive_audio(session):
                         _gemini_speaking = False
                     _is_new_turn = True
                     _reply_audio_started = False
-                    _memory_injected_this_turn = False
-                    _current_turn_fragments.clear()
-                    _retrieval_future = None
+                    _user_turn_open = False
+                    _reply_owed_since = time.monotonic()  # talked over: Gemini answers them now
 
                 # ── Input transcription (what the USER said) ──
                 if server_content.input_transcription:
@@ -1952,24 +2213,23 @@ async def receive_audio(session):
                         # Feed the idle timer: the user was just heard.
                         with _initiation_ts_lock:
                             _last_user_speech_ts = time.monotonic()
+                        _reply_owed_since = time.monotonic()
 
-                        # Accumulate words for memory retrieval
-                        _current_turn_fragments.append(text.strip())
+                        # The last words heard, for the opener's memory hint (initiation)
                         with _recent_user_words_lock:
                             _recent_user_words.extend(text.strip().split())
                             if len(_recent_user_words) > MEMORY_WORD_WINDOW:
                                 _recent_user_words[:] = _recent_user_words[-MEMORY_WORD_WINDOW:]
 
-                        # Start retrieval in background on first fragment so the
-                        # result is ready before model_turn fires.
-                        if not _memory_injected_this_turn and _retrieval_future is None and _memory_embedder is not None:
-                            with _recent_user_words_lock:
-                                query = " ".join(_recent_user_words[-MEMORY_WORD_WINDOW:])
-                            if query.strip():
-                                loop = asyncio.get_running_loop()
-                                _retrieval_future = loop.run_in_executor(
-                                    None, _retrieve_memories, query
-                                )
+                        if not _user_turn_open:
+                            # The first words of a new turn: memories recalled for an
+                            # earlier one and not given yet are stale.
+                            _user_turn_open = True
+                            _user_turn, _user_turn_words, _recalled = object(), [], None
+                        # The lookup's query: this turn's own words, all of them, not
+                        # its first fragment after the previous turn's.
+                        _user_turn_words.extend(text.split())
+                        del _user_turn_words[:-MEMORY_WORD_WINDOW]
 
                 if server_content.interrupted:
                     continue  # Audio/text on this cancellation message belongs to the cancelled reply.
@@ -1991,30 +2251,9 @@ async def receive_audio(session):
 
                 model_turn = server_content.model_turn
                 if model_turn:
-                    # Inject memory before processing any audio from this turn.
-                    # Retrieval was started during transcription, so it should
-                    # already be done — await with a short timeout as a safety net.
-                    if not _memory_injected_this_turn and _retrieval_future is not None:
-                        _memory_injected_this_turn = True
-                        try:
-                            memory_context = await asyncio.wait_for(
-                                asyncio.ensure_future(_retrieval_future), timeout=0.15
-                            )
-                            if memory_context:
-                                await session.send_client_content(
-                                    turns={
-                                        "role": "user",
-                                        "parts": [{"text": memory_context}],
-                                    },
-                                    turn_complete=False,
-                                )
-                        except asyncio.TimeoutError:
-                            print("[MEMORY] Retrieval timed out — skipping this turn")
-                        except Exception as e:
-                            print(f"[MEMORY] Failed to inject context: {e}")
-                        _retrieval_future = None
-
-                    for part in model_turn.parts:
+                    # Every part, in order (Gemini 3 can send text and audio parts in one
+                    # message); a turn with no parts mustn't lose the rest of the message.
+                    for part in model_turn.parts or []:
                         if part.text:
                             print(f"[GEMINI] {part.text}", flush=True)
                         if (
@@ -2076,9 +2315,9 @@ async def receive_audio(session):
                         _gemini_speaking = False
                     _is_new_turn = True
                     _reply_audio_started = False
-                    _memory_injected_this_turn = False
-                    _current_turn_fragments.clear()
-                    _retrieval_future = None
+                    _user_turn_open = False
+                    _reply_owed_since = None
+                    _turn_done_at = time.monotonic()
 
         except asyncio.CancelledError:
             # The send side saw the disconnect first: still post what was said so far.
@@ -2426,21 +2665,26 @@ def _run_voice_analysis():
 
 # ─── Main ─────────────────────────────────────────────────────────────────────
 async def run():
-    global _last_robot_speech_ts, _stop_started_ts
+    global _last_robot_speech_ts, _stop_started_ts, _go_away_at, _connected_at
     monitor.start(lambda: {"playback_bytes": len(_playback_buffer), "gemini_generating_audio": _gemini_speaking, "audio_input": dict(_audio_enhancer.metrics) if _audio_enhancer is not None else None})
     public_toolkit.prewarm()
     client = genai.Client(
         api_key=API_KEY, http_options={"api_version": "v1alpha"}
     )
+    quick_failures = 0  # connections in a row that ended within QUICK_SESSION_S
     while True:
+        started, set_up = time.monotonic(), False
+        model = _live_models.current
         try:
             monitor.finish_transcripts()
             monitor.emit("connecting", "Connecting to Gemini Live")
-            print(f"Connecting to {MODEL}...")
+            print(f"Connecting to {model}...")
             _boot_status("connecting", f"Connecting to Gemini model...")
+            _go_away_at, _connected_at = None, started
             async with client.aio.live.connect(
-                model=MODEL, config=_build_config()
+                model=model, config=_live_models.adapt(_build_config())  # the settings `model` needs
             ) as live_session:
+                set_up = True
                 live_session = _address_gate.watch(live_session)  # notes Ember's own messages
                 print("Connected. System ready.")
                 monitor.emit("listening", "Connected to Gemini; listening")
@@ -2477,6 +2721,7 @@ async def run():
                         tg.create_task(send_audio_realtime(live_session))
                         tg.create_task(send_video_realtime(live_session))
                         tg.create_task(receive_audio(live_session))
+                        tg.create_task(between_turns(live_session))
                         tg.create_task(fall_alert_monitor(live_session))
                         if RANDOM_INITIATION_ENABLED:
                             tg.create_task(initiation_monitor(live_session))
@@ -2500,27 +2745,25 @@ async def run():
                     _abort_connection(live_session)
                     output_stream.stop()
                     output_stream.close()
-                    # Give ALSA/PipeWire time to release the device before reconnect
-                    # (nothing reconnects when stopping).
-                    if not _shutdown_event.is_set():
-                        await asyncio.sleep(2)
         except Exception as e:
-            print(f"connection failed {e}. retrying...")
-            _boot_status("connecting", f"Connection failed: {e}", error=True)
-            # Reset PortAudio to recover from ALSA/PipeWire device errors
-            print("[AUDIO] Resetting PortAudio state...")
-            try:
-                sd._terminate()
-            except Exception:
-                pass
-            time.sleep(5)
-            try:
-                sd._initialize()
-                mic, spk = get_default_device_id()
-                sd.default.device = [mic, spk]
-                print(f"[AUDIO] PortAudio reset. Input→{mic}, Output→{spk}")
-            except Exception as reinit_err:
-                print(f"[AUDIO] PortAudio reinit failed: {reinit_err}")
+            # This API key can't use the model (not found or retired): the next one, at once.
+            if _live_models.move_on(e, set_up=set_up, served=_turn_done_at >= started):
+                continue
+            reason = "; ".join(repr(error) for error in _leaves(e))
+            pause, quick_failures = _reconnect_plan(e, time.monotonic() - started, quick_failures)
+            if pause is not None:
+                # Gemini's routine reset or a lost connection: the audio devices are fine.
+                if pause:
+                    print(f"[SESSION] Connection to Gemini lost ({reason}); reconnecting in {pause:.1f} s.",
+                          flush=True)
+                    await asyncio.sleep(pause)
+                continue
+            print(f"connection failed {reason}. retrying...")
+            _boot_status("connecting", f"Connection failed: {reason}", error=True)
+            # Give ALSA/PipeWire time to release the device, then reset PortAudio
+            # to recover from ALSA/PipeWire device errors.
+            await asyncio.sleep(2)
+            await _reset_audio()
 
 def _boot_status(stage: str, message: str, ready: bool = False, error: bool = False):
     _notify_webapp("/api/boot-status", {"stage": stage, "message": message, "ready": ready, "error": error})

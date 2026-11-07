@@ -130,6 +130,130 @@
   Offline: with an unlisted test file the gate now passes as a robot (core 571,
   toolkit 241) and fails in CI.
 
+- Gemini Live model fallback. Google shuts Ember's model,
+  `gemini-2.5-flash-native-audio-preview-12-2025`, down as early as 2026-11-17; its
+  replacement is `gemini-3.8-live`. `BAYMAX_LIVE_MODELS` (documented in `.env.example`)
+  lists the Live models in order: by default 2.5, then `gemini-3.8-live`. When this API
+  key can't use a model (Google refuses to set up a fresh connection, close 1007/1008,
+  or closes one before Gemini finished a turn saying the model is not found or no longer
+  available), Ember connects with the next one at once, logs it once and keeps it until
+  it restarts, without the old model's resume handle. A quota close ("1011 You exceeded
+  your current quota") never moves it: a per-minute or concurrent-session limit says the
+  same and passes in seconds, so Ember backs off and retries the same model. When every
+  model has failed in a row it waits as after any lost connection (0.3 s, doubling up to
+  4.8 s) and tries again: no fast spin. Network drops, Google's resets and "1011
+  internal error" never switch. For Gemini 3 the config leaves out `thinking_config` and
+  declares Ember's functions `BLOCKING`, as 2.5 runs them; 2.5's config is unchanged.
+  `evals/live_eval.py --model gemini-3.8-live` tests a model with the same settings
+  (without `--model` the eval uses the list's first model). On Gemini 3 Ember sends no
+  notes without `turn_complete` (recalled memories, the family's profile update) until
+  that eval's memory-note scenario passes: the server waits for more input after one,
+  and whether 3.x still answers the person's next words is untested. On 2026-11-06
+  Ember's keys had no 3.8 quota ("1011 You exceeded your current quota") while 2.5
+  worked, so 2.5 stays first and 3.8 is untested live: MVP.md "Gemini model" says when
+  and how to put it first.
+
+- The startup key check (`run_pc.py`) accepts the first model of `BAYMAX_LIVE_MODELS`
+  that Google lists for the key. It required `MODEL` itself, so once 2.5 is retired it
+  would have stopped Ember from starting at all. A model that isn't listed ("not found")
+  is passed over for the next, asked about only then; any other error, or no model listed,
+  still stops startup with the same messages.
+
+- The receive loop no longer drops the end of a turn when a message's model turn has no
+  parts: looping over `None` raised, and the rest of that message (its `turn_complete`:
+  the speaking state, the address gate's turn end) was lost, followed by a 0.5 s pause.
+  Messages with several parts (Gemini 3 can send text and audio parts together) were
+  already handled part by part, in order; both are now tested on the real receive loop.
+
+- Weather questions no longer wait on a fetch after Ember's first 10 minutes. The
+  weather was cached for 10 minutes and preloaded once at start; the prewarm thread
+  now fetches it again every 9 minutes (in each unit asked for, Celsius at least)
+  and the IP location every 54 minutes, before each copy expires. A failed refresh
+  keeps the copy that is still valid. This adds about 27 IPWho and 160 Open-Meteo
+  requests a day per robot while the toolkit is on (documented in the toolkit
+  README); only one refresh thread runs even if `run()` starts again.
+
+- The family's "about the person" note waits for a quiet moment, like messages and
+  reminders: it was sent (`turn_complete=False`) whenever the profile changed,
+  polled every 3 s, even while Gemini was replying, which can cut the reply off. It
+  now waits for `available_to_speak()` and stays pending until then.
+
+- Speaker stream knobs for a board A/B of reply latency, documented in `.env.example`
+  and the conversational_ability README: `BAYMAX_OUTPUT_BLOCKSIZE` (frames per speaker
+  callback, default 1024; 0 lets PortAudio choose) and `BAYMAX_OUTPUT_LATENCY` (`low`,
+  `high` or seconds; unset keeps sounddevice's default, `high`). Read once at start; bad
+  values warn and fall back. Unset, the stream is opened exactly as before; when set,
+  the stream's reported latency is logged at each connection.
+
+- Less work on the real-time threads. PortAudio's capture callback printed a flushed
+  `[MIC LEVEL]` line every 50 blocks, and a `[MIC STATUS]` line for every input status
+  (an overflow on every block while the event loop lags), each of which can stall the
+  capture when the log is slow; it now only stores the level and counts the statuses,
+  and the existing 3 s `[QUEUES]` monitor prints the level and, when there were any, the
+  latest status with how many came since its last report. The `[PROFILE]` summaries
+  print about every 10 s instead of every ~1 s (each still covers the last 50 samples).
+  The camera frame Gemini gets every 3 s is resized and JPEG-encoded on a worker thread
+  instead of the event loop that sends the mic and plays replies.
+
+- Expected 10 ms less mic delay: v10 captures 960-sample (20 ms) mic blocks instead of
+  1024. The WebRTC audio cleanup works in whole 10 ms frames (480 samples), so
+  1024-sample blocks kept a permanent 10 ms carry; 960 are two whole frames, cleaned and
+  sent at once. Not measured yet: the saving needs the host to deliver 960-frame
+  periods, and where the device keeps 1024 (some PipeWire/ALSA setups) PortAudio's
+  buffer adapter holds a carry of its own. The Orange Pi 5 Max A/B will tell. The carry
+  now starts empty and appears only for a block that isn't whole frames (v8's 1024 still
+  works as before), and the stale-audio count uses the real block length.
+  `evals/live_eval.py` sends speech in the runtime's own block size.
+
+- Faster, quieter reconnects. Every session end used to wait 2 s, then reset
+  PortAudio with a blocking 5 s `time.sleep` on the event loop and choose the audio
+  devices again: at least 7 s with the mic closed, every ~10 minutes when Google resets
+  the connection. Now a session ended only by lost connections (`connection_lost`)
+  reconnects after 0.3 s without the device reset; connections that keep failing
+  within 60 s back off (0.3, 0.6, 1.2, 2.4 s, then 4.8 s each time) and never reset
+  the devices, which can't help a network. The full reset is kept for device/PortAudio
+  and other errors, now awaited and off the event loop (its worker-thread PortAudio
+  calls are untested on Windows). After a GoAway, Ember moves to a new connection at
+  the next quiet moment (no reply owed, generating or playing, no speech for 1 s), with
+  the newest resume handle, so routine resets don't land mid-utterance. It moves only
+  once Gemini has sent that connection a handle of its own: the one that set it up is
+  not offered twice, so moving with it would start the conversation over. A move from
+  a connection shorter than 60 s backs off like a quick loss, so GoAways soon after
+  every setup can't make Ember reconnect in a loop. The abandon/resend of Ember's own
+  messages, `MIC_SEND_TIMEOUT_S`, the socket abort and the stop path are unchanged.
+  Offline tests through the real `run()`; live check pending.
+
+- Recalled memories no longer hold up or cut off Ember's replies. The receive loop
+  used to wait up to 150 ms for the memory lookup at the first reply audio and then
+  send the `[MEMORY CONTEXT]` note while Gemini was generating, which per the Live
+  API reference "will interrupt any current model generation". Now nothing waits
+  for the lookup: it runs on a worker thread at the first quiet moment after the
+  person's turn (Gemini owes no reply and isn't producing one, nothing is queued
+  for the speaker, no speech for 1 s, none of Ember's own messages awaiting its
+  answer), so it never competes with a reply's first audio, and it searches all of
+  that turn's words. It used to start on the turn's first transcript fragment with
+  the previous turn's words ("We planted tomatoes Ember," for "Ember, what is my
+  dog's name?"), so it looked up the previous topic. The note goes out at the next
+  quiet moment, with `turn_complete=False`, and informs the person's next turn.
+  Memories already in the connection's prompt or given in its conversation are
+  skipped (a connection that resumes the conversation keeps the list; a fresh one
+  starts from its prompt); a recall is dropped when the person starts a new turn
+  before it could be given, so speech nearby (a TV) that keeps the room from going
+  quiet for 1 s holds the notes back. Offline tests on the real receive loop and
+  `between_turns()`.
+
+- Google Search grounding is off by default; `BAYMAX_GOOGLE_SEARCH=1` turns it on.
+  With the built-in `google_search` tool next to Ember's function tools, the
+  native-audio model closed the session with "1011 internal error" whenever it
+  tried to call one: in `evals/live_eval.py` with the real MVP config (27 runs per
+  setting, 2026-11-06) reminder 0/3, radio 0/3 and weather 1/3 passed with search
+  on (7 errors); with it off 26 of 27 runs passed, no errors, and the first reply
+  audio came as fast (median 1.78-1.79 s). On the robot each error is a dropped
+  connection and a deaf reconnect. A private `.env` copied from the old
+  `.env.example` still has `BAYMAX_GOOGLE_SEARCH=1`: remove that line. The example
+  now shows `# BAYMAX_GOOGLE_SEARCH=1`, the value that turns it on, and the public
+  tools' instruction offers Google Search for show ideas only when it is on.
+
 - Address gate: a name said just before Gemini ends a turn without replying is
   no longer forgotten. On ember-002 "Amber, please response." was followed by an
   empty turn, and the reply "I'm here." in the next turn was dropped. Speech

@@ -4,6 +4,7 @@ import asyncio
 import json
 import os
 
+from features.conversational_ability import live_models
 from ..everyday import tools as everyday
 from .link import Link
 from .store import FamilyStore
@@ -85,8 +86,14 @@ async def deliver_messages(session):
 
 
 async def refresh_profile(session):
-    """New notes summarised mid-conversation: tell Ember now (the next session has them in its instructions)."""
-    if not link.profile_changed.is_set():
+    """New notes summarised mid-conversation: tell Ember (the next session has them in its
+    instructions) once it is free, like messages: a note sent while Gemini is speaking,
+    thinking or calling a tool, or right after someone spoke, can cut off its reply. The
+    change stays pending until then. Not on Gemini 3 and later until checked live
+    (live_models.takes_quiet_notes): the note goes without turn_complete, so there it waits
+    for the next session's instructions."""
+    if (not link.profile_changed.is_set() or not everyday.available_to_speak()
+            or not live_models.takes_quiet_notes()):
         return
     link.profile_changed.clear()
     summary = await asyncio.to_thread(store.profile)

@@ -17,7 +17,13 @@ Nothing new is sent anywhere: both are settings of the existing Gemini session.
 
 `connection_lost` tells the runtime's receive loop when an error means the
 connection is gone, whatever close code Gemini used, so it reconnects. The send
-loop doesn't need it: any failed send ends the session.
+loop doesn't need it: any failed send ends the session. The runtime's run() uses
+it too: a session ended only by lost connections reconnects at once, without
+resetting the audio devices.
+
+A GoAway (Gemini will reset this connection soon, about every 10 minutes) is only
+logged here; the runtime moves to a new connection at the next quiet moment,
+once `handle_received_at` shows a handle newer than the last turn.
 """
 import copy
 import os
@@ -63,6 +69,13 @@ def forget():
         _state.update(handle=None, at=0.0, offered=0)
 
 
+def handle_received_at():
+    """When the newest resumable handle arrived (the clock `remember` used,
+    time.monotonic() in the runtime), or None without one."""
+    with _lock:
+        return _state["at"] if _state["handle"] else None
+
+
 def extend_config(config, clock=time.monotonic):
     result = copy.deepcopy(config)
     if os.getenv("BAYMAX_CONTEXT_COMPRESSION", "1") != "0":
@@ -91,5 +104,5 @@ def on_server_message(response):
     if go_away is not None:
         import runtime_monitor as monitor
         print(f"[SESSION] Gemini will reset this connection soon ({go_away.time_left}); "
-              "the next one resumes the conversation.", flush=True)
+              "moving to a new one at the next quiet moment, resuming the conversation.", flush=True)
         monitor.record("session", "Gemini connection reset soon; conversation will resume")

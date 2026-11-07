@@ -169,7 +169,8 @@ def snapshot(metrics=None):
 
 
 def _search_status():
-    if os.getenv('BAYMAX_TOOLKIT_ENABLED', '1') == '0' or os.getenv('BAYMAX_GOOGLE_SEARCH', '1') == '0':
+    # Opt-in, like features/toolkits/gemini_tools.search_enabled().
+    if os.getenv('BAYMAX_TOOLKIT_ENABLED', '1') == '0' or os.getenv('BAYMAX_GOOGLE_SEARCH', '0') != '1':
         return 'Disabled'
     return 'Gemini built-in grounding'
 

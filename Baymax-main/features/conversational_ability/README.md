@@ -91,12 +91,32 @@ or dependency. Offline coverage: `test_address_gate.py` and `test_v10_runtime.py
 Audible transitions and device buffering still need live verification.
 
 `processing.py` takes mono int16 mic samples and the already-rendered speaker PCM.
-It processes whole 10 ms frames with retained leftovers and 10 ms output buffering;
-it never zero-pads/discards a tail on every 1024-sample callback. Reference storage
+It processes whole 10 ms frames (480 samples at 48 kHz). v10 captures 960-sample
+(20 ms) mic blocks, two whole frames, so each block is cleaned and sent with no added
+delay. It used 1024-sample blocks, which kept 10 ms of every block for the next
+callback. The 10 ms saving is expected, not yet measured: it assumes the host delivers
+960-frame periods. If the device keeps its own period (1024 frames on some PipeWire or
+ALSA setups), PortAudio's buffer adapter holds a carry of its own; the Orange Pi 5 Max
+A/B will show which. A block that isn't whole frames (v8 still uses 1024) starts a 10 ms
+output carry once and keeps leftovers, so no tail is zero-padded or discarded on every
+callback. Dropped stale audio (`BAYMAX_MAX_MIC_LAG_MS`) is counted in the block
+length actually cleaned. Reference storage
 is bounded to 250 ms and missing reference is silence. Capture/output stream
 callback ADC/DAC timestamps provide the AEC delay hint, falling back to stream
 latencies when callback timestamps are unavailable. The capture thread alone owns native DSP;
 the output callback only appends to the reference buffer.
+
+**Speaker stream knobs (measurement only).** `start_output_stream()` opens the speaker
+with 1024-frame callbacks and sounddevice's default output latency (`high`), as before.
+For a board A/B of the speaker's share of reply latency, two settings are read once at
+start: `BAYMAX_OUTPUT_BLOCKSIZE` (frames per speaker callback, 0-16384, default 1024; 0
+lets PortAudio choose) and `BAYMAX_OUTPUT_LATENCY` (`low`, `high` or 0-2 seconds; unset
+passes no latency, so sounddevice's `high` applies). Bad values warn and use the
+default. When either is set, `[AUDIO] Speaker stream: ...` logs the stream's reported
+latency at each connection. Lower values can underrun (crackle) on a busy board. Both
+are documented in `.env.example`; neither changes a default, opens a stream or sends
+anything anywhere. Tests: `SpeakerStreamTests` in `tests/test_v10_runtime.py`. Pending:
+the Orange Pi 5 Max A/B itself.
 
 Dependency: `pywebrtc-audio==0.2.0` (Apache-2.0), included in the isolated
 `requirements-pc.txt` environment. Native processing is imported only when
@@ -274,6 +294,35 @@ after 3 errors in a row with no message between them; a one-off error handling a
 message keeps the session. The socket is aborted when a session ends, because leaving
 `connect()` otherwise waits on the same silent network.
 
+**Fast reconnect.** When every error that ended the session is a lost connection
+(`connection_lost`: Google's reset about every 10 minutes, a dropped network, a stuck
+send) or a GoAway handover, `run()` reconnects without touching the audio devices.
+Before, every session end waited 2 s, then reset PortAudio with a 5 s `time.sleep` that
+blocked the event loop and chose the devices again: at least 7 s with the mic closed. A
+handover from a connection that lasted 60 s (`QUICK_SESSION_S`) reconnects at once;
+otherwise `run()` waits 0.3 s (`RECONNECT_DELAY_S`), twice as long for each connection in
+a row that ended within 60 s of starting, up to 4.8 s (`RECONNECT_MAX_DELAY_S`): 0.3, 0.6,
+1.2, 2.4, 4.8, 4.8 s. A connection that lasted starts the count again. On Wi-Fi that drops
+every 45 s, each reconnect waits at most 4.8 s and never resets the devices, which can't
+help a network. Any other error (a device or PortAudio error) runs the full reset as
+before, but awaited, with the PortAudio calls and the device query on a worker thread.
+Those worker-thread PortAudio calls are untested on Windows (WASAPI sets up COM per
+thread); the reset only runs after a device or unknown error.
+
+**GoAway.** Gemini warns (GoAway) shortly before it resets a connection. Instead of
+waiting to be cut off, possibly mid-sentence, `between_turns()` ends the session at the
+next quiet moment: Gemini owes no reply and isn't producing one, nothing is queued for
+the speaker, nobody has spoken for 1 s and none of Ember's own messages awaits its
+answer. It waits for a resume handle that includes the last turn
+(`session.handle_received_at`), at most 3 s after that turn or the GoAway
+(`GO_AWAY_HANDLE_WAIT_S`), and `run()` reconnects with the newest handle. A handle from
+before this connection was used to set it up, and `session.py` offers a handle only once,
+so moving with it would start the conversation over: Ember waits until Gemini has sent
+this connection a handle of its own (or closes it). A handover from a connection shorter
+than 60 s counts as a quick failure, so GoAways soon after every setup (a backend
+draining, say) back off instead of reconnecting about once a second. If no quiet moment
+comes in time, Gemini's own close is a lost connection like any other.
+
 The reply in progress is abandoned at every session end (`_abandon_reply`): its queued
 audio is cleared, so it can't play after the reconnect with the mic muted. Ember's own
 messages (a fall check-in, a family message, a reminder) that reached Gemini are sent
@@ -289,8 +338,78 @@ stopped.
 Tests: `tests/test_session.py` (fake handles; full config validated by the SDK) and
 `ReconnectTests` in `tests/test_v10_runtime.py` (the real send and receive loops on
 the real SDK session over a local websocket, closed with each close code or left
-unread; a cut-off fall check-in through the real `run()`, also when its resend fails),
-and the resend rules in `tests/test_address_gate.py`.
+unread; a cut-off fall check-in through the real `run()`, also when its resend fails;
+the fast path, the backoff, the full reset off the event loop and the GoAway handover
+through the real `run()`), and the resend rules in `tests/test_address_gate.py`. Live
+pending: the reconnect time and Google's GoAway timing on the robot.
+
+### Gemini Live model and fallback (`live_models.py`)
+
+Ember was built and tested on `gemini-2.5-flash-native-audio-preview-12-2025` (the
+runtime's `MODEL`). Google's deprecations page lists it for shutdown as early as
+2026-11-17 (the exact date is announced later), replaced by `gemini-3.8-live`.
+
+- **Order.** `BAYMAX_LIVE_MODELS` lists the Live models to use, comma-separated, in order;
+  by default `MODEL`, then `gemini-3.8-live`. A `models/` prefix is dropped; an entry that
+  isn't a model name is skipped with a warning.
+- **Moving on.** `run()` connects with the first model, and at once with the next when this
+  API key can't use it: Google refuses to set up a fresh connection (close 1007 or 1008: the
+  model is not found or not supported for Live, or rejects a setting; refusing a resumed
+  one can be about its resume handle, so that one just reconnects fresh), or the connection
+  ends before Gemini finished a turn on it with Google saying the model is gone ("is not
+  found for API version", "not supported for bidiGenerateContent", "no longer available").
+  A close frame carries at most 123 bytes of reason, so these words are matched where
+  Google's messages begin. One `[SESSION] ... can't be used with this API key (...);
+  switching to ...` line is logged and shown in the Monitor. The new model is kept until
+  Ember restarts. The old model's resume handle is dropped (a handle belongs to the model
+  that issued it), so the conversation starts fresh.
+- **Quota closes don't move.** "1011 You exceeded your current quota" is also what a
+  per-minute or concurrent-session limit says, and those pass in seconds: whatever its close
+  code, `run()` backs off and retries the same model, as before the list. One such close on
+  2.5 used to keep Ember on the untested 3.8 until it restarted. A key with no quota at all
+  for the first model therefore stays on it, so keep 2.5 first until the project has 3.8
+  quota.
+- **No model works.** Once every model has failed like that in a row, `run()` waits as after
+  any lost connection (0.3 s, doubling up to 4.8 s) and tries the next model again, so Ember
+  comes back with whichever model returns. No fast spin.
+- **Never** for a dropped network, Google's routine resets, "1011 internal error", or any
+  error once Gemini has finished a turn on the connection: those reconnect with the same
+  model, as before.
+- **Startup.** `run_pc.py`'s key check (`gemini_preflight.py`) accepts the first model of the
+  list that Google lists for the key, so a retired `MODEL` doesn't stop startup while the
+  next is available. It can't check Live quota: that is only known when connecting.
+- **Settings per model** (`adapt`, also used by `evals/live_eval.py --model`). Gemini 2.5
+  gets the config unchanged. Gemini 3 and later: no `thinking_config` (Google: omit it,
+  thinking is built in), and every function Ember declares without a behavior is sent as
+  `BLOCKING`, as 2.5 runs them (3.x defaults to `NON_BLOCKING`). The opt-in eye tool's
+  explicit `NON_BLOCKING` is kept.
+- **Not adapted, to check live on 3.8:** proactive audio is always on there, so
+  `only_when_addressed = false` can't turn it off; a turn includes every camera frame by
+  default (Ember sends one every 3 s); voices and tools are untried.
+- **No notes without `turn_complete` on Gemini 3 yet.** Client content sent with
+  `turn_complete=False` (recalled memories from `between_turns()`, the family's profile
+  update) makes the server wait for more input, and whether 3.x still answers the person's
+  next words after one is untested. `live_models.takes_quiet_notes()` is false on Gemini 3
+  and later, so there Ember neither looks up nor sends recalled memories, and a profile
+  update waits for the next session's instructions; the 50 newest memories are still in
+  every connection's prompt. Lift it once `python evals/live_eval.py --model
+  gemini-3.8-live --only memory-note-then-speech` passes. One message can carry several parts: the receive loop
+  plays and prints every part in order, and a model turn without parts no longer drops
+  the rest of its message (its turn end).
+- **Today (2026-11-06):** Ember's keys get "1011 You exceeded your current quota" on
+  `gemini-3.8-live` (their projects have no 3.8 quota yet) while 2.5 works, so 3.8 has not
+  run with Ember. Keep 2.5 first. Once the key's project has 3.8 quota and
+  `python evals/live_eval.py --model gemini-3.8-live` passes, put it first:
+  `BAYMAX_LIVE_MODELS=gemini-3.8-live,gemini-2.5-flash-native-audio-preview-12-2025`.
+- **Data flows:** none new. The same session data goes to Google whichever model is used.
+
+Tests: `tests/test_session.py` (the list; the real SDK's errors from a local websocket closed
+as Google closes it; switching, keeping and each round; the setup message sent for each
+model), `ReconnectTests` in `tests/test_v10_runtime.py` (through the real `run()`: a model
+refused at setup, a model gone before the first turn, a quota close retrying the same model,
+every model failing, ordinary errors, a model that answered), `tests/test_gemini_preflight.py`,
+`tests/test_live_eval.py`, and the several-parts and no-parts messages in
+`tests/test_address_gate.py`. Live pending: 3.8 itself.
 
 ### Local waiting acknowledgement (MVP)
 
@@ -405,7 +524,7 @@ there is no wake word: people talk to Ember without saying its name.
 
 ### Audio processing
 
-Sixteen offline checks cover continuous 1024-to-480 framing, speaker reference,
+Offline checks cover continuous 960- and 1024-to-480 framing, speaker reference,
 buffer bounds, disabled/failure behavior, short-speech configuration, mic routing
 during playback and untouched raw recordings. Native synthetic steady-noise RMS
 fell from 502 to 255 with approximately 0.5 ms processing per 21 ms input block

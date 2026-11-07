@@ -6,7 +6,7 @@ import threading
 import time
 from types import SimpleNamespace
 import unittest
-from unittest.mock import Mock, patch
+from unittest.mock import Mock, call, patch
 
 import numpy as np
 
@@ -411,6 +411,34 @@ class V10ReceiveLoopTests(unittest.TestCase):
             content(audio=pcm), content(done=True),
         ])
         self.assertEqual(self.playback_starts, [True, False, True, False])
+
+    # Gemini 3 Live models can put several content parts in one message.
+    def test_one_message_with_text_and_several_audio_parts_loses_none(self):
+        first, second = (np.array(samples, dtype=np.int16).tobytes() for samples in ([1, 2], [3, 4]))
+        audio = lambda pcm: SimpleNamespace(text=None, inline_data=SimpleNamespace(mime_type="audio/pcm;rate=24000",
+                                                                                  data=pcm))
+        message = content(ember="Hello there.", done=True)
+        message.server_content.model_turn = SimpleNamespace(parts=[
+            SimpleNamespace(text="Hello there.", inline_data=None), audio(first), audio(second)])
+        with patch("builtins.print") as printed:
+            played, said, _ = self.run_receive([content(user="Ember, say hello"), message])
+        self.assertEqual(played, [np.repeat(np.frombuffer(pcm, dtype=np.int16), 2).tobytes() for pcm in (first, second)])
+        self.assertEqual(self.playback_starts, [True, False])  # one reply, in order
+        self.assertEqual(said, ["Hello there."])
+        self.assertIn(call("[GEMINI] Hello there.", flush=True), printed.call_args_list)
+        self.assertFalse(self.namespace["_gemini_speaking"])  # and its turn ended
+
+    def test_a_model_turn_without_parts_still_ends_the_turn(self):
+        pcm = np.array([1, 2], dtype=np.int16).tobytes()
+        end = content(done=True)
+        end.server_content.model_turn = SimpleNamespace(parts=None)  # a Content with no parts
+        with patch("builtins.print") as printed:
+            played, said, _ = self.run_receive([content(user="Ember, are you there?"),
+                                                content(ember="Yes.", audio=pcm), end])
+        self.assertEqual((len(played), said), (1, ["Yes."]))
+        self.assertFalse(self.namespace["_gemini_speaking"])
+        self.assertIn("_turn_done_at", self.namespace)
+        self.assertFalse([c for c in printed.call_args_list if "Receive error" in str(c.args)])
 
     def test_every_audio_chunk_carries_its_replys_timing(self):
         # A reply that opens with digital silence is timed from its first chunk with sound.

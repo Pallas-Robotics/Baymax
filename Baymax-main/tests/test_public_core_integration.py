@@ -14,8 +14,10 @@ CORE = Path(__file__).resolve().parents[1] / "realtime_gemini_10.py"
 
 
 def load_function(name, namespace):
+    """The runtime's top-level function (or class) `name`, run in `namespace`."""
     tree = ast.parse(CORE.read_text(encoding="utf-8"))
-    node = next(n for n in tree.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name == name)
+    node = next(n for n in tree.body
+                if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) and n.name == name)
     module = ast.Module(body=[node], type_ignores=[])
     exec(compile(module, str(CORE), "exec"), namespace)
     return namespace[name]

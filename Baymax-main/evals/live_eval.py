@@ -14,6 +14,7 @@ listed by --dry-run (or pass --yes). Reports go to .local-review/ (gitignored).
 
     python evals/live_eval.py --dry-run
     python evals/live_eval.py --only greeting --repeat 3
+    python evals/live_eval.py --model gemini-3.8-live   # another Live model, adapted as the runtime does
     python evals/live_eval.py --root ../../Baymax-brain-games/Baymax-main   # another PR's checkout
 """
 import argparse
@@ -42,14 +43,13 @@ FALLBACK_CORE = "realtime_gemini_8.py"   # Older MVP checkouts: run_pc.py runs v
 SCENARIOS = Path(__file__).resolve().parent / "scenarios.json"
 REPORT_DIR = ROOT / ".local-review"
 RATE = 48000                     # SEND_SAMPLE_RATE (v8 and v10)
-CHUNK = 1024                     # CHUNK_SIZE (v8 and v10)
 TRAILING_SILENCE_S = 1.5         # Lets Gemini's activity detection end the turn.
 # A real mic always carries room tone. Gemini's LOW start sensitivity (the MVP's)
 # ignored clean TTS framed by digital silence, but hears it over quiet noise.
 ROOM_NOISE = 200                 # Std dev of the background noise, int16 units (about -44 dBFS).
 LEAD_IN_S = 2.0
 TURN_TIMEOUT_S = 25.0
-STEP_KINDS = ("say", "text", "card", "image")
+STEP_KINDS = ("say", "text", "note", "card", "image")
 EXPECT_KEYS = {"heard", "reply", "not_reply", "tools", "not_tools", "no_tools", "max_words", "max_latency_s",
                "silence_ok"}
 DEFAULT_TOOL_RESULT = {"result": "ok"}
@@ -114,6 +114,18 @@ def _imported(node):
     return {(a.asname or a.name).split(".")[0] for a in node.names}
 
 
+def chunk_size(core=CORE):
+    """The runtime's mic block, CHUNK_SIZE (960 samples in v10, 1024 in v8): speech is
+    sent in blocks of this size, as from the robot's microphone."""
+    for node in ast.parse(core.read_text(encoding="utf-8")).body:
+        if _assigned(node) == {"CHUNK_SIZE"} and isinstance(node.value, ast.Constant):
+            return node.value.value
+    return 1024
+
+
+CHUNK = chunk_size()
+
+
 def core_session(core=CORE):
     """(model, config) from the runtime's own source, without importing its devices."""
     from google.genai import types
@@ -127,7 +139,7 @@ def core_session(core=CORE):
             body.append(node)   # v10: `if ONLY_WHEN_ADDRESSED: _BASE_SYSTEM_INSTRUCTION += ...`
         elif isinstance(node, ast.FunctionDef) and node.name == "_build_config":
             body.append(node)
-    namespace = {"types": types, "os": os, "_memory_embedder": None}
+    namespace = {"types": types, "os": os, "_memory_embedder": None, "_memories_given": set()}
     exec(compile(ast.Module(body=body, type_ignores=[]), str(core), "exec"), namespace)
     return namespace["MODEL"], namespace["_build_config"]()
 
@@ -138,6 +150,20 @@ def mvp_session(environ=os.environ, root=ROOT):
         if name != "BAYMAX_HARDWARE_PROFILE":  # Device selection only; nothing is opened here.
             environ.setdefault(name, value)
     return core_session(runtime(root))
+
+
+def for_model(model, config, requested=None):
+    """(model, config) to test: `requested` (--model), else the first Live model the
+    runtime connects with (BAYMAX_LIVE_MODELS, else its MODEL), and Ember's config with
+    the settings that model needs, adapted as the runtime adapts it."""
+    try:
+        from features.conversational_ability import live_models
+    except ImportError:  # --root on a branch from before the model list: its MODEL, as it was
+        if requested:
+            print("That branch has no live_models.py: the config is sent as it is, not adapted to the model.")
+        return requested or model, config
+    model = requested or live_models.configured(model)[0]
+    return model, live_models.adapt(config, model)
 
 
 def declared_tools(config):
@@ -360,6 +386,10 @@ async def send_step(session, step, recorder, speak=synthesize):
         recorder.finish_speaking()
         await session.send_client_content(turns={"role": "user", "parts": [{"text": step["text"]}]},
                                           turn_complete=True)
+    elif "note" in step:
+        # A note that needs no reply, as the runtime sends recalled memories between turns.
+        await session.send_client_content(turns={"role": "user", "parts": [{"text": step["note"]}]},
+                                          turn_complete=False)
     else:
         jpeg = card(step["card"]) if "card" in step else image_file(step["image"])
         await session.send_realtime_input(video=types.Blob(data=jpeg, mime_type="image/jpeg"))
@@ -388,7 +418,7 @@ async def run_scenario(connect, model, config, scenario, real_tools=False, speak
         receiver = asyncio.create_task(receive(session, recorder, scenario.get("tool_results", {}), real_tools))
         try:
             for step in scenario["steps"]:
-                if "card" in step or "image" in step:
+                if "card" in step or "image" in step or "note" in step:  # no reply of its own
                     await send_step(session, step, recorder, speak)
                     continue
                 recorder.start()
@@ -417,12 +447,13 @@ async def run_scenario(connect, model, config, scenario, real_tools=False, speak
 
 
 # ── Report ───────────────────────────────────────────────────────────────────
-def summarize(results):
+def summarize(results, model=None):
     lines = ["# Ember live evaluation (Gemini in the loop, no robot)", "",
-             f"Generated: {time.strftime('%Y-%m-%d %H:%M:%S %Z')}", "",
-             "Synthetic speech and pictures only. This is Gemini-behaviour evidence; the robot's "
-             "microphone, echo cancellation, speaker, camera and eyes are NOT exercised.", "",
-             "| Scenario | Passed | Median first audio | Notes |", "|---|---|---|---|"]
+             f"Generated: {time.strftime('%Y-%m-%d %H:%M:%S %Z')}", ""]
+    lines += [f"Model: {model}", ""] if model else []
+    lines += ["Synthetic speech and pictures only. This is Gemini-behaviour evidence; the robot's "
+              "microphone, echo cancellation, speaker, camera and eyes are NOT exercised.", "",
+              "| Scenario | Passed | Median first audio | Notes |", "|---|---|---|---|"]
     detail = []
     for name, outcome in results.items():
         if "skipped" in outcome:
@@ -509,6 +540,7 @@ async def run_all(plan, model, config, repeat, real_tools, connect, speak=synthe
 
 
 def main(argv=None, connect=None, confirm=input):
+    global CHUNK
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--scenarios", type=Path, default=SCENARIOS)
     parser.add_argument("--only", action="append", help="Scenario name (repeatable)")
@@ -519,6 +551,8 @@ def main(argv=None, connect=None, confirm=input):
     parser.add_argument("--report", type=Path, default=REPORT_DIR / "live-eval.md")
     parser.add_argument("--root", type=Path, default=ROOT,
                         help="Baymax-main of the branch to test, e.g. a PR worktree (default: this one)")
+    parser.add_argument("--model", help="Gemini Live model to test, e.g. gemini-3.8-live (default: the first the "
+                        "runtime uses: BAYMAX_LIVE_MODELS, else its MODEL); the config is adapted to it as the runtime does")
     args = parser.parse_args(argv)
 
     root = args.root.resolve()
@@ -529,7 +563,8 @@ def main(argv=None, connect=None, confirm=input):
         sys.path.insert(0, str(root))  # That branch's features, prompts and tools.
     from dotenv import load_dotenv
     load_dotenv(root / ".env", override=False, interpolate=False)  # The user's toggles, as on the robot.
-    model, config = mvp_session(root=root)
+    model, config = for_model(*mvp_session(root=root), args.model)
+    CHUNK = chunk_size(runtime(root))
     print(f"Branch under test: {root}")
     scenarios = [s for s in load_scenarios(args.scenarios) if not args.only or s["name"] in args.only]
     if args.only and len(scenarios) != len(set(args.only)):
@@ -558,7 +593,7 @@ def main(argv=None, connect=None, confirm=input):
         print("Nothing was sent.")
         return 1
     results.update(asyncio.run(run_all(plan, model, config, args.repeat, args.real_tools, connect)))
-    report = summarize(results)
+    report = summarize(results, model)
     args.report.parent.mkdir(parents=True, exist_ok=True)
     args.report.write_text(report, encoding="utf-8")
     args.report.with_suffix(".json").write_text(json.dumps(results, indent=2), encoding="utf-8")

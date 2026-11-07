@@ -2,6 +2,8 @@
 import asyncio
 import contextlib
 import os
+from pathlib import Path
+import tempfile
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
@@ -112,6 +114,10 @@ class ConfigTests(unittest.TestCase):
             self.assertEqual(live_eval.runtime(folder).name, "realtime_gemini_8.py")
             self.assertEqual(live_eval.runtime(Path(folder) / "missing").name, "realtime_gemini_8.py")
 
+    def test_speech_goes_in_the_runtimes_own_mic_blocks(self):
+        self.assertEqual(live_eval.CHUNK, 960)          # v10: two whole 10 ms frames at 48 kHz
+        self.assertEqual(live_eval.chunk_size(live_eval.ROOT / "realtime_gemini_8.py"), 1024)
+
     def test_v10_config_has_its_device_switched_prompt_and_proactive_audio(self):
         # v10 adds these in top-level `if` blocks from device.toml; they reach Gemini on the robot.
         import device_config
@@ -195,6 +201,30 @@ class SessionTests(unittest.TestCase):
         self.assertEqual(session.texts, ["What does it say?"])
         self.assertEqual(len(turns), 1)
 
+    def test_a_note_needs_no_reply_and_the_spoken_turn_after_it_is_checked(self):
+        # As the runtime gives recalled memories between turns: client content without turn_complete.
+        class Session(FakeSession):
+            async def send_client_content(self, turns, turn_complete):
+                self.texts.append((turns["parts"][0]["text"], turn_complete))
+                if turn_complete:
+                    await self.queue_reply()
+        note = "[MEMORY CONTEXT] Here are things you remember about this user:\n- grows tomatoes"
+        scenario = {"name": "memory", "steps": [{"note": note}, {"say": "What do I grow?",
+                                                                   "expect": {"reply": "tomato", "max_latency_s": 2}}]}
+        session = Session([[server(said="Cherry tomatoes."), server(audio=b"\0" * 8, complete=True)]])
+        with patch.object(live_eval, "TRAILING_SILENCE_S", 0.01), patch.object(live_eval, "LEAD_IN_S", 0.01), \
+                patch.object(live_eval, "ROOM_NOISE", 0):
+            turns = asyncio.run(live_eval.run_scenario(connector(session, []), "m", {}, scenario,
+                                                       speak=SPEECH, turn_timeout=3))
+        self.assertEqual(session.texts, [(note, False)])
+        self.assertEqual(len(turns), 1)                  # the note is not a turn of its own
+        self.assertEqual(turns[0]["failures"], [])
+        self.assertIsNotNone(turns[0]["latency_s"])
+        shipped = {s["name"]: s for s in live_eval.load_scenarios()}["memory-note-then-speech"]
+        self.assertEqual([next(k for k in live_eval.STEP_KINDS if k in step) for step in shipped["steps"]],
+                         ["say", "note", "say"])
+        self.assertTrue(shipped["steps"][1]["note"].startswith("[MEMORY CONTEXT]"))
+
     def test_a_turn_without_a_reply_times_out_and_fails(self):
         scenario = {"name": "silent", "steps": [{"text": "Hello?"}]}
         with patch.object(live_eval, "TURN_TIMEOUT_S", 1):
@@ -220,6 +250,63 @@ class SessionTests(unittest.TestCase):
         self.assertIn("Dropped", run["error"])
         self.assertEqual(run["during"]["tools"], ["reminder"])
         self.assertIn("during:", live_eval.summarize(results))
+
+
+class ModelTests(unittest.TestCase):
+    """--model: another Live model, with Ember's config adapted as the runtime adapts it."""
+    LATER = "gemini-3.8-live"
+
+    def run_main(self, *argv, models=""):
+        """main() up to the Gemini runs, which are recorded instead of made. `models` is
+        BAYMAX_LIVE_MODELS (set, so a developer's .env can't change it)."""
+        seen = []
+
+        async def run_all(plan, model, config, repeat, real_tools, connect):
+            seen.append((model, config))
+            return {}
+        with tempfile.TemporaryDirectory() as folder, patch.dict(os.environ, {"BAYMAX_LIVE_MODELS": models}), \
+                patch.object(live_eval, "run_all", run_all), patch("builtins.print") as printed:
+            report = Path(folder) / "eval.md"
+            result = live_eval.main([*argv, "--only", "greeting", "--yes", "--report", str(report)],
+                                    connect=connector(FakeSession([]), []))
+            shown = "\n".join(" ".join(map(str, call.args)) for call in printed.call_args_list)
+            self.assertEqual(result, 0)
+            return *seen[0], shown, report.read_text(encoding="utf-8")
+
+    @staticmethod
+    def behaviors(config):
+        return {d.get("behavior") for tool in config["tools"] for d in tool.get("function_declarations", [])}
+
+    def test_the_model_option_sends_the_config_the_runtime_would_send_that_model(self):
+        model, config, shown, report = self.run_main("--model", self.LATER)
+        self.assertEqual(model, self.LATER)
+        self.assertNotIn("thinking_config", config)
+        self.assertEqual(self.behaviors(config), {"BLOCKING"})
+        self.assertIn(f"Model: {self.LATER}", shown)   # in what --dry-run and the prompt list
+        self.assertIn(f"Model: {self.LATER}", report)
+
+    def test_without_it_the_eval_uses_the_model_the_runtime_connects_with_first(self):
+        runtime_model, runtime_config = live_eval.core_session()
+        model, config, _, report = self.run_main()
+        self.assertEqual(model, runtime_model)  # MODEL, gemini-2.5: its config as the runtime builds it
+        self.assertEqual(config["thinking_config"], runtime_config["thinking_config"])
+        self.assertEqual(self.behaviors(config), {None})
+        self.assertIn(f"Model: {runtime_model}", report)
+        model, config, _, _ = self.run_main(models=f"{self.LATER},{runtime_model}")
+        self.assertEqual(model, self.LATER)
+        self.assertNotIn("thinking_config", config)
+
+    def test_a_branch_from_before_the_model_list_keeps_its_model_and_config(self):
+        import sys
+        import features.conversational_ability as package
+        config = {"thinking_config": {"thinking_budget": 0}}
+        with patch.dict(sys.modules, {"features.conversational_ability.live_models": None}), \
+                patch.dict(package.__dict__), patch("builtins.print") as printed:
+            package.__dict__.pop("live_models", None)  # --root on an older checkout: no live_models.py
+            self.assertEqual(live_eval.for_model("m", config), ("m", config))
+            printed.assert_not_called()
+            self.assertEqual(live_eval.for_model("m", config, self.LATER), (self.LATER, config))
+            self.assertIn("not adapted", printed.call_args.args[0])
 
 
 class MainTests(unittest.TestCase):
