@@ -437,8 +437,7 @@ if MEMORY_RETRIEVAL_ENABLED:
         "\n[MEMORY CONTEXT]\nBetween turns you may get a '[MEMORY CONTEXT]' note with "
         "things you remember about this person from earlier conversations. Treat them "
         "as things you know about them, and use them when the person asks or when they "
-        "fit. The note itself needs no reply: do not answer it or mention it; wait for "
-        "the person to speak.\n"
+        "fit. The note itself needs no reply: do not answer it or mention it.\n"
     )
 
 # Answer only speech meant for Ember, not people talking among themselves.
