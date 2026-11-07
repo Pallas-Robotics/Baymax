@@ -131,14 +131,21 @@
 
 - Robot updates: `check_release.py` no longer runs the repository's bookkeeping
   checks (`tests/overall/test_validation.py`: every test file listed in one
-  `suite.json`, the suites `tests/run.py --changed` picks) on a robot. The Orange
-  Pi 5 Max updater and the 4 Pro image run that gate before taking a release and
-  roll back when it fails, so one correct test file missing from a `suite.json`
-  stopped every robot updating (the 5 Max never retries that commit). CI, where
-  GitHub sets `GITHUB_ACTIONS=true`, and `tests/run.py` still run them; the
-  source, chat UI and performance-sampler checks stay in the robots' gate.
-  Offline: with an unlisted test file the gate now passes as a robot (core 571,
-  toolkit 241) and fails in CI.
+  `suite.json`, the suites `tests/run.py --changed` picks) on a robot. The Orange Pi
+  5 Max updater and the 4 Pro image run that gate before taking a release and roll
+  back when it fails, so one correct test file missing from a `suite.json` stopped
+  every robot updating (the 5 Max never retries that commit). CI, where GitHub sets
+  `GITHUB_ACTIONS=true`, and `tests/run.py` still run them; the source, chat UI and
+  performance-sampler checks stay in the robots' gate. Offline: with an unlisted
+  test file the gate now passes as a robot (core 571, toolkit 241) and fails in CI.
+  The source check (`tests/overall/test_repository.py`) parses only the repository's
+  own files: it skips hidden folders (`.venv`, `.models`, `.local-review`,
+  `.venv.previous-*`), `venv`, `__pycache__`, `site-packages` and `node_modules`. It
+  read every file of the 5 Max's NPU converter venvs under
+  `Baymax-main/.models/pose_npu/build` (TensorFlow, torch, rknn-toolkit2: about 59 s
+  of parsing on an M1 before Ember could start), and one third-party file that
+  didn't parse would have rolled the update back. All 181 tracked Python files are
+  still parsed.
 
 - Gemini Live model fallback. Google shuts Ember's model,
   `gemini-2.5-flash-native-audio-preview-12-2025`, down as early as 2026-11-17; its
