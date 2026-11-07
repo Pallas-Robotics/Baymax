@@ -7,7 +7,7 @@ from features.conversational_ability.timing import ConversationTiming
 class TimingTests(unittest.TestCase):
     def setUp(self):
         self.now = 0
-        self.timing = ConversationTiming(clock=lambda: self.now, wall=lambda: 1000)
+        self.timing = ConversationTiming(clock=lambda: self.now, wall=lambda: 1000 + self.now)
 
     def speech(self):
         for self.now in (1, 1.02, 1.04, 1.06, 1.08):
@@ -36,7 +36,8 @@ class TimingTests(unittest.TestCase):
         self.assertEqual(row['reply_audio'], 1003)
         self.assertEqual(row['reply_text'], 1003.1)
         self.assertAlmostEqual(row['playback'], 1003.26)
-        self.assertEqual(row['delays']['recognition_ms'], 900)
+        # To the transcript's last piece: its first piece streams in while the person speaks.
+        self.assertEqual(row['delays']['recognition_ms'], 1100)
         self.assertEqual(row['delays']['audible_ms'], 2160)
 
     def test_high_probability_low_energy_noise_does_not_create_speech(self):
@@ -123,6 +124,109 @@ class TimingTests(unittest.TestCase):
             self.timing.received_audio()
             self.timing.complete_reply()
         self.assertEqual(len(self.timing.snapshot()), 20)
+
+    def test_a_clock_corrected_after_start_moves_the_times_with_it(self):
+        # NTP can step the clock after Ember starts (no clock battery); the heartbeat and
+        # the performance sampler use the clock as it is now, so the times must too.
+        step = [0]
+        self.timing = ConversationTiming(clock=lambda: self.now, wall=lambda: 1000 + self.now + step[0])
+        self.speech()
+        self.now = 2
+        self.timing.transcript('user', 1)
+        step[0] = 100
+        row = self.timing.snapshot()[0]
+        self.assertAlmostEqual(row['speech_end'], 1101.1)
+        self.assertAlmostEqual(row['transcript_first'], 1102)
+        self.assertAlmostEqual(self.timing.speech_status()['speech_end'], 1101.1)
+        self.assertEqual(row['delays']['recognition_ms'], 900)  # durations never move
+
+
+BLOCK = 1024 / 48000  # one v10 microphone callback
+
+
+def replay(voice, events, end, latency):
+    """Feed the detector the runtime's mic blocks on a fake clock and run each
+    (time, event) in time order. voice: (start, stop) seconds the person talks."""
+    now = [0.0]
+    timing = ConversationTiming(clock=lambda: now[0], wall=lambda: 1000 + now[0])
+    blocks = [(index * BLOCK, None) for index in range(int(end / BLOCK))]
+    for at, event in sorted(blocks + events, key=lambda item: item[0]):
+        now[0] = at
+        if event is None:
+            talking = any(start <= at < stop for start, stop in voice)
+            timing.microphone(.95 if talking else .05, -25 if talking else -70, BLOCK, latency)
+        else:
+            event(timing)
+    return timing.snapshot()
+
+
+def said(message_id):
+    return lambda timing: timing.transcript('user', message_id)
+
+
+def reply(timing):
+    return timing.received_audio()
+
+
+def done(timing):
+    timing.complete_reply()
+
+
+class ReplyAttributionTests(unittest.TestCase):
+    """Live API orderings: the transcript streams while the person speaks, and every
+    reply's audio starts 0.6 s after their true last word. Mic input latency 0 and 30 ms."""
+
+    def assertAnswered(self, row):
+        # The local estimate ends with the last mic block (21 ms) that had voice.
+        self.assertAlmostEqual(row['delays']['response_ms'], 600, delta=50)
+
+    def test_each_reply_is_charged_to_the_turn_it_answers(self):
+        for latency in (0, .03):
+            with self.subTest(latency=latency):
+                rows = replay([(0, 2), (10, 12)], [(.8, said(1)), (1.7, said(1)), (2.6, reply), (5, done),
+                              (10.5, said(2)), (11.5, said(2)), (12.6, reply), (15, done)], 16, latency)
+                self.assertEqual([row['user_id'] for row in rows], [1, 2])
+                for row in rows:
+                    self.assertAnswered(row)
+
+    def test_a_turn_gemini_leaves_unanswered_does_not_take_the_next_reply(self):
+        # Proactive audio (conversation.only_when_addressed, on by default): Gemini ends a
+        # hesitation's turn without a reply, then answers the next turn.
+        for latency in (0, .03):
+            with self.subTest(latency=latency):
+                hesitation, question = replay([(0, .8), (4, 6)], [(.5, said(1)), (1.4, done), (4.5, said(2)),
+                                              (5.5, said(2)), (6.6, reply), (9, done)], 10, latency)
+                self.assertNotIn('reply_audio', hesitation)
+                self.assertIsNotNone(hesitation['reply_complete'])  # no longer "Waiting for reply"
+                self.assertAnswered(question)
+
+    def test_a_transcript_arriving_after_the_reply_audio_keeps_its_reply(self):
+        # Transcription can trail the reply's first audio (features/conversational_ability/addressing.py).
+        for latency in (0, .03):
+            with self.subTest(latency=latency):
+                rows = replay([(0, 2), (10, 12)], [(2.6, reply), (2.7, said(1)), (5, done),
+                              (10.5, said(2)), (11.5, said(2)), (12.6, reply), (15, done)], 16, latency)
+                self.assertEqual([row.get('user_id') for row in rows], [1, 2])
+                for row in rows:
+                    self.assertAnswered(row)
+
+    def test_a_pause_inside_one_turn_ends_the_turn_with_its_last_words(self):
+        # 450 ms of quiet ends a local segment (400 ms); Gemini's turn goes on (500 ms or more).
+        for latency in (0, .03):
+            with self.subTest(latency=latency):
+                first, second = replay([(0, 1.5), (1.95, 3.5), (10, 12)], [
+                    (.8, said(1)), (2.5, said(1)), (3.3, said(1)), (4.1, reply), (6, done),
+                    (10.5, said(2)), (11.5, said(2)), (12.6, reply), (14, done)], 15, latency)
+                self.assertAnswered(first)
+                self.assertEqual(second['association'], 'Local speech estimate')  # not ambiguous
+                self.assertAnswered(second)
+
+    def test_speech_over_embers_own_message_is_not_charged_to_it(self):
+        # Ember speaks first (a check-in); the person talks over it and is answered afterwards.
+        rows = replay([(1.5, 3)], [(1, reply), (2, said(1)), (2.5, done), (3.6, reply), (5, done)], 6, .03)
+        self.assertEqual([row.get('user_id') for row in rows], [None, 1])
+        self.assertEqual(rows[0]['association'], 'Reply without matched user turn')
+        self.assertAnswered(rows[1])
 
 
 if __name__ == '__main__':

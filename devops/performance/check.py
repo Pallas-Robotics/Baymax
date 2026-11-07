@@ -106,7 +106,8 @@ def timing_rows(data, start, end, turns):
         # streams during speech); a later sample sees the ended turn.
         speech_end = row.get('speech_end')
         if isinstance(speech_end, (int, float)) and start <= speech_end <= end:
-            turns[row['id']] = {key: row[key] for key in ('id', 'speech_end', 'playback', 'delays') if key in row}
+            turns[row['id']] = {key: row[key] for key in ('id', 'speech_end', 'reply_audio', 'playback', 'delays')
+                                if key in row}
 
 
 def summary(values):
@@ -127,8 +128,12 @@ def report(samples, turns, baseline=None):
             old = baseline['metrics'].get(key)
             if value and old:
                 deltas[key] = {stat: round(value[stat] - old[stat], 2) for stat in ('mean', 'p95', 'max')}
+    # A speech turn is one Gemini answered with audio. With proactive audio (on by
+    # default) it stays silent on side talk and hesitations: no playback is coming.
+    answered = sum('reply_audio' in row for row in turns.values())
     return dict(format=1, metrics=metrics, delta_from_baseline=deltas,
-                speech_turns=len(turns), completed_turns=sum('playback' in row for row in turns.values()),
+                speech_turns=answered, unanswered_turns=len(turns) - answered,
+                completed_turns=sum('playback' in row for row in turns.values()),
                 unavailable=[key for key, value in metrics.items() if value is None])
 
 

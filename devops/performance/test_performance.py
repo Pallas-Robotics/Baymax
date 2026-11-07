@@ -64,9 +64,10 @@ class PerformanceTests(unittest.TestCase):
         data = {'conversation_timing': [dict(id=1, speech_end=50),
                 dict(id=2, speech_end=110, text='private words', delays={})], 'transcripts': ['private']}
         check.timing_rows(data, 100, 120, turns)
-        data['conversation_timing'][1].update(playback=112, delays={'audible_ms': 2000})
+        data['conversation_timing'][1].update(reply_audio=111, playback=112, delays={'audible_ms': 2000})
         check.timing_rows(data, 100, 125, turns)
         self.assertEqual(list(turns), [2])
+        self.assertEqual(turns[2]['reply_audio'], 111)
         self.assertNotIn('private', json.dumps(turns))
         self.assertEqual(check.report([], turns)['completed_turns'], 1)
 
@@ -92,10 +93,18 @@ class PerformanceTests(unittest.TestCase):
         self.assertEqual(len(check.violations(result, {'rss_mib': 511}, require_npu=True, max_added_latency=199)), 3)
 
     def test_missing_latency_and_unanswered_turns_fail_required_checks(self):
-        result = check.report([], {1: {'delays': {}}})
+        result = check.report([], {1: {'reply_audio': 5, 'delays': {}}, 2: {'delays': {}}})
         failures = check.violations(result, {'audible_ms': 2000}, min_turns=1, max_added_latency=100)
         self.assertEqual(len(failures), 4)
+        self.assertIn('Speech turns without playback remain; extend the window and investigate', failures)
         self.assertIsNone(result['metrics']['npu_percent'])
+
+    def test_a_turn_gemini_did_not_answer_is_not_missing_playback(self):
+        # Proactive audio (on by default) leaves side talk and hesitations unanswered.
+        turns = {1: {'delays': {}}, 2: {'reply_audio': 5, 'playback': 5.4, 'delays': {'audible_ms': 900}}}
+        result = check.report([], turns)
+        self.assertEqual(check.violations(result, {}, min_turns=1), [])
+        self.assertEqual((result['speech_turns'], result['unanswered_turns'], result['completed_turns']), (1, 1, 1))
 
     def test_baseline_rejects_other_board_failed_run_and_invalid_metrics(self):
         good = dict(format=1, board='OPi4', status='MEASURED', metrics={'rss_mib': check.summary([100])})

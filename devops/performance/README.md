@@ -63,6 +63,11 @@ normal warmed scenario does not measure boot time.
   utterance for playback. Missing/stale monitor data fails a requested latency
   check. Check expected utterance count and manually record unrecognized speech;
   speech that never becomes a transcript may have no matched timing row.
+- `speech_turns` counts turns Gemini answered with audio; `unanswered_turns` counts
+  transcribed turns it left without a reply (with proactive audio, on by default,
+  it stays silent on side talk and hesitations). Only an answered turn that never
+  reached the speaker fails `--min-turns`. `recognition_ms` runs from the local
+  speech end to the transcript's last piece.
 - The sampler is not a stress generator or automatic feature toggle. Use bounded
   realistic scenarios, then the full normal feature mix. Stop the scenario if
   hardware becomes unstable; do not deliberately overheat the board.
