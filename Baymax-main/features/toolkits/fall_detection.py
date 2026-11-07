@@ -108,15 +108,19 @@ class FallWorker:
         self.samples = deque(maxlen=30)
         self.dropped = 0
         self.shared = False                 # landmarks come from the core's pose model
+        self.builtin = False                # the core's own fall detection sends the check-in
         self.pose_device = "CPU"            # where the core's pose model runs: "CPU" or "NPU"
         self.running_state = "Running on CPU"
 
-    def start(self, fps=15, shared_pose=False, **settings):
+    def start(self, fps=15, shared_pose=False, builtin=False, **settings):
         """shared_pose=True: the core already runs pose on every frame and passes its
-        landmarks to share(), so this worker loads no second model."""
+        landmarks to share(), so this worker loads no second model. builtin=True: the
+        core's own fall detection is on and sends the possible-fall check-in, so this
+        worker still detects and reports (Monitor) but queues no second check-in."""
         if self.thread and self.thread.is_alive():
             return
         self.shared = bool(shared_pose)
+        self.builtin = bool(builtin)
         self.running_state = self._running_label()
         self.is_enabled = enabled()
         if not self.is_enabled:
@@ -207,10 +211,12 @@ class FallWorker:
                     self.inference_ms = (item[2] if self.shared else round((finished - started) * 1000, 1))
                     self.samples.append(finished)
                     self.last_result = {k: result.get(k) for k in ("fall_pending", "fall_active", "trunk_angle")}
-                    if result.get("fall_detected"):
+                    if result.get("fall_detected") and not self.builtin:   # the core's own already checks in
                         self.alerts.append({"time": time.time(), "recorded": finished})
                 if result.get("fall_detected"):
-                    _record("Possible fall detected locally; awaiting a check-in. No external alert sent.")
+                    _record("Possible fall detected locally; check-ins come from Ember's built-in fall detection."
+                            if self.builtin else
+                            "Possible fall detected locally; awaiting a check-in. No external alert sent.")
                 next_frame = started + self.interval
         except Exception as error:
             self.state = "Unavailable: " + type(error).__name__

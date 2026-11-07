@@ -258,8 +258,9 @@ that hangs on its second frame is stopped and pose restarts once on the CPU whil
 continues; `FallDetector` and the fall toolkit get each frame's capture time, not the
 time its pose came back.
 
-`tests/test_toolkit_fall_detection.py` covers the `NPU (core pose)` status and capture
-times in `FallDetector` and the toolkit.
+`tests/test_toolkit_fall_detection.py` covers the `NPU (core pose)` status, capture
+times in `FallDetector` and the toolkit, and one check-in per fall with built-in fall
+detection on.
 
 ## Limits
 

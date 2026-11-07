@@ -1192,7 +1192,9 @@ def _fall_detection_thread():
         latest_frames_only(cv2, cap)
     # MVP features that watch the camera (greetings) get every frame. Its own CPU
     # fall detector stays off unless BAYMAX_FALL_DETECTION_ENABLED=1; v10's runs here.
+    # With both on, the check-in is this thread's (fall_alert_monitor): one per fall.
     fall_worker.start(fps=FALL_DETECTION_FPS, shared_pose=POSE_TRACKING_ENABLED,  # one pose model, not two
+                      builtin=FALL_DETECTION_ENABLED,
                       angle_threshold=FALL_ANGLE_THRESHOLD,
                       ang_vel_threshold=FALL_ANG_VEL_THRESHOLD, hip_vel_threshold=FALL_HIP_VEL_THRESHOLD,
                       history_window=FALL_HISTORY_FRAMES, confirmation_frames=FALL_CONFIRMATION_FRAMES,

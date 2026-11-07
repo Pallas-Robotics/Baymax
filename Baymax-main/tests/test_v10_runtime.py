@@ -833,6 +833,16 @@ class PoseProcessRestartTests(unittest.TestCase):
         # The fall toolkit's own detector (Monitor, or check-ins when the built-in one is off) too.
         self.assertEqual([c.kwargs["captured_at"] for c in ns["fall_worker"].share.call_args_list], captured)
 
+    def test_the_fall_toolkit_leaves_the_check_in_to_builtin_fall_detection(self):
+        # Setup's checkbox and device.toml's fall_detection.enabled both on: one check-in per fall.
+        for builtin in (True, False):
+            with self.subTest(builtin=builtin):
+                ns, latest, faces, opened, logged = self.run_thread(
+                    [self.Working()], fall_detection=builtin, FallDetector=self.detector([]))
+                start = ns["fall_worker"].start.call_args.kwargs
+                self.assertIs(start["builtin"], builtin)
+                self.assertIs(start["shared_pose"], True)        # the toolkit still gets the core's pose
+
     HANGING = textwrap.dedent('''
         import time
 

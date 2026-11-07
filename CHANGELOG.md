@@ -27,6 +27,16 @@
   reads the clock as before. Offline tests pass; fall accuracy on the boards is pending
   as before.
 
+- One check-in per fall. With v10's built-in fall detection (`fall_detection.enabled`,
+  on by default) and the fall toolkit (Setup's checkbox) both on, Gemini got two
+  check-ins for one fall ("[FALL ALERT] ..." and "[Local experimental fall detector]
+  ..."). The toolkit now leaves the check-in to the built-in detection
+  (`fall_worker.start(builtin=True)`) and keeps detecting on the shared pose for the
+  Monitor (state such as "Running on NPU (core pose)", inference time, FPS, results; its
+  event says check-ins come from Ember's built-in fall detection). With built-in
+  detection off, or with the toolkit's own model, it checks in as before. Offline tests
+  pass; live check pending.
+
 - Address gate: a name said just before Gemini ends a turn without replying is
   no longer forgotten. On ember-002 "Amber, please response." was followed by an
   empty turn, and the reply "I'm here." in the next turn was dropped. Speech

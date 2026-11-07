@@ -183,6 +183,36 @@ class FallWorkerTests(unittest.TestCase):
         self.assertIsNotNone(timestamp)
         self.assertTrue(before <= timestamp <= submitted)       # not 0.2 s later, after the pose
 
+    def test_with_builtin_fall_detection_on_one_fall_gets_one_check_in(self):
+        # v10's own detector sends its check-in; the toolkit's must not send a second one,
+        # but keeps detecting and reporting for the Monitor.
+        landmarks = [SimpleNamespace(x=0.5, y=0.5, visibility=1.0)] * 33
+        self.worker.start(shared_pose=True, builtin=True, angle_threshold=45)
+        self.worker.share(landmarks, 4.2, device="NPU")
+        self.wait_for(lambda: self.worker.status()["last_result"] is not None)
+        status = self.worker.status()
+        self.assertEqual(status["state"], "Running on NPU (core pose)")
+        self.assertEqual(status["backend"], "NPU (core pose)")
+        self.assertEqual(status["inference_ms"], 4.2)
+        self.assertEqual(status["last_result"]["fall_active"], True)
+        self.assertIsNone(self.worker.pop_alert())
+        self.record.assert_any_call("Possible fall detected locally; check-ins come from Ember's built-in fall detection.")
+        session = SimpleNamespace(send_client_content=AsyncMock())
+        shutdown = threading.Event()
+        threading.Timer(0.3, shutdown.set).start()
+        with patch.object(monitor, "notify") as notify:
+            asyncio.run(self.worker._alerts(session, shutdown))     # the toolkit's check-in loop
+        session.send_client_content.assert_not_awaited()
+        notify.assert_not_called()
+
+    def test_without_builtin_fall_detection_the_toolkit_checks_in(self):
+        landmarks = [SimpleNamespace(x=0.5, y=0.5, visibility=1.0)] * 33
+        self.worker.start(shared_pose=True, builtin=False, angle_threshold=45)
+        self.worker.share(landmarks, 4.2, device="NPU")
+        self.wait_for(lambda: self.worker.status()["last_result"] is not None)
+        self.assertIsNotNone(self.worker.pop_alert())
+        self.record.assert_any_call("Possible fall detected locally; awaiting a check-in. No external alert sent.")
+
     def test_unshared_worker_ignores_core_landmarks(self):
         self.worker.start(angle_threshold=45)
         self.worker.share([SimpleNamespace()], 1.0)
