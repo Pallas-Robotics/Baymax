@@ -18,7 +18,7 @@ import threading
 
 import runtime_monitor as monitor
 from . import processing
-from .addressing import HINDI_NAME
+from .addressing import HINDI_NAME, URDU_NAME
 
 MARKER = "[ENGAGE AND DISENGAGE]"
 INSTRUCTION = """
@@ -35,8 +35,10 @@ ENGAGED_NOTE = ("[ENGAGED] The person said 'Ember engage', so you can hear them 
 UNAVAILABLE_NOTE = ("[ENGAGE AND DISENGAGE] Disengage is not available on this robot, so you are "
                     "still listening. Tell them briefly; they can turn you off at the power switch instead.")
 # Gemini's transcript of "Ember disengage" ("Ember, disengage.", "amber dis-engage"). In a
-# Hindi conversation either word can come back in Devanagari ("एम्बर डिसएंगेज", "अंबर, डिस-एंगेज").
-DISENGAGE = re.compile(rf"(?:\b(?:ember|amber)\b|{HINDI_NAME.pattern})\W*"
+# Hindi conversation either word can come back in Devanagari ("एम्बर डिसएंगेज", "अंबर, डिस-एंगेज"),
+# and the name also in Urdu script (ایمبر). How Gemini writes "disengage" in Urdu script has
+# not been seen yet, so with the name in Urdu script the word must be in Latin or Devanagari.
+DISENGAGE = re.compile(rf"(?:\b(?:ember|amber)\b|{HINDI_NAME.pattern}|{URDU_NAME.pattern})\W*"
                        r"(?:\bdis\W?engage|[डद]िस\W?[ऀ-ॿ]{0,3}गेज)", re.IGNORECASE)
 VOCABULARY = ["ember", "engage", "disengage"]  # "disengage" so it is never heard as "engage".
 MIN_CONF = 0.9

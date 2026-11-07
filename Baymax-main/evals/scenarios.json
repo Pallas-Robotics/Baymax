@@ -457,7 +457,7 @@
   },
   {
     "name": "address-gate-hindi-name",
-    "about": "260fe20 (James): how Gemini writes 'Ember' in Hindi speech. The opt-in address gate (BAYMAX_ADDRESS_GATE=1) only knows the spellings below; a miss here means a spelling to add.",
+    "about": "260fe20 (James): how Gemini writes 'Ember' in Hindi speech, in Devanagari or Urdu script. The opt-in address gate (BAYMAX_ADDRESS_GATE=1) only knows the spellings below; a miss here means a spelling to add.",
     "requires": {
       "prompt": [
         "[LANGUAGE]"
@@ -468,7 +468,7 @@
         "say": "एम्बर, क्या तुम मुझे सुन सकती हो?",
         "voice": "Lekha",
         "expect": {
-          "heard": "एम्बर|एंबर|एमबर|ऍम्बर|ऍंबर|ऐम्बर|ऐंबर|अम्बर|अंबर|एम् बर|ember|amber",
+          "heard": "एम्बर|एंबर|एमबर|ऍम्बर|ऍंबर|ऐम्बर|ऐंबर|अम्बर|अंबर|एम् बर|ایمبر|ايمبر|امبر|ember|amber",
           "silence_ok": true
         }
       }

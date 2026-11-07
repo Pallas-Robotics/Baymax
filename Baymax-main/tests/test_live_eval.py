@@ -147,6 +147,14 @@ class ScenarioTests(unittest.TestCase):
         scenarios = live_eval.load_scenarios()
         self.assertEqual(len({s["name"] for s in scenarios}), len(scenarios))
 
+    def test_the_hindi_name_scenario_lists_only_spellings_the_address_gate_knows(self):
+        # A spelling the scenario hears but the gate doesn't know would pass the eval and still
+        # drop Ember's reply on a robot with BAYMAX_ADDRESS_GATE=1.
+        from features.conversational_ability import addressing
+        shipped = {s["name"]: s for s in live_eval.load_scenarios()}["address-gate-hindi-name"]
+        for spelling in shipped["steps"][0]["expect"]["heard"].split("|"):
+            self.assertTrue(addressing.names_ember(spelling), spelling)
+
     def test_invalid_steps_are_rejected(self):
         for scenario in ({"name": "x", "steps": [{"say": "hi", "text": "hi"}]},
                          {"name": "x", "steps": [{"say": "hi", "expect": {"tool": ["a"]}}]},

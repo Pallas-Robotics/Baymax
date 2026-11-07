@@ -139,6 +139,20 @@ class AddressGateTests(unittest.TestCase):
         for text in ("बर", "अंबरीश", "सम्बर", "एम्बरों", "मैं घर जा रहा हूँ", "नमस्ते"):
             self.assertFalse(addressing.names_ember(text), text)
 
+    def test_hindi_name_in_urdu_script_counts(self):
+        # Gemini also writes Hindi in Urdu script: in the live evals "एम्बर, मैं रसोई में चाय बना रही
+        # हूँ।" came back like the first line in 9 of 14 runs, the name always ایمبر, and the gate
+        # dropped Ember's reply as not spoken to.
+        for words in (["ایمبر میں رسوائی میں چائے بنا رہی ہوں۔"], ["ایمبر، کیا تم مجھے سن سکتی ہو؟"],
+                      ["امبر، موسم کیسا ہے؟"], ["ہائے", " ایمبر"], ["ايمبر، سنو"]):
+            g, _, log = gate()
+            self.assertEqual(turn(g, words), ["ok"], words)
+            log.assert_not_called()
+        # Longer words that start or end with the letters: Ambreen, chamber, November,
+        # December, member, umbrella, Cambridge; and a sentence without the name.
+        for text in ("امبرین", "چیمبر", "نومبر", "دسمبر", "ممبر", "امبریلا", "کیمبرج", "میں گھر جا رہی ہوں"):
+            self.assertFalse(addressing.names_ember(text), text)
+
     def test_side_conversation_and_noise_are_dropped_and_logged(self):
         g, _, log = gate()
         self.assertEqual(turn(g, ["thanks for calling. I did finish my homework."], "That's good to hear."), [])

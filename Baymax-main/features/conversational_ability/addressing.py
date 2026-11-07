@@ -9,7 +9,8 @@ it still answers noise and people talking among themselves. This gate decides
 on the robot, from Gemini's own input transcription, whether a reply is played:
 
 - the person said Ember's name (or a usual mishearing such as "Amber"; Hindi
-  transcribed in Devanagari counts too: एम्बर, एंबर, अम्बर ...), or
+  transcribed in Devanagari or Urdu script counts too: एम्बर, एंबर, अम्बर ...,
+  ایمبر, امبر), or
 - they spoke within BAYMAX_FOLLOW_UP_SECONDS (default 20) of Ember finishing
   speaking, so they are still in a conversation with it, or
 - the reply answers one of Ember's own messages ([FALL ALERT], [REMINDER],
@@ -57,6 +58,12 @@ DEVANAGARI = "ऀ-ॿ"
 HINDI_NAMES = r"(?:एम्बर|एंबर|एमबर|ऍम्बर|ऍंबर|ऐम्बर|ऐंबर|अम्बर|अंबर)"
 HINDI_NAME = re.compile(rf"(?<![{DEVANAGARI}]){HINDI_NAMES}(?![{DEVANAGARI}])")
 WHOLE_HINDI_NAME = re.compile(HINDI_NAMES)
+# Hindi speech also comes back in Urdu script: in the live evals "एम्बर, मैं रसोई में चाय
+# बना रही हूँ।" did in 9 of 14 runs, always with the name as ایمبر. Its Amber spelling is
+# امبر (like अंबर, also a word for sky). Arabic letters are word characters to Python, so
+# \b works here, also before the ، and ۔ that follow the name; a longer word that starts
+# with the letters (امبرین, Ambreen) does not match. Arabic's own yeh (ي) is accepted too.
+URDU_NAME = re.compile(r"\b(?:ا[یي]مبر|امبر)\b")
 NOISE = re.compile(r"<[^>]*>")
 
 
@@ -72,7 +79,7 @@ def names_ember(text):
     # ("A mber", "E mperor" on ember-002), so two neighbouring pieces that
     # together make the name count too; "a member" or "the member" do not.
     text = text.lower()
-    if NAME.search(text) or HINDI_NAME.search(text):
+    if NAME.search(text) or HINDI_NAME.search(text) or URDU_NAME.search(text):
         return True
     words = re.findall(r"[a-z']+", text)
     if any(WHOLE_NAME.fullmatch(a + b) for a, b in zip(words, words[1:])):

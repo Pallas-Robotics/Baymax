@@ -7,11 +7,11 @@
   conversation's language. The native-audio model picks the language itself; no
   `language_code` or transcription language is set (a test keeps it that way).
   The offline pause words stay English, so Ember says "Hey Ember" and "stop" in
-  English; "Ember disengage" also counts when Gemini writes it in Devanagari;
-  memory lines are written in English for the English-only embedder. Still
-  English: the startup hello before anyone speaks and the eye cues. Offline
-  tests pass; the live `language-*` runs of `evals/live_eval.py` and a Hindi
-  check on the robot are pending.
+  English; "Ember disengage" also counts when Gemini writes it in Devanagari
+  (the name also in Urdu script); memory lines are written in English for the
+  English-only embedder. Still English: the startup hello before anyone speaks
+  and the eye cues. Offline tests pass; the live `language-*` runs of
+  `evals/live_eval.py` and a Hindi check on the robot are pending.
 
 - Orange Pi 5 Max core layout. Everything below applies only while Ember is
   pinned to the fast cores (cpu4-7; `BAYMAX_CPU_PINNING=auto` on an RK3588), so
@@ -270,14 +270,18 @@
   earlier still let a reply through. Offline tests pass; live check on the
   robot is pending.
 
-- Address gate: Hindi transcribed in Devanagari now counts as saying Ember's
-  name (एम्बर, एंबर, एमबर, ऍम्बर, ऐम्बर, ऐंबर, and the Amber mishearing अम्बर,
-  अंबर, also split as "एम् बर"). Python's \b misplaces word edges at the virama
-  and vowel signs, so the match uses explicit Devanagari boundaries. अंबर also
-  means sky and may occasionally let an overheard reply through. Offline tests
-  pass; live Hindi on the robot is pending.
-  On the Orange Pi line the strict gate is opt-in (`BAYMAX_ADDRESS_GATE=1`), so
-  both take effect only where it is turned on.
+- Address gate: Hindi transcribed in Devanagari now counts as saying Ember's name
+  (एम्बर, एंबर, एमबर, ऍम्बर, ऐम्बर, ऐंबर, and the Amber mishearing अम्बर, अंबर, also
+  split as "एम् बर"). Python's \b misplaces word edges at the virama and vowel signs,
+  so the match uses explicit Devanagari boundaries. अंबर also means sky and may
+  occasionally let an overheard reply through. Hindi in Urdu script counts too (ایمبر,
+  امبر): in the live evals Gemini wrote "एम्बर, मैं रसोई में चाय बना रही हूँ।" in Urdu
+  script in 9 of 14 runs, always with ایمبر, and the gate dropped the reply. On the
+  Orange Pi line the strict gate is opt-in (`BAYMAX_ADDRESS_GATE=1`), so both take
+  effect only where it is turned on. "Ember disengage" (on by default) also matches
+  the Urdu-script name, with the word in Latin or Devanagari script: the Urdu spelling
+  of "disengage" has not been seen live, so a transcript wholly in Urdu script does
+  not disengage. Offline tests pass; live Hindi on the robot is pending.
 
 - Integrate the tested language-adaptation instruction into the shared Ember
   persona: follow the person's language, switches and mixed-language speech,

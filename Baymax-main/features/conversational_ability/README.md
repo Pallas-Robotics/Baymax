@@ -251,8 +251,9 @@ When the optional strict gate is enabled, a reply plays only if:
 
 - the person said "Ember" (or a usual mishearing: Amber, Emba, Embar, Emmer,
   Emperor; also split by transcription as "A mber" or "E mperor"; Hindi in
-  Devanagari: एम्बर, एंबर, एमबर, ऐम्बर, अम्बर, अंबर, also split as "एम् बर").
-  अंबर is also the Hindi word for sky, so it can occasionally let an overheard
+  Devanagari: एम्बर, एंबर, एमबर, ऐम्बर, अम्बर, अंबर, also split as "एम् बर"; Hindi in
+  Urdu script, as Gemini often writes it: ایمبر, امبر).
+  अंबर (امبر) is also the Hindi word for sky, so it can occasionally let an overheard
   reply through, as "amber" can in English, or
 - they started speaking within `BAYMAX_FOLLOW_UP_SECONDS` (default 20) of Ember's
   last played reply ending, counting audio still buffered; noise tags such as
@@ -504,7 +505,11 @@ there is no wake word: people talk to Ember without saying its name.
   ("Ember, disengage.", "amber dis-engage"; in a Hindi conversation also in
   Devanagari, "एम्बर डिसएंगेज", "अंबर, डिस-एंगेज", using the address gate's Hindi
   spellings of the name) through `runtime_monitor.transcript_listeners`.
-  Ember's own transcript never counts.
+  Ember's own transcript never counts. The name also counts in Urdu script
+  ("ایمبر، disengage"), but only with the word in Latin or Devanagari script: how
+  Gemini writes "disengage" in Urdu script has not been seen live yet, so a fully
+  Urdu-script transcript is not matched (Gemini still says its goodbye, but the mic
+  stays open).
 - **While disengaged**, the mic gate (first in `processing.input_gates`, ahead of
   the audiobook) sends Gemini silence, as during audiobooks. The same
   echo-cancelled mic audio goes only to an offline Vosk listener

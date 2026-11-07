@@ -84,12 +84,15 @@ class EngageTests(unittest.TestCase):
     def test_transcript_variants_and_non_matches(self):
         for text in ("Ember disengage", "amber, dis-engage", "OK EMBER... DISENGAGE please", "ember disengaged",
                      # Hindi conversations: Gemini may write either word in Devanagari.
-                     "एम्बर, डिसएंगेज।", "Ember डिसएंगेज", "अंबर, डिस-एंगेज", "एंबर डिसेंगेज", "एम्बर disengage"):
+                     "एम्बर, डिसएंगेज।", "Ember डिसएंगेज", "अंबर, डिस-एंगेज", "एंबर डिसेंगेज", "एम्बर disengage",
+                     # Or the name in Urdu script (the word itself has not been seen in it yet).
+                     "ایمبر، disengage", "ایمبر डिसएंगेज", "امبر disengage."):
             ember = Engagement(listener_factory=FakeListener, audio_ready=lambda: True)
             ember.observe("user", {"id": 1, "text": text})
             self.assertTrue(ember.disengaged, text)
         for text in ("disengage", "Ember, engage", "remember to disengage the brake", "Ember, how are you?",
-                     "डिसएंगेज", "एम्बर, कैसी हो?", "अंबरीश डिसएंगेज", "एम्बर एंगेज"):
+                     "डिसएंगेज", "एम्बर, कैसी हो?", "अंबरीश डिसएंगेज", "एम्बर एंगेज",
+                     "ایمبر میں رسوائی میں چائے بنا رہی ہوں۔", "امبرین disengage", "ایمبر engage"):
             ember = Engagement(listener_factory=FakeListener, audio_ready=lambda: True)
             ember.observe("user", {"id": 1, "text": text})
             self.assertFalse(ember.disengaged, text)
