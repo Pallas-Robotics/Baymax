@@ -6,7 +6,8 @@
     "Baymax-main/deploy/**",
     "devops/mvp/**",
     "devops/clickables/**",
-    "Baymax-main/dev_settings.py"
+    "Baymax-main/dev_settings.py",
+    "Baymax-main/pc_hardware.py"
   ],
   "python": [
     {

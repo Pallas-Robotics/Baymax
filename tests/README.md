@@ -39,10 +39,13 @@ offline tests do not invent readings or launch a live scenario.
 
 Each folder's `suite.json` owns source patterns and references its test files.
 Tests are assigned by file name, so a suite's sources also list the application
-modules its tests construct, call or patch from other features (for example pose
-lists `features/toolkits/fall_detection.py`); `--changed` then selects it. Shared
-registries (`features/toolkits/__init__.py`, `gemini_tools.py`) are left out.
-Choosing suites from what the tests import would replace these lists.
+modules its tests construct, call, patch or read from other features (for example pose
+lists `features/toolkits/fall_detection.py`), including those a `realtime_gemini_10.py`
+function they run imports (runtime lists `features/vision_process.py`, which
+`_open_pose` starts), and the other suites' test modules they import (runtime lists
+`test_waiting_cue.py`); `--changed` then selects it. Shared registries
+(`features/toolkits/__init__.py`, `gemini_tools.py`, `fall_detection.session_tasks`)
+are left out. Choosing suites from what the tests import would replace these lists.
 Existing test modules stay in `Baymax-main/tests` and `devops` so imports and robot
 updaters keep working. New application tests must be assigned to one feature;
 overall checks reject missing or duplicate ownership. Suites run in separate

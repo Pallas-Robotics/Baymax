@@ -59,8 +59,10 @@ python tests/run.py
   CI must have it. Explain every skip, failure or unavailable platform.
 - Every new `Baymax-main/tests/test_*.py` file must belong to exactly one suite.
   Update the matching `tests/**/suite.json`; the overall gate enforces coverage.
-  When a test exercises another feature's module, add that module to the suite's
-  `sources` so `--changed` selects the suite when the module changes.
+  When a test exercises another feature's module (also through a
+  `realtime_gemini_10.py` function it runs) or imports another suite's test module,
+  add that file to the suite's `sources` so `--changed` selects the suite when it
+  changes.
 
 Reports/logs go to `.local-review/validation/`. Do not paste private sessions or
 credentials into a PR. A successful import, empty test suite, active service or
