@@ -125,9 +125,9 @@ With Ember on the fast cores, and only then:
   conversion), and `OPENBLAS_NUM_THREADS=1`, `OPENCV_FOR_THREADS_NUM=1` and
   `TOKENIZERS_PARALLELISM=false` apply to Ember and everything it starts, unless `.env`
   or the shell sets them. ONNX Runtime keeps its two threads for the memory lookup
-  (below). The lookup runs between turns, once Ember's reply has played, and nothing
-  waits for it; two threads finish it sooner (19 ms instead of 39 ms on one fast core)
-  in case the person's next reply starts while it is still running.
+  (below). With `BAYMAX_MEMORY_NOTES=1` a lookup runs between turns, once Ember's reply
+  has played, and nothing waits for it; two threads finish it sooner (19 ms instead of
+  39 ms on one fast core) in case the person's next reply starts while it is running.
 - **Speaker stream: 512-frame callbacks and low latency** instead of sounddevice's 1024
   and `high`. With the 5 Max's USB speaker on PipeWire's default device the speaker's
   output latency went from about 96 ms to about 42 ms (PortAudio reported 42.7 ms, now
@@ -184,9 +184,11 @@ Gemini summarises the conversation since the last save (the same step on every
 platform) and the summary lines are stored on the board in `chroma_store/` (in
 `BAYMAX_DATA_DIR`, by default next to the code; on the Orange Pi 4 Pro SD image
 `~/ember-deployment/data`, which updates keep). A crash or power cut loses only the
-conversation since the last save. After each of the person's turns, once Ember's reply
-has played, the closest memories are looked up and given to Gemini between turns for
-their next words (not yet on Gemini 3), and the 50 newest are part of its instructions.
+conversation since the last save. The 50 newest memories are part of Gemini's
+instructions at every connection, and Gemini uses them (checked live: a remembered fact
+there was used 5 of 5 times). Looking memories up during the conversation and handing
+them to Gemini between turns is opt-in (`BAYMAX_MEMORY_NOTES=1`): Gemini 2.5 ignored
+such notes in 10 of 10 live runs, so by default Ember does no per-turn lookups.
 `requirements-orange-pi.txt` installs ChromaDB, ONNX Runtime and `tokenizers` for this,
 without torch: `semantic_embedder.py` runs the same MiniLM model with the same results
 as the robot image.

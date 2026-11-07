@@ -808,7 +808,7 @@ class RecalledMemoryTests(unittest.TestCase):
             "_memories_given": set(), "_reply_owed_since": None,
             "BETWEEN_TURNS_POLL_S": 0.01, "BETWEEN_TURNS_QUIET_S": 0.05, "REPLY_OWED_MAX_S": 15.0,
             "_go_away_at": None, "_turn_done_at": 0.0,  # no GoAway here (see test_v10_runtime)
-            "live_models": live_models,
+            "live_models": live_models, "MEMORY_NOTES_ENABLED": True,  # the opt-in these tests exercise
         }
 
         def append_playback(data, *, new_turn=False, timing_id=None):
@@ -938,6 +938,18 @@ class RecalledMemoryTests(unittest.TestCase):
         self.assertEqual(len(sent), 1)
         self.assertIn("Rex", sent[0]["turns"]["parts"][0]["text"])
         self.assertNotIn("tomatoes", sent[0]["turns"]["parts"][0]["text"])
+
+    def test_memory_notes_are_off_by_default(self):
+        # Gemini 2.5 ignored such notes live (0 of 10) while the same memory in the
+        # instructions was used 5 of 5: without BAYMAX_MEMORY_NOTES=1 nothing is looked up
+        # or sent between turns.
+        ns = self.runtime(lambda query: [self.TOMATOES])
+        ns["MEMORY_NOTES_ENABLED"] = False
+        with patch.object(live_models, "in_use", "gemini-2.5-flash-native-audio-preview-12-2025"):
+            sent = self.converse(ns, self.reply(ns, "Ember, how is my garden doing?"))
+        self.assertEqual((sent, self.searched), ([], []))
+        source = CORE.read_text(encoding="utf-8")  # realtime_gemini_10.py
+        self.assertIn('MEMORY_NOTES_ENABLED = os.getenv("BAYMAX_MEMORY_NOTES", "0") == "1"', source)
 
     def test_on_gemini_3_no_memory_note_goes_until_checked_live(self):
         # Sent without turn_complete: whether 3.x still answers the person's next words after

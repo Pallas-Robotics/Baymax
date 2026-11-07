@@ -871,7 +871,8 @@ class ReconnectTests(unittest.TestCase):
         ns = {"asyncio": asyncio, "time": clock, "_between_turns": lambda at: quiet, "_recalled": None,
               "_go_away_at": go_away_at, "_turn_done_at": turn_done_at, "handle_received_at": lambda: handle_at,
               "_connected_at": connected_at, "BETWEEN_TURNS_POLL_S": 0.001, "GO_AWAY_HANDLE_WAIT_S": 3.0,
-              "_user_turn": None, "_looked_up": None, "_memory_embedder": None, "live_models": live_models}
+              "_user_turn": None, "_looked_up": None, "_memory_embedder": None, "live_models": live_models,
+              "MEMORY_NOTES_ENABLED": False}  # the default; the GoAway handover works either way
         with patch("test_public_core_integration.CORE", V10):
             for name in ("_SessionHandover", "_handover_due", "between_turns"):
                 load_function(name, ns)
@@ -935,7 +936,8 @@ class ReconnectTests(unittest.TestCase):
                        _recalled=None, _user_turn=None, _looked_up=None, _memories_given=set(),
                        _reply_owed_since=None, _last_loud_mic_ts=0.0, _last_user_speech_ts=0.0, _turn_done_at=0.0,
                        handle_received_at=resumption.handle_received_at, BETWEEN_TURNS_POLL_S=0.001,
-                       BETWEEN_TURNS_QUIET_S=1.0, REPLY_OWED_MAX_S=15.0, GO_AWAY_HANDLE_WAIT_S=3.0)
+                       BETWEEN_TURNS_QUIET_S=1.0, REPLY_OWED_MAX_S=15.0, GO_AWAY_HANDLE_WAIT_S=3.0,
+                       MEMORY_NOTES_ENABLED=False)
         options.update(overrides)
         with patch.dict(os.environ, {"BAYMAX_SESSION_RESUMPTION": "1", "BAYMAX_CONTEXT_COMPRESSION": "0"}):
             return self.run_connections(count, receive, **options)

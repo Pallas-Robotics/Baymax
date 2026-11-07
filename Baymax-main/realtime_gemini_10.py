@@ -267,6 +267,14 @@ MEMORY_TOP_K = 3                 # how many memories to retrieve per turn
 MEMORY_MAX_DISTANCE = 1.0        # cosine distance threshold (0=identical, 2=opposite)
 MEMORY_WORD_WINDOW = 30          # use last N words of user speech for retrieval query
 MEMORY_PROMPT_COUNT = 50         # newest memories copied into the system instruction
+# Recalled memories as a [MEMORY CONTEXT] note between turns (between_turns): opt-in.
+# Checked live on 2026-11-07 (evals/live_eval.py, Gemini 2.5 native audio): Gemini used
+# a fact from a note sent without turn_complete in 0 of 10 replies ("I don't know your
+# dog's name"), and with turn_complete it answered the note out loud every time; the
+# same fact among the memories in the instructions was used 5 of 5 times. So by default
+# Ember relies on the newest MEMORY_PROMPT_COUNT memories in its instructions and does no
+# per-turn lookups or notes. BAYMAX_MEMORY_NOTES=1 turns them on (e.g. to test a model).
+MEMORY_NOTES_ENABLED = os.getenv("BAYMAX_MEMORY_NOTES", "0") == "1"
 # Memories recalled for what the person says reach Gemini between turns, never
 # during a reply (between_turns). They are looked up from the person's whole turn
 # once its reply has played; the recall for their latest turn waits here.
@@ -1964,7 +1972,8 @@ async def between_turns(session):
     while True:
         await asyncio.sleep(BETWEEN_TURNS_POLL_S)
         now = time.monotonic()
-        notes = live_models.takes_quiet_notes()  # not on Gemini 3 until checked live
+        # Opt-in (MEMORY_NOTES_ENABLED); never on Gemini 3 until checked live.
+        notes = MEMORY_NOTES_ENABLED and live_models.takes_quiet_notes()
         lookup_due = notes and _user_turn is not _looked_up and _memory_embedder is not None
         if (_recalled is None and _go_away_at is None and not lookup_due) or not _between_turns(now):
             continue

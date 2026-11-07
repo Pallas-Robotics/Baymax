@@ -283,9 +283,18 @@
   `[MEMORY CONTEXT]` section and the note say its facts are things Ember knows and
   that it needs no reply, and `[WHEN TO SPEAK]` no longer says every bracket-labelled
   message needs a response (it exempts `[MEMORY CONTEXT]` and `[ABOUT THE PERSON]`
-  notes). With the earlier wording Gemini 2.5 used the note's fact in the next reply
-  in 1 of 3 and 2 of 5 live runs of `memory-note-then-speech`, and the note never
-  delayed that reply (2.1-2.5 s); the new wording is still to be run live. Memories
+  notes). Checked live (2026-11-07, Gemini 2.5 native audio, `evals/live_eval.py`):
+  the note never delayed the next reply (1.6-2.5 s), but Gemini did not use it: asked
+  "what is my dog's name?" after a note saying the dog is Biscuit, it answered "I don't
+  know your dog's name" in 10 of 10 runs (5 with the old persona, 5 with a persona that
+  explicitly counts remembered facts), and a note sent with `turn_complete=True` was used
+  but answered out loud every time. The same fact among the memories at the start of the
+  instructions was used 5 of 5 times. So these notes are now **opt-in**
+  (`BAYMAX_MEMORY_NOTES=1`, e.g. to test another model): by default Ember does no
+  per-turn lookups or notes and relies on the newest 50 memories in its instructions
+  (`MEMORY_PROMPT_COUNT`); older memories are not recalled mid-conversation (a recall
+  tool Gemini can call is the follow-up). `memory-note-then-speech` now checks only that
+  a note doesn't delay the next reply. Memories
   already in the connection's prompt or given in its conversation are skipped (a
   connection that resumes the conversation keeps the list; a fresh one starts from its
   prompt); a recall is dropped when the person starts a new turn before it could be
