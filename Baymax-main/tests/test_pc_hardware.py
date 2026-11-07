@@ -175,7 +175,7 @@ class BigLittleCpuTests(unittest.TestCase):
         self.addCleanup(environment.stop)
         for name in (*FAST_CORE_ENV, "BAYMAX_GIL_SWITCH_MS", "BAYMAX_VISION_CPUS"):
             os.environ.pop(name, None)                  # the shell's own; restored by patch.dict
-        guards = [patch.object(sys, "setswitchinterval")]
+        guards = [patch.object(sys, "setswitchinterval"), patch.object(pc_hardware, "_warned", set())]
         for name in ("sched_setaffinity", "setpriority"):   # tests that expect calls patch them again
             if hasattr(os, name):
                 guards.append(patch.object(pc_hardware.os, name))
@@ -354,6 +354,25 @@ class BigLittleCpuTests(unittest.TestCase):
                         self.switch.assert_called_once_with(interval)
                     warnings = [c.args[0] for c in printed.call_args_list if "Invalid BAYMAX_GIL_SWITCH_MS" in c.args[0]]
                     self.assertEqual(len(warnings), 1 if value in ("fast", "-1", "0.01", "1000", "nan") else 0)
+
+    @patch.object(pc_hardware, "is_rk3588", Mock(return_value=True))
+    def test_an_invalid_gil_switch_interval_is_reported_once(self):
+        # run_mvp.py pins Ember, then run_pc.py calls use_performance_cpus again: the warning
+        # came twice, though a second call is meant to print nothing.
+        current = Mock(return_value=set(range(8)))
+        with patch.object(pc_hardware, "performance_cpus", return_value={4, 5, 6, 7}), \
+             patch.object(pc_hardware, "thread_ids", return_value=[100]), \
+             patch.object(pc_hardware.os, "sched_setaffinity", Mock(), create=True), \
+             patch.object(pc_hardware.os, "sched_getaffinity", current, create=True), \
+             patch.dict(os.environ, {"BAYMAX_GIL_SWITCH_MS": "fast"}), patch("builtins.print") as printed:
+            pc_hardware.use_performance_cpus()                              # run_mvp.py
+            current.return_value = {4, 5, 6, 7}
+            pc_hardware.use_performance_cpus()                              # run_pc.py
+        self.assertEqual([c.args[0] for c in printed.call_args_list],
+                         ["[CPU] Invalid BAYMAX_GIL_SWITCH_MS; using 1 ms.",
+                          "[CPU] Running on the fast cores 4,5,6,7, GIL switch interval 1 ms "
+                          "(BAYMAX_CPU_PINNING=off to use all)."])
+        self.assertEqual([c.args for c in self.switch.call_args_list], [(0.001,), (0.001,)])
 
     @patch.object(pc_hardware, "is_rk3588", Mock(return_value=True))
     def test_children_may_use_the_cores_ember_had_before_it_narrowed_itself(self):

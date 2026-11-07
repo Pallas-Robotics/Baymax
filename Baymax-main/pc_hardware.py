@@ -145,10 +145,13 @@ def cpus_from_env(name):
     return cpus if min(cpus) >= 0 else None
 
 
+_warned = set()  # invalid values already reported: run_mvp.py and run_pc.py both apply the settings
+
+
 def gil_switch_ms():
     """BAYMAX_GIL_SWITCH_MS: how many ms a thread may keep Python's GIL while another thread
     waits for it, with Ember on the fast cores. 1 (default); 0 leaves Python's own (5 ms);
-    otherwise 0.1-100."""
+    otherwise 0.1-100. An invalid value is reported once per process."""
     text = os.getenv("BAYMAX_GIL_SWITCH_MS", "").strip()
     if not text:
         return 1.0
@@ -158,7 +161,9 @@ def gil_switch_ms():
         value = -1.0
     if value == 0 or 0.1 <= value <= 100:     # also rejects nan and inf
         return value
-    print("[CPU] Invalid BAYMAX_GIL_SWITCH_MS; using 1 ms.", flush=True)
+    if text not in _warned:
+        _warned.add(text)
+        print("[CPU] Invalid BAYMAX_GIL_SWITCH_MS; using 1 ms.", flush=True)
     return 1.0
 
 
