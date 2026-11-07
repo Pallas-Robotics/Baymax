@@ -246,7 +246,9 @@
   on (7 errors); with it off 26 of 27 runs passed, no errors, and the first reply
   audio came as fast (median 1.78-1.79 s). On the robot each error is a dropped
   connection and a deaf reconnect. A private `.env` copied from the old
-  `.env.example` still has `BAYMAX_GOOGLE_SEARCH=1`: remove that line.
+  `.env.example` still has `BAYMAX_GOOGLE_SEARCH=1`: remove that line. The example
+  now shows `# BAYMAX_GOOGLE_SEARCH=1`, the value that turns it on, and the public
+  tools' instruction offers Google Search for show ideas only when it is on.
 
 - Address gate: a name said just before Gemini ends a turn without replying is
   no longer forgotten. On ember-002 "Amber, please response." was followed by an

@@ -22,7 +22,10 @@ search on, reminder 0/3, radio 0/3 and weather 1/3 passed (7 errors); with it of
 26 of 27 runs passed with no errors, and the median time to the first reply audio
 was about the same (1.78-1.79 s). On the robot each such error is a dropped
 connection and a reconnect during which Ember can't hear. Turn it on again only to
-check whether a newer model has fixed this.
+check whether a newer model has fixed this. A `.env` copied from an older
+`.env.example` may still say `BAYMAX_GOOGLE_SEARCH=1`, which keeps it on: remove that
+line. While it is off, no instruction mentions Google Search (the public tools' show
+suggestions offer it only when the search tool is there).
 
 When turned on, the existing Gemini Google Search tool can be used without an explicit search
 request when a public topic in an engaged conversation merits a relevant lookup.

@@ -103,13 +103,16 @@ When asked for a poem's lines, quote them from the tool result (they are public
 domain), then talk about them. If a recipe is not found, offer a simple version
 from your own knowledge and say it is not from the recipe source.
 For show recommendations by genre or mood, suggest titles from your own
-knowledge (or Google Search); use public_shows only to check a specific title.
+knowledge; use public_shows only to check a specific title.
 If a lookup fails, say that source is not answering and carry on helpfully
 with what you know, instead of giving up on the request.
 public_radio only finds stations: play one only with the listen tool, when it is
 available. Do not invent episode dates.
 Unavailable or disabled tools are unavailable; continue the conversation normally.
 """
+# With Google Search on (gemini_tools.search_enabled) show ideas may come from it too; without
+# the search tool the instruction must not offer it.
+SHOWS_WITH_SEARCH = ("suggest titles from your own\nknowledge;", "suggest titles from your own\nknowledge (or Google Search);")
 GAMES_INSTRUCTION = """
 [BRAIN GAMES]
 Play brain games (word association, twenty questions either way, categories,
@@ -211,8 +214,11 @@ def extend_config(config):
     additions = [copy.deepcopy(d) for d in DECLARATIONS if d["name"] in enabled and d["name"] not in existing]
     if additions:
         tools.append({"function_declarations": additions})
-    if INSTRUCTION not in result["system_instruction"]:
-        result["system_instruction"] += INSTRUCTION
+    instruction = INSTRUCTION
+    if any("google_search" in tool for tool in tools):
+        instruction = INSTRUCTION.replace(*SHOWS_WITH_SEARCH)
+    if instruction not in result["system_instruction"]:
+        result["system_instruction"] += instruction
     if "brain_game" in enabled and GAMES_INSTRUCTION not in result["system_instruction"]:
         result["system_instruction"] += GAMES_INSTRUCTION
     return result

@@ -215,6 +215,19 @@ class ToolkitTests(unittest.TestCase):
         self.assertFalse(any("google_search" in t for t in result["tools"]))
         self.assertNotIn("[GOOGLE SEARCH]", result["system_instruction"])
 
+    def test_show_ideas_offer_google_search_only_when_it_is_on(self):
+        # The public tools' instruction offered "(or Google Search)" with the search tool off too.
+        from features.toolkits import experimental
+        base = {"system_instruction": "base", "tools": []}
+        for search, offered in (("0", False), ("1", True)):
+            with self.subTest(search=search), patch.dict('os.environ', {
+                    "BAYMAX_TOOLKIT_ENABLED": "1", "EMBER_DISCOVERY_ENABLED": "1", "BAYMAX_GOOGLE_SEARCH": search}):
+                result = gemini_tools.extend_config(base)
+                self.assertIn("[EXPERIMENTAL PUBLIC TOOLS]", result["system_instruction"])
+                self.assertEqual("own\nknowledge (or Google Search);" in result["system_instruction"], offered)
+                self.assertEqual("Google Search" in result["system_instruction"], offered)
+                self.assertEqual(experimental.extend_config(result), result)  # added once
+
     def test_location_result_points_weather_questions_at_get_weather(self):
         # Gemini sometimes answered the weather after get_location alone, inventing conditions.
         with patch.dict('os.environ', {"BAYMAX_TOOLKIT_ENABLED": "1"}), \
