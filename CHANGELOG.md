@@ -1,5 +1,13 @@
 # MVP (unreleased)
 
+- Less work on the real-time threads. PortAudio's capture callback printed a
+  flushed `[MIC LEVEL]` line every 50 blocks, which can stall the capture when the
+  log is slow; it now only stores the level, and the existing 3 s `[QUEUES]` monitor
+  prints it. The `[PROFILE]` summaries print about every 10 s instead of every ~1 s
+  (each still covers the last 50 samples). The camera frame Gemini gets every 3 s is
+  resized and JPEG-encoded on a worker thread instead of the event loop that sends
+  the mic and plays replies.
+
 - 10 ms less mic delay: v10 captures 960-sample (20 ms) mic blocks instead of 1024.
   The WebRTC audio cleanup works in whole 10 ms frames (480 samples), so 1024-sample
   blocks kept a permanent 10 ms carry; 960 are two whole frames, cleaned and sent at

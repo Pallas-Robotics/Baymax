@@ -610,6 +610,7 @@ _face_state_lock = threading.Lock()
 _last_robot_speech_ts = time.monotonic()  # last time the robot produced audio
 _last_user_speech_ts = 0.0                # last time the user was heard (transcription)
 _last_loud_mic_ts = 0.0                   # last mic frame above the speech RMS floor
+_mic_level = None                         # (rms, peak) of the latest mic block; monitor_queues prints it
 _initiation_ts_lock = threading.Lock()
 
 # ─── Audio recording for voice biomarker analysis ───────────────────────────
@@ -766,6 +767,8 @@ def _newest_memories(limit=MEMORY_PROMPT_COUNT):
 
 # ─── Latency Profiling ────────────────────────────────────────────────────────
 PROFILE_WINDOW = 50
+# The mic trackers fill a window every second: print each summary at most this often.
+PROFILE_REPORT_S = 10.0
 
 class LatencyTracker:
     def __init__(self, name: str, window: int = PROFILE_WINDOW):
@@ -773,11 +776,13 @@ class LatencyTracker:
         self.samples = collections.deque(maxlen=window)
         self._count = 0
         self._report_every = window
+        self._reported = float("-inf")  # time.monotonic() of the last summary
 
     def record(self, duration_ms: float):
         self.samples.append(duration_ms)
         self._count += 1
-        if self._count % self._report_every == 0:
+        if self._count % self._report_every == 0 and time.monotonic() - self._reported >= PROFILE_REPORT_S:
+            self._reported = time.monotonic()
             self._print_summary()
 
     def _print_summary(self):
@@ -966,6 +971,9 @@ async def monitor_queues(interval: float = 3.0):
             f"playback_buf={pbuf_len:>6d} bytes  "
             f"unsaved utterances: user={user_count} gemini={gemini_count}"
         )
+        level = _mic_level
+        if level is not None:
+            print(f"[MIC LEVEL] rms={level[0]:.0f}  peak={level[1]}  (max=32767)", flush=True)
 
 # ─── Audio Writer Thread (records user speech to WAV) ────────────────────────
 def _audio_writer_thread():
@@ -1573,6 +1581,7 @@ async def listen_audio():
     #           flush=True)
 
     def audio_callback(indata, frames, time_info, status):
+        global _last_loud_mic_ts, _mic_level
         if status:
             print(f"[MIC STATUS] {status}", flush=True)
 
@@ -1613,13 +1622,10 @@ async def listen_audio():
         # opening a conversation while the user is mid-utterance.
         if rms > INTERRUPT_RMS_THRESHOLD:
             with _initiation_ts_lock:
-                global _last_loud_mic_ts
                 _last_loud_mic_ts = time.monotonic()
-        if not hasattr(audio_callback, '_count'):
-            audio_callback._count = 0
-        audio_callback._count += 1
-        if audio_callback._count % 50 == 0:
-            print(f"[MIC LEVEL] rms={rms:.0f}  peak={peak}  (max=32767)", flush=True)
+        # monitor_queues prints it: a flushed print here, on PortAudio's capture thread,
+        # can stall the capture when the log is slow.
+        _mic_level = (rms, peak)
 
         loop.call_soon_threadsafe(
             audio_queue_mic.put_nowait,
@@ -1685,8 +1691,18 @@ async def send_audio_realtime(session):
             tracker_send_audio.record(send_ms)
             _last_mic_send_ts = time.perf_counter()
 
+def _encode_video_frame(frame):
+    """The 320x240 JPEG Gemini gets (fall detection runs at 640x480). On a worker thread:
+    resizing and encoding on the event loop held up the mic sender and receive loop."""
+    small = cv2.resize(frame, (320, 240))
+    _, buffer = cv2.imencode(
+        ".jpg", small, [int(cv2.IMWRITE_JPEG_QUALITY), 50]
+    )
+    return buffer.tobytes()
+
 async def send_video_realtime(session):
     """Reads shared frames from the fall detection thread and sends to Gemini every 3s."""
+    loop = asyncio.get_running_loop()
     # Wait for fall detection thread to start capturing
     for _ in range(50):
         with _latest_frame_lock:
@@ -1710,12 +1726,7 @@ async def send_video_realtime(session):
         if frame is None:
             continue
 
-        # Resize to 320x240 for Gemini (fall detection runs at 640x480)
-        small = cv2.resize(frame, (320, 240))
-        _, buffer = cv2.imencode(
-            ".jpg", small, [int(cv2.IMWRITE_JPEG_QUALITY), 50]
-        )
-        jpg_bytes = buffer.tobytes()
+        jpg_bytes = await loop.run_in_executor(None, _encode_video_frame, frame)
         encode_ms = (time.perf_counter() - t0) * 1000
 
         t1 = time.perf_counter()

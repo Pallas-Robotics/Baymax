@@ -724,6 +724,108 @@ class ReconnectTests(unittest.TestCase):
         self.assertLess(cleanup.index("_abort_connection(live_session)"), cleanup.index("output_stream.stop()"))
 
 
+class RealTimeThreadTests(unittest.TestCase):
+    """Nothing slow on PortAudio's capture thread or the event loop that sends the mic."""
+
+    def test_the_mic_level_is_printed_by_the_queue_monitor_not_the_capture_thread(self):
+        import numpy as np
+        import queue
+        samples = np.full((960, 1), 1500, dtype=np.int16)
+
+        class Stream:
+            latency = .02
+
+            def __init__(self, **kwargs):
+                self.callback = kwargs["callback"]
+
+            def __enter__(self):
+                for _ in range(120):                  # the old callback printed every 50th block
+                    self.callback(samples, 960, None, None)
+
+            def __exit__(self, *args):
+                pass
+        ns = {"asyncio": asyncio, "np": np, "queue": queue, "time": time, "_audio_enhancer": None,
+              "_waiting_cue": None, "INPUT_CHANNELS": 1, "_audio_record_queue": queue.Queue(),
+              "audio_queue_mic": asyncio.Queue(), "INTERRUPT_RMS_THRESHOLD": 1000,
+              "_initiation_ts_lock": threading.Lock(), "_last_loud_mic_ts": 0.0,
+              "sd": SimpleNamespace(InputStream=Stream), "SEND_SAMPLE_RATE": 48000, "CHUNK_SIZE": 960,
+              "_playback_lock": threading.Lock(), "_playback_buffer": b"", "_transcript_lock": threading.Lock(),
+              "_transcript": [], "_transcript_saved": 0}
+        with patch("test_public_core_integration.CORE", V10):
+            for name in ("listen_audio", "monitor_queues"):
+                load_function(name, ns)
+
+        async def capture():
+            try:
+                await asyncio.wait_for(ns["listen_audio"](), .02)
+            except TimeoutError:
+                pass
+        with patch("builtins.print") as printed:
+            asyncio.run(capture())
+        self.assertFalse([c for c in printed.call_args_list if "[MIC LEVEL]" in str(c.args)])
+        self.assertEqual(ns["_mic_level"], (1500.0, 1500))
+        ticks = []
+
+        async def tick(seconds):                      # one report, then stop
+            ticks.append(seconds)
+            if len(ticks) > 1:
+                raise asyncio.CancelledError()
+        with patch("asyncio.sleep", tick), patch("builtins.print") as printed, \
+                self.assertRaises(asyncio.CancelledError):
+            asyncio.run(ns["monitor_queues"](interval=3.0))
+        self.assertIn("[MIC LEVEL] rms=1500  peak=1500  (max=32767)", [c.args[0] for c in printed.call_args_list])
+
+    def test_profile_summaries_print_about_every_ten_seconds(self):
+        import collections
+        import numpy as np
+        clock = SimpleNamespace(now=0.0)
+        ns = {"time": SimpleNamespace(monotonic=lambda: clock.now), "collections": collections, "np": np,
+              "_playback_lock": threading.Lock(), "_playback_buffer": b"", "audio_queue_mic": asyncio.Queue(),
+              "PROFILE_WINDOW": 50, "PROFILE_REPORT_S": 10.0}
+        with patch("test_public_core_integration.CORE", V10):
+            tracker = load_function("LatencyTracker", ns)("mic_queue_wait")
+        with patch("builtins.print") as printed:
+            for block in range(1500):                 # 30 s of 20 ms mic blocks
+                clock.now = block * 0.02
+                tracker.record(1.0)
+        self.assertEqual(printed.call_count, 3)       # was 30: one every 50 blocks
+        self.assertEqual(len(tracker.samples), 50)    # each summary still covers the last 50
+
+    def test_the_camera_frame_for_gemini_is_encoded_off_the_event_loop(self):
+        import numpy as np
+        on_main_thread = []
+
+        class FakeCv2:
+            IMWRITE_JPEG_QUALITY = 1
+
+            @staticmethod
+            def resize(frame, size):
+                on_main_thread.append(threading.current_thread() is threading.main_thread())
+                return frame
+
+            @staticmethod
+            def imencode(ext, image, params):
+                return True, np.frombuffer(b"jpeg", dtype=np.uint8)
+        sent = []
+
+        async def send(**kwargs):
+            sent.append(kwargs["video"].data)
+            raise asyncio.CancelledError()            # one frame is enough
+
+        async def no_wait(seconds):
+            pass
+        ns = {"asyncio": asyncio, "time": time, "cv2": FakeCv2, "_latest_frame_lock": threading.Lock(),
+              "_latest_frame": "frame", "types": SimpleNamespace(Blob=lambda **kw: SimpleNamespace(**kw)),
+              "tracker_send_video": SimpleNamespace(record=Mock())}
+        with patch("test_public_core_integration.CORE", V10):
+            for name in ("_encode_video_frame", "send_video_realtime"):
+                load_function(name, ns)
+        with patch("asyncio.sleep", no_wait), patch("builtins.print"), self.assertRaises(asyncio.CancelledError):
+            asyncio.run(ns["send_video_realtime"](SimpleNamespace(send_realtime_input=send)))
+        self.assertEqual(on_main_thread, [False])     # the event loop runs on the main thread here
+        self.assertEqual(sent, [b"jpeg"])
+
+
 class TranscriptsStayOnRobotTests(unittest.TestCase):
     def test_cloud_never_queues_transcripts_and_drops_old_ones(self):
         with patch("dotenv.load_dotenv"):  # not this machine's .env, for every later test
