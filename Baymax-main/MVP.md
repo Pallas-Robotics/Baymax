@@ -247,8 +247,9 @@ The v10 built-in vision path defaults to `camera.pose_tracking = true` and
 a fresh device; saved `false` settings (including a temporary demo opt-out) still
 win until changed explicitly. These settings are separate from
 `BAYMAX_FALL_DETECTION_ENABLED`, the optional fall toolkit. With pose tracking on it
-reuses this pose (no second model), but adds a second fall detector, so one fall can
-give two check-ins; leave it off unless you are testing it. This default
+reuses this pose (no second model) and runs its own detector on it for the Monitor;
+with `fall_detection.enabled` on it leaves the check-in to the built-in detection, so
+one fall gives one check-in. This default
 does not provision caregiver recipients or validate fall accuracy on new hardware.
 
 Echo protection removes positive AGC boost while the speaker/device buffer and

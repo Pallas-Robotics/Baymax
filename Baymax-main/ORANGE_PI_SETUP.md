@@ -22,7 +22,7 @@ On an Orange Pi 5 Max with Armbian Debian 13 (vendor kernel 6.1), `requirements-
 1. Get the code as a git checkout of the `release` branch, in a folder you keep: `sudo apt install -y git`, then `git clone --branch release --single-branch https://github.com/Pallas-Robotics/Baymax.git ~/Baymax`. Automatic updates (below) need this checkout. An extracted ZIP runs the same way but never updates itself.
 2. Open devops/clickables/Linux. On a minimal Debian 13 system, run **0 - Debian Prerequisites** first. It lists system libraries/build tools, asks permission, and uses sudo/pkexec for apt installation. It does not install NPU drivers, replace the kernel or configure an audio server. Ensure XFCE desktop audio and a browser already work.
 3. Open **1 - Setup**. It installs private Python 3.12 and automatically selects requirements-orange-pi.txt for Linux aarch64/arm64. Expect a potentially long native build for Praat-Parselmouth. A resolver pass does not prove that compilation will succeed.
-4. Enter your own Gemini key (its project needs Live quota for the models Ember uses: see [Gemini model](MVP.md#gemini-model)), select/test mic, speaker and camera, and optionally enable **experimental fall detection (CPU, or NPU on a set-up Orange Pi)**. Save. It is off by default and requires a camera. With camera pose tracking on (the default) it reuses Ember's own pose, which can run on the Orange Pi 5 Max's NPU (below). It adds a second fall detector (one fall can give two check-ins), so leave it off unless you are testing it.
+4. Enter your own Gemini key (its project needs Live quota for the models Ember uses: see [Gemini model](MVP.md#gemini-model)), select/test mic, speaker and camera, and optionally enable **experimental fall detection (CPU, or NPU on a set-up Orange Pi)**. Save. It is off by default and requires a camera. With camera pose tracking on (the default) it reuses Ember's own pose, which can run on the Orange Pi 5 Max's NPU (below). It runs its own detector on that pose for the Monitor; with Ember's built-in fall detection on (`fall_detection.enabled`, the default) it leaves the check-in to it, so one fall gives one check-in.
 5. Open **2 - Monitor**, then **3 - Start Ember**. On an Orange Pi (Linux ARM64) it starts `run_mvp.py`, as MVP.md, the autostart service and the 4 Pro image do: the LED eyes (set `BAYMAX_EYES_PORT`; [features/eyes](features/eyes/README.md)) and the MVP defaults (400 ms turn-end silence; interruptions, the wait cue and voice analysis off; 10 s to save memories at stop; values saved in `.env` win). Ember downloads its pose model (`pose_landmarker_lite.task` by default; `camera.pose_model` in `/etc/ember/device.toml` picks lite, full or heavy) on the first camera start. With pose tracking on (the default) the fall toolkit loads no model of its own and the Monitor shows **Running on CPU (core pose)** (or **Running on NPU (core pose)** after the NPU steps below), with actual FPS and inference milliseconds. Only with `camera.pose_tracking = false` does the toolkit's first run download and verify its own model and show **Running on CPU**. Disabled/starting/loading/unavailable/waiting is not a working detector.
 6. Use **4 - Stop Ember**. Test device release and restart; keep your evidence for review.
 
@@ -125,8 +125,9 @@ With Ember on the fast cores, and only then:
   conversion), and `OPENBLAS_NUM_THREADS=1`, `OPENCV_FOR_THREADS_NUM=1` and
   `TOKENIZERS_PARALLELISM=false` apply to Ember and everything it starts, unless `.env`
   or the shell sets them. ONNX Runtime keeps its two threads for the memory lookup
-  (below): a lookup still running when the reply arrives holds back its first audio for
-  up to 150 ms.
+  (below). The lookup runs between turns, once Ember's reply has played, and nothing
+  waits for it; two threads finish it sooner (19 ms instead of 39 ms on one fast core)
+  in case the person's next reply starts while it is still running.
 - **Speaker stream: 512-frame callbacks and low latency** instead of sounddevice's 1024
   and `high`. With the 5 Max's USB speaker on PipeWire's default device the speaker's
   output latency went from about 96 ms to about 42 ms (PortAudio reported 42.7 ms, now
@@ -183,8 +184,9 @@ Gemini summarises the conversation since the last save (the same step on every
 platform) and the summary lines are stored on the board in `chroma_store/` (in
 `BAYMAX_DATA_DIR`, by default next to the code; on the Orange Pi 4 Pro SD image
 `~/ember-deployment/data`, which updates keep). A crash or power cut loses only the
-conversation since the last save. On each turn the closest memories are looked up and
-given to Gemini, and the 50 newest are part of its instructions.
+conversation since the last save. After each of the person's turns, once Ember's reply
+has played, the closest memories are looked up and given to Gemini between turns for
+their next words (not yet on Gemini 3), and the 50 newest are part of its instructions.
 `requirements-orange-pi.txt` installs ChromaDB, ONNX Runtime and `tokenizers` for this,
 without torch: `semantic_embedder.py` runs the same MiniLM model with the same results
 as the robot image.
@@ -203,11 +205,13 @@ in Ember's own process, full model, 15 fps; 500 memories, a 30-word query of abo
 tokens):
 - **A lookup:** 34 ms of CPU, ready in 19 ms with its two threads on two fast cores
   (39 ms on one fast core, about 140 ms on a slow A55). It runs once per user turn,
-  in the background, while the person is still talking.
+  in the background: then while the person was still talking, now once Ember's reply
+  has played.
 - **In the full-system test** (pose, audio cleanup, the Gemini link and the eyes all
   running, one scripted user turn every 12 s): Ember used 42.8% of one core with pose
   on the NPU and 92.0% with pose on the CPU, against 42.7% and 91.8% with memory off.
-  18 lookups per run, none timed out.
+  18 lookups per run, none timed out (the reply then waited up to 150 ms for one; now
+  nothing waits).
 - **RAM:** about 170-230 MB more. Saving 30 summary lines takes about 0.5 s of CPU;
   loading the model at start about 1.2 s.
 - `pip install -r requirements-orange-pi.txt` added the packages in 55 s and the
