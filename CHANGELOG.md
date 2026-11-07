@@ -1,11 +1,27 @@
 # MVP (unreleased)
 
+- Ember answers in the language the person speaks (James's `[LANGUAGE]` in
+  `features/persona.py`): Hindi gets Hindi, Spanish gets Spanish, a switch is
+  followed on the next reply, a Hindi-English mix gets the same mix, and Ember's
+  own English notes (`[FALL ALERT]`, reminders, check-ins) are answered in the
+  conversation's language. The native-audio model picks the language itself; no
+  `language_code` or transcription language is set (a test keeps it that way).
+  The offline pause words stay English, so Ember says "Hey Ember" and "stop" in
+  English; "Ember disengage" also counts when Gemini writes it in Devanagari;
+  memory lines are written in English for the English-only embedder. Still
+  English: the startup hello before anyone speaks and the eye cues. Offline
+  tests pass; the live `language-*` runs of `evals/live_eval.py` and a Hindi
+  check on the robot are pending.
+
 - Address gate: a name said just before Gemini ends a turn without replying is
   no longer forgotten. On ember-002 "Amber, please response." was followed by an
   empty turn, and the reply "I'm here." in the next turn was dropped. Speech
   from a turn with no reply now still counts for the next reply for up to 10 s
   after the person's last words (`CARRY_S`); a played reply clears it as before.
-  Offline tests pass; live check on the robot is pending.
+  Only the last quiet turn is carried: with continuous talk Gemini stayed quiet
+  for, every quiet turn kept the words before it, so a name overheard 20 minutes
+  earlier still let a reply through. Offline tests pass; live check on the
+  robot is pending.
 
 - Address gate: Hindi transcribed in Devanagari now counts as saying Ember's
   name (एम्बर, एंबर, एमबर, ऍम्बर, ऐम्बर, ऐंबर, and the Amber mishearing अम्बर,
