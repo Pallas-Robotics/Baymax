@@ -1,4 +1,6 @@
+import contextlib
 import importlib.util
+import io
 import json
 from pathlib import Path
 import tempfile
@@ -64,9 +66,10 @@ class PerformanceTests(unittest.TestCase):
         data = {'conversation_timing': [dict(id=1, speech_end=50),
                 dict(id=2, speech_end=110, text='private words', delays={})], 'transcripts': ['private']}
         check.timing_rows(data, 100, 120, turns)
-        data['conversation_timing'][1].update(playback=112, delays={'audible_ms': 2000})
+        data['conversation_timing'][1].update(reply_audio=111, playback=112, delays={'audible_ms': 2000})
         check.timing_rows(data, 100, 125, turns)
         self.assertEqual(list(turns), [2])
+        self.assertEqual(turns[2]['reply_audio'], 111)
         self.assertNotIn('private', json.dumps(turns))
         self.assertEqual(check.report([], turns)['completed_turns'], 1)
 
@@ -92,18 +95,40 @@ class PerformanceTests(unittest.TestCase):
         self.assertEqual(len(check.violations(result, {'rss_mib': 511}, require_npu=True, max_added_latency=199)), 3)
 
     def test_missing_latency_and_unanswered_turns_fail_required_checks(self):
-        result = check.report([], {1: {'delays': {}}})
+        result = check.report([], {1: {'reply_audio': 5, 'delays': {}}, 2: {'delays': {}}})
         failures = check.violations(result, {'audible_ms': 2000}, min_turns=1, max_added_latency=100)
         self.assertEqual(len(failures), 4)
+        self.assertIn('Speech turns without playback remain; extend the window and investigate', failures)
         self.assertIsNone(result['metrics']['npu_percent'])
 
+    def test_a_turn_gemini_did_not_answer_is_not_missing_playback(self):
+        # Proactive audio (on by default) leaves side talk and hesitations unanswered.
+        turns = {1: {'delays': {}}, 2: {'reply_audio': 5, 'playback': 5.4, 'delays': {'audible_ms': 900}}}
+        result = check.report([], turns)
+        self.assertEqual(check.violations(result, {}, min_turns=1), [])
+        self.assertEqual((result['speech_turns'], result['unanswered_turns'], result['completed_turns']), (1, 1, 1))
+
     def test_baseline_rejects_other_board_failed_run_and_invalid_metrics(self):
-        good = dict(format=1, board='OPi4', status='MEASURED', metrics={'rss_mib': check.summary([100])})
+        good = dict(format=2, board='OPi4', status='MEASURED', metrics={'rss_mib': check.summary([100])})
         self.assertEqual(check.validate_baseline(good, 'OPi4'), good)
+        self.assertEqual(check.validate_baseline(dict(good, format=1), 'OPi4')['format'], 1)
         for data in [[], dict(good, board='OPi5'), dict(good, status='FAIL'),
-                     dict(good, metrics={'rss_mib': {'mean': 'bad'}})]:
+                     dict(good, metrics={'rss_mib': {'mean': 'bad'}}), dict(good, format=3),
+                     dict(good, format=True), dict(good, format=None)]:
             with self.assertRaises(ValueError):
                 check.validate_baseline(data, 'OPi4')
+
+    def test_a_format_1_baseline_gives_no_recognition_delta(self):
+        # Format 1 measured recognition_ms to the transcript's first piece; now it runs
+        # to the last piece, so the two are different measurements.
+        turns = {1: dict(reply_audio=1, playback=2, delays={'recognition_ms': 900, 'audible_ms': 1200})}
+        old = {'recognition_ms': check.summary([150]), 'audible_ms': check.summary([1000])}
+        result = check.report([], turns, dict(format=1, metrics=old))
+        self.assertEqual(result['format'], 2)
+        self.assertNotIn('recognition_ms', result['delta_from_baseline'])
+        self.assertEqual(result['delta_from_baseline']['audible_ms']['p95'], 200)
+        result = check.report([], turns, dict(format=2, metrics=old))
+        self.assertEqual(result['delta_from_baseline']['recognition_ms']['p95'], 750)
 
     def test_sampler_cli_writes_only_aggregate_report(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -118,8 +143,39 @@ class PerformanceTests(unittest.TestCase):
             data = json.loads(output.read_text())
             self.assertEqual(data['status'], 'PASS')
             self.assertEqual(data['metrics']['rss_mib']['max'], 100)
+            self.assertFalse(data['timing_failed'])
             self.assertNotIn('transcripts', data)
             self.assertNotIn('samples_raw', data)
+
+    def run_cli(self, status, *options):
+        with tempfile.TemporaryDirectory() as folder:
+            output = Path(folder) / 'report.json'
+            with patch.object(check.sys, 'platform', 'linux'), \
+                 patch.object(check.os, 'uname', return_value=type('OS', (), dict(machine='aarch64', release='test'))(), create=True), \
+                 patch.object(check.time, 'monotonic', side_effect=[0, 2]), \
+                 patch.object(check, 'sample', return_value=({'rss_mib': 100}, {})), \
+                 patch.object(check, 'monitor', return_value=status), \
+                 contextlib.redirect_stdout(io.StringIO()):
+                code = check.main(['--feature', 'conversation', '--pid', '10', '--seconds', '1',
+                                   '--output', str(output), *options])
+            return code, json.loads(output.read_text())
+
+    def test_a_timing_error_in_ember_is_reported_and_fails_a_latency_check(self):
+        # Ember turns conversation timing off after an error in it (audio continues), so
+        # turns get no speech or playback times: "Speech turns without playback remain"
+        # alone did not say why.
+        status = {'pid': 10, 'heartbeat': 0, 'conversation_timing': [],
+                  'speech_detection': {'available': False, 'timing_failed': True}}
+        code, data = self.run_cli(status, '--min-turns', '1')
+        self.assertEqual(code, 1)
+        self.assertTrue(data['timing_failed'])
+        self.assertIn(check.TIMING_OFF, data['failures'])
+        code, data = self.run_cli(status)          # measuring only: reported, not a failure
+        self.assertEqual((code, data['status'], data['timing_failed']), (0, 'MEASURED', True))
+        for detection in ({'timing_failed': False}, None, 'broken'):
+            code, data = self.run_cli(dict(status, speech_detection=detection), '--min-turns', '1')
+            self.assertFalse(data['timing_failed'])
+            self.assertNotIn(check.TIMING_OFF, data['failures'])
 
 
 if __name__ == '__main__':

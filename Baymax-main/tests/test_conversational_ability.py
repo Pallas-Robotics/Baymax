@@ -9,6 +9,7 @@ from unittest.mock import Mock, patch
 import runtime_monitor as monitor
 import numpy as np
 from features.conversational_ability.processing import InputEnhancer, extend_config
+from features.conversational_ability.timing import ConversationTiming
 from test_public_core_integration import load_function
 
 
@@ -143,6 +144,21 @@ class AudioInputTests(unittest.TestCase):
         np.testing.assert_array_equal(enhancer.process(samples), samples)
         self.assertFalse(enhancer.full_duplex)
         self.assertIn('failed', enhancer.metrics['state'])
+
+    def test_a_timing_error_never_switches_to_the_half_duplex_fallback(self):
+        # Timing runs on the capture thread next to echo cancellation, whose error handler
+        # would mute the microphone during every reply for the rest of the run.
+        timing = ConversationTiming()
+        timing.microphone = Mock(side_effect=RuntimeError('timing bug'))
+        enhancer = InputEnhancer(processor=FakeDSP())
+        samples = np.full(1024, 1234, dtype=np.int16)
+        with patch.object(monitor, 'timing', timing), patch('builtins.print'):
+            enhancer.process(samples)
+            enhancer.process(samples)
+        self.assertTrue(enhancer.full_duplex)
+        self.assertIn('WebRTC', enhancer.metrics['state'])
+        self.assertTrue(timing.failed)
+        timing.microphone.assert_called_once()  # timing stays off for the rest of the run
 
     def test_negative_full_scale_is_detected_as_clipping(self):
         self.assertEqual(InputEnhancer.levels(np.array([-32768, 32767], dtype=np.int16))['clipped_percent'], 100)

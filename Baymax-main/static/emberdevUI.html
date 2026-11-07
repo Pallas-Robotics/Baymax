@@ -21,10 +21,11 @@ function timingDelay(value){return Number.isFinite(value)?(value/1000).toFixed(3
 function renderSpeech(data){
  const speech=data.speech_detection, indicator=$('speechIndicator');
  const available=speech?.available&&data.state!=='offline';
- const label=!available?'Local speech detector unavailable':speech.active?'Speech detected locally':speech.awaiting_transcript?'Speech ended locally · waiting for Gemini transcript':'No local speech detected';
+ const failed=speech?.timing_failed&&data.state!=='offline';  // turned off after an error; audio continues
+ const label=failed?'Conversation timing off after an error · audio continues':!available?'Local speech detector unavailable':speech.active?'Speech detected locally':speech.awaiting_transcript?'Speech ended locally · waiting for Gemini transcript':'No local speech detected';
  if(indicator.textContent!==label)indicator.textContent=label;
- indicator.dataset.active=available&&speech.active?'true':'false';
- const detail=speech?.speech_start?'Local estimate · start '+timingTime(speech.speech_start)+' · end '+timingTime(speech.speech_end):'Updates from microphone audio, independently of Gemini transcription. Local estimates can mistake noise for speech.';
+ indicator.dataset.active=!failed&&available&&speech.active?'true':'false';
+ const detail=failed?'Ember’s log has the error. Speech and playback times stop until Ember restarts.':speech?.speech_start?'Local estimate · start '+timingTime(speech.speech_start)+' · end '+timingTime(speech.speech_end):'Updates from microphone audio, independently of Gemini transcription. Local estimates can mistake noise for speech.';
  if($('speechTimes').textContent!==detail)$('speechTimes').textContent=detail;
  $('speakerHealth').textContent=speech?'Speaker underruns since restart: '+speech.output_underflows+' · A nonzero count can explain stuttering.':'';
 }
@@ -35,7 +36,7 @@ function renderTiming(data){
  for(const turn of rows){const row=document.createElement('tr'), delays=turn.delays||{};
   const cells=[['#'+turn.id+(turn.interrupted?' · interrupted':''),'Speech → playback: '+timingDelay(delays.audible_ms),turn.association],
    ['Start '+timingTime(turn.speech_start),'End '+timingTime(turn.speech_end)],
-   ['First '+timingTime(turn.transcript_first),'Last '+timingTime(turn.transcript_last),'Speech end → first: '+timingDelay(delays.recognition_ms)],
+   ['First '+timingTime(turn.transcript_first),'Last '+timingTime(turn.transcript_last),'Speech end → last: '+timingDelay(delays.recognition_ms)],
    ['Text '+timingTime(turn.reply_text),'Audio '+timingTime(turn.reply_audio),'Transcript → audio: '+timingDelay(delays.transcript_to_reply_ms)],
    [timingTime(turn.playback),'Audio → playback: '+timingDelay(delays.playback_wait_ms)]];
   for(const lines of cells){const cell=document.createElement('td');for(const text of lines){const line=document.createElement('div');line.textContent=text;cell.append(line);}row.append(cell);}body.append(row);
@@ -71,7 +72,7 @@ function chatTiming(message,data){
   if(message.speaker==='user'){
    lines.push('Local speech '+timingTime(turn.speech_start)+' → '+timingTime(turn.speech_end));
    lines.push('Transcript first '+timingTime(turn.transcript_first)+' · last '+timingTime(turn.transcript_last));
-   if(Number.isFinite(delays.recognition_ms))lines.push('Speech end → transcript '+timingDelay(delays.recognition_ms));
+   if(Number.isFinite(delays.recognition_ms))lines.push('Speech end → last transcript '+timingDelay(delays.recognition_ms));
    if(!turn.reply_audio&&!turn.reply_complete){const since=turn.speech_end??turn.transcript_first;const now=data.heartbeat;if(Number.isFinite(since)&&Number.isFinite(now))lines.push('Waiting for reply · '+timingDelay(Math.max(0,now-since)*1000));}
    if(turn.association!=='Local speech estimate')lines.push(turn.association);
   }else{

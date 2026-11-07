@@ -95,6 +95,35 @@ class AddressGateTests(unittest.TestCase):
         self.assertEqual(turn(g, [], "overheard"), [])
         self.assertIn("overheard", log.call_args_list[-1].args[0])
 
+    def test_only_the_last_quiet_turn_is_carried(self):
+        # A name overheard once, then minutes of talk Gemini rightly stays quiet for
+        # (a fragment every few seconds, so CARRY_S never lapses): the name must not
+        # let a reply through 20 minutes later.
+        g, clock, _ = gate()
+        g.heard("The amber light came on.")
+        g.end()
+        for i in range(400):
+            clock.now += 3
+            g.heard(f" and the weather report says rain {i}.")
+            g.end()
+        self.assertLess(len(g._heard), 3)
+        clock.now += 1
+        self.assertEqual(turn(g, [], "overheard"), [])
+        # Carried speech that lapsed is dropped, and the next quiet turn is carried whole.
+        g.heard("unrelated words")
+        g.end()
+        clock.now += 11
+        g.heard("Ember, are you there?")
+        g.end()
+        clock.now += 2
+        self.assertEqual(turn(g, [], "I'm here."), ["I'm here."])
+        # Two quiet turns in a row with nothing new said keep the name.
+        g.heard("Amber, please response.")
+        g.end()
+        g.end()
+        clock.now += 3
+        self.assertEqual(turn(g, [], "I'm here."), ["I'm here."])
+
     def test_played_reply_still_clears_what_was_heard(self):
         g, clock, _ = gate()
         self.assertEqual(turn(g, ["Ember, hi"]), ["ok"])
@@ -317,10 +346,12 @@ class V10ReceiveLoopTests(unittest.TestCase):
         self.heard = heard  # the user's transcript, now recorded through _transcript_add
         self.playback_states = []
         self.playback_starts = []
+        self.playback_timing = []
         def append_playback(data, *, new_turn=False, timing_id=None):
             played.append(data)
             self.playback_states.append(namespace['_gemini_speaking'])
             self.playback_starts.append(new_turn)
+            self.playback_timing.append(timing_id)
         g, clock, log = gate()
         namespace = {
             "asyncio": asyncio, "np": np, "_address_gate": g,
@@ -408,6 +439,14 @@ class V10ReceiveLoopTests(unittest.TestCase):
         self.assertFalse(self.namespace["_gemini_speaking"])
         self.assertIn("_turn_done_at", self.namespace)
         self.assertFalse([c for c in printed.call_args_list if "Receive error" in str(c.args)])
+
+    def test_every_audio_chunk_carries_its_replys_timing(self):
+        # A reply that opens with digital silence is timed from its first chunk with sound.
+        pcm = np.array([1, 2], dtype=np.int16).tobytes()
+        self.run_receive([content(user="Ember, tell me about cats"), content(audio=bytes(4)),
+                          content(audio=pcm), content(done=True)])
+        self.assertEqual(len(self.playback_timing), 2)
+        self.assertNotIn(None, self.playback_timing)
 
 
 if __name__ == "__main__":

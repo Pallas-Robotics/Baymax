@@ -47,6 +47,10 @@ import queue
 import wave
 import requests as http_requests
 import cv2
+# Pinned to the RK3588's fast cores (pc_hardware.use_performance_cpus): no OpenCV thread pool.
+# Its three workers spun at 1.2-1.6% of a core each around the camera's 0.3 ms colour conversion.
+if os.getenv("BAYMAX_FAST_CPUS"):
+    cv2.setNumThreads(1)
 import sounddevice as sd
 import numpy as np
 # NOISE SUPPRESSION DISABLED (v10) — only the denoiser below used scipy.
@@ -146,8 +150,9 @@ def _open_pose(force_cpu=False):
     """Pose in its own process (features/vision_process.py): in Ember's process it held the
     GIL and starved the mic and Gemini I/O. The RK3588 NPU (checked full model) when ready
     and camera.pose_model is lite/full, else MediaPipe with camera.pose_model; heavy and
-    force_cpu always use MediaPipe on the CPU. None if the process could not start (the
-    camera thread then tries once on the CPU, or keeps video only)."""
+    force_cpu always use MediaPipe on the CPU. None if the process could not start, or
+    hung for 60 s while loading (the camera thread then tries once on the CPU, or keeps
+    video only)."""
     from functools import partial
     from features.vision_process import Remote
     from features.pose.backend import ChildPose
@@ -536,6 +541,9 @@ audio_queue_mic = asyncio.Queue()
 # Thread-safe playback buffer for callback-based output stream
 _playback_buffer = b""
 _playback_lock = threading.Lock()
+# Bytes the speaker has taken from the buffer since start (under _playback_lock).
+# Reply timing marks count from it, so they hold however the buffer moves on.
+_playback_taken = 0
 
 _gemini_speaking = False
 _gemini_speaking_lock = threading.Lock()
@@ -817,21 +825,36 @@ _last_mic_send_ts: float = 0.0
 # ─── Playback buffer helpers ─────────────────────────────────────────────────
 def _append_playback(data: bytes, *, new_turn=False, timing_id=None):
     global _playback_buffer
+    first = None
+    if timing_id is not None:
+        # The reply's first sound, found before taking the lock the speaker waits for.
+        samples = np.frombuffer(data, dtype=np.int16)
+        if samples.any():
+            first = int(np.argmax(samples != 0))
     with _playback_lock:
         if new_turn and _playback_buffer:
             # Separate queued replies without delaying a reply after silence.
             _playback_buffer += b"\x00" * (RECEIVE_SAMPLE_RATE * OUTPUT_CHANNELS * 2 * 180 // 1000)
-        if timing_id is not None:
-            nonzero = np.flatnonzero(np.frombuffer(data, dtype=np.int16))
-            if len(nonzero):
-                monitor.timing.queued(timing_id, len(_playback_buffer), int(nonzero[0]))
+        position = _playback_taken + len(_playback_buffer)
         _playback_buffer += data
+    if first is not None:
+        # Diagnostics, after the lock (the audio is already queued): an error turns timing off.
+        try:
+            if not monitor.timing.failed:
+                monitor.timing.queued(timing_id, position, first)
+        except Exception:
+            monitor.timing.failed = True
+            print("[AUDIO] Conversation timing turned off after an error; audio continues.", flush=True)
 
 def _flush_playback():
     global _playback_buffer
     with _playback_lock:
         _playback_buffer = b""
-        monitor.timing.clear_playback()
+    try:
+        monitor.timing.clear_playback()  # The flushed replies' timing marks.
+    except Exception:
+        monitor.timing.failed = True
+        print("[AUDIO] Conversation timing turned off after an error; audio continues.", flush=True)
 
 def _abandon_reply():
     """A lost connection ends the reply it was streaming. Without this the rest of
@@ -926,15 +949,24 @@ async def _reset_audio():
 
 # ─── Callback-based output stream ────────────────────────────────────────────
 def _output_callback(outdata, frames, time_info, status):
-    global _playback_buffer
-    monitor.timing.output_status(status)
+    global _playback_buffer, _playback_taken
     n_bytes = frames * 2
     with _playback_lock:
+        start = _playback_taken
         chunk = _playback_buffer[:n_bytes]
         _playback_buffer = _playback_buffer[n_bytes:]
-        current, dac = getattr(time_info, 'currentTime', 0), getattr(time_info, 'outputBufferDacTime', 0)
-        delay = max(0, dac - current) if current > 0 and dac > 0 else getattr(_audio_enhancer, 'output_latency_ms', 0) / 1000
-        monitor.timing.played(len(chunk), delay, RECEIVE_SAMPLE_RATE)
+        _playback_taken = start + len(chunk)
+    # Diagnostics, after the lock so the next reply chunk never waits for them. sounddevice
+    # stops the speaker for good when this callback raises: an error turns timing off instead.
+    try:
+        if not monitor.timing.failed:
+            monitor.timing.output_status(status)
+            current, dac = getattr(time_info, 'currentTime', 0), getattr(time_info, 'outputBufferDacTime', 0)
+            delay = max(0, dac - current) if current > 0 and dac > 0 else getattr(_audio_enhancer, 'output_latency_ms', 0) / 1000
+            monitor.timing.played(start, len(chunk), delay, RECEIVE_SAMPLE_RATE)
+    except Exception:
+        monitor.timing.failed = True
+        print("[AUDIO] Conversation timing turned off after an error; audio continues.", flush=True)
     if _waiting_cue is not None:
         if _audio_enhancer is not None and _audio_enhancer.full_duplex:
             chunk = _waiting_cue.render(chunk, n_bytes)
@@ -1278,8 +1310,9 @@ def _fall_detection_thread():
     process (_open_pose: the RK3588 NPU or MediaPipe on the CPU), draws visual
     overlays and shares frames with the Gemini video sender and the MJPEG stream,
     and runs fall detection.  The pose landmarks are also used for face presence
-    (conversation initiation). If the pose process cannot start or later fails, it is
-    started again once, on the CPU; video continues either way."""
+    (conversation initiation). If the pose process cannot start, later fails or hangs
+    (no reply to a frame in 5 s: features/vision_process.py stops it), it is started
+    again once, on the CPU; video continues either way."""
     global _latest_frame, _annotated_frame, _annotated_inputs
 
     pose_model_ready = False
@@ -1329,7 +1362,9 @@ def _fall_detection_thread():
         latest_frames_only(cv2, cap)
     # MVP features that watch the camera (greetings) get every frame. Its own CPU
     # fall detector stays off unless BAYMAX_FALL_DETECTION_ENABLED=1; v10's runs here.
+    # With both on, the check-in is this thread's (fall_alert_monitor): one per fall.
     fall_worker.start(fps=FALL_DETECTION_FPS, shared_pose=POSE_TRACKING_ENABLED,  # one pose model, not two
+                      builtin=FALL_DETECTION_ENABLED,
                       angle_threshold=FALL_ANGLE_THRESHOLD,
                       ang_vel_threshold=FALL_ANG_VEL_THRESHOLD, hip_vel_threshold=FALL_HIP_VEL_THRESHOLD,
                       history_window=FALL_HISTORY_FRAMES, confirmation_frames=FALL_CONFIRMATION_FRAMES,
@@ -1370,6 +1405,9 @@ def _fall_detection_thread():
             if not ret:
                 time.sleep(0.1)
                 continue
+            # Fall velocities use when the frame came, not when its pose came back:
+            # the round trip to the pose process varies from frame to frame.
+            captured_at = time.monotonic()
 
             # Share raw frame for Gemini video sender
             with _latest_frame_lock:
@@ -1382,7 +1420,7 @@ def _fall_detection_thread():
                 pose_t0 = time.monotonic()
                 try:
                     landmarks = landmarker.detect(frame)
-                except RuntimeError as error:  # vision process died/hung up or its model raised
+                except RuntimeError as error:  # vision process died, hung (and was stopped) or its model raised
                     landmarker.close()
                     landmarker = None
                     if not pose_restarts:
@@ -1396,12 +1434,12 @@ def _fall_detection_thread():
                               flush=True)
                 else:
                     fall_worker.share(landmarks, round((time.monotonic() - pose_t0) * 1000, 1),
-                                      device=landmarker.device)
+                                      device=landmarker.device, captured_at=captured_at)
 
             # Share face-presence signal with the initiation monitor
             _update_face_visibility(landmarks)
 
-            result = fall_detector.update(landmarks) if fall_detector else no_fall
+            result = fall_detector.update(landmarks, timestamp=captured_at) if fall_detector else no_fall
             if result["trunk_angle"] is not None:
                 angle_history.append(result["trunk_angle"])
                 a = result["trunk_angle"]
@@ -2188,8 +2226,9 @@ async def receive_audio(session):
                                 audio_array = np.frombuffer(data, dtype=np.int16)
                                 upsampled_array = np.repeat(audio_array, 2)
                                 upsampled_bytes = upsampled_array.tobytes()
-                                _append_playback(upsampled_bytes, new_turn=new_turn,
-                                                 timing_id=timing_id if new_turn else None)
+                                # Every chunk: a reply that opens with digital silence is
+                                # timed from its first chunk with sound.
+                                _append_playback(upsampled_bytes, new_turn=new_turn, timing_id=timing_id)
                                 # -----------------------------------------------
                                 _address_gate.spoke(time.monotonic() + len(_playback_buffer)
                                                     / (RECEIVE_SAMPLE_RATE * 2 * OUTPUT_CHANNELS))
@@ -2417,7 +2456,8 @@ def _summarise_claimed(context, new, end, deadline):
             "- Relationships and people they mentioned\n\n"
             "Output ONLY the summary lines, one per line.  No numbering, no "
             "bullets, no preamble.  Each line should be a self-contained fact "
-            "or observation.  If there is nothing meaningful to extract, "
+            "or observation.  Write each line in English, whatever language "
+            "the conversation was in.  If there is nothing meaningful to extract, "
             "output exactly: NOTHING_TO_REMEMBER\n\n"
             + earlier +
             "--- TRANSCRIPT START ---\n"

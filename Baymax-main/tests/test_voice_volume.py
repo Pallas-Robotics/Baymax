@@ -138,7 +138,8 @@ class VoiceVolumeWiringTests(unittest.TestCase):
         enhancer.rendered.side_effect = lambda chunk, info: calls.append(("rendered", chunk))
         loud = Mock()
         loud.apply.side_effect = lambda chunk: calls.append(("voice", chunk)) or b"\x01\x00" * (len(chunk) // 2)
-        namespace = {"_playback_buffer": pcm(5, 5), "_playback_lock": threading.Lock(), "_waiting_cue": None,
+        namespace = {"_playback_buffer": pcm(5, 5), "_playback_lock": threading.Lock(), "_playback_taken": 0,
+                     "_waiting_cue": None,
                      "_audio_enhancer": enhancer, "np": np, "OUTPUT_CHANNELS": 1, "voice_volume": loud,
                      "monitor": Mock(), "RECEIVE_SAMPLE_RATE": 48000}
         with patch("test_public_core_integration.CORE", V10):

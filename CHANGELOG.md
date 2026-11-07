@@ -1,5 +1,135 @@
 # MVP (unreleased)
 
+- Ember answers in the language the person speaks (James's `[LANGUAGE]` in
+  `features/persona.py`): Hindi gets Hindi, Spanish gets Spanish, a switch is
+  followed on the next reply, a Hindi-English mix gets the same mix, and Ember's
+  own English notes (`[FALL ALERT]`, reminders, check-ins) are answered in the
+  conversation's language. The native-audio model picks the language itself; no
+  `language_code` or transcription language is set (a test keeps it that way).
+  The offline pause words stay English, so Ember says "Hey Ember" and "stop" in
+  English; "Ember disengage" also counts when Gemini writes it in Devanagari;
+  memory lines are written in English for the English-only embedder. Still
+  English: the startup hello before anyone speaks and the eye cues. Offline
+  tests pass; the live `language-*` runs of `evals/live_eval.py` and a Hindi
+  check on the robot are pending.
+
+- Orange Pi 5 Max core layout. Everything below applies only while Ember is
+  pinned to the fast cores (cpu4-7; `BAYMAX_CPU_PINNING=auto` on an RK3588), so
+  the Orange Pi 4 Pro (not pinned by default), x86 PCs, macOS and Windows run as
+  before. Every thread of Ember's own process stays on the A76s (they share one
+  GIL). Python's GIL switch interval drops from 5 ms to 1 ms
+  (`BAYMAX_GIL_SWITCH_MS`; 5 restores it): the mic callback lets go of the GIL
+  inside every WebRTC frame and must win it back, and on the board it took about
+  2.5 ms at the median but 9.3-10.2 ms at p99, as long with pose on the NPU as on
+  the CPU. Thread pools that only spun or idled there are single-threaded:
+  OpenCV's in Ember and the vision processes, and `OPENBLAS_NUM_THREADS=1`,
+  `OPENCV_FOR_THREADS_NUM=1`, `TOKENIZERS_PARALLELISM=false` for Ember and what
+  it starts, unless already set (ONNX Runtime keeps its two threads for memory
+  lookups). The pose process (NPU or MediaPipe) places itself on the fast cores
+  at nice 5 before its model starts, since the NPU path's CPU work would miss the
+  100 ms frame budget on an A55; the opt-in eye-contact (face) process goes to
+  the slow cores at nice 10. `BAYMAX_VISION_CPUS=fast|slow` moves both, to
+  measure. Nice values only go up; no real-time scheduling, and the audio cleanup
+  and memory stay in Ember's process. The effect on the mic callback's tail is
+  expected, not measured yet: the full-system A/B on the board is pending.
+  `features/pose/benchmark.py`, which pins itself like Ember, now also runs with
+  these settings. Offline tests pass.
+
+- Pose: a pose process that hangs without exiting is now stopped and restarted.
+  `features/vision_process.py`'s `Remote` waited for a reply for good, so a child stuck
+  (e.g. librknnrt in the NPU driver) froze the camera thread, and with it video to
+  Gemini, face presence and fall detection, until Ember restarted. A watchdog, one
+  thread per child that looks twice a second, kills a child that has not answered a
+  frame in 5 s, or its start in 60 s (imports and model load; the NPU's setup and
+  warm-up measured 0.6-1.7 s). The call then raises like a child that died, so the
+  camera thread restarts pose once on the CPU, as for a crash. An NPU error during a
+  frame still switches to MediaPipe inside the child, without that restart: the frame
+  that imports and loads MediaPipe (the NPU child never had: 1.2-1.3 s on the 5 Max's
+  fast cores with a warm page cache and Ember stopped; longer from a cold SD card or on
+  a busy board, not measured) first tells the parent (`vision_process.loading_model()`)
+  and gets the start's 60 s, so the watchdog does not stop a child that is recovering. A
+  frame only stores its deadline: on a Mac the parent's CPU per round trip stayed within
+  noise (238 vs 219 µs), where a `threading.Timer` per frame (Nate's opi4-demo, ff168ca,
+  which this ports without its regrouping) took 441 µs. The fall toolkit's own model and
+  the eye-contact face model are now downloaded before their child starts, so a slow
+  download is not taken for a hang. A face child stopped this way (or one that dies) is
+  not restarted: eye-contact greetings stop with one log line until Ember restarts
+  (every later frame was logged as skipped, up to 4 times a second). A child stuck
+  inside a kernel call dies only when the driver returns. Offline tests pass (fake hung
+  children, and the camera thread with real vision processes); a real hung NPU call on
+  the 5 Max is pending.
+
+- Fall detection: velocities use each frame's capture time. `FallDetector.update()`
+  read the clock when the frame's pose came back, so the varying round trip to the pose
+  process went into the angular and hip velocities. The camera thread now passes the
+  time right after `cap.read()` (`update(landmarks, timestamp=...)`, opi4-demo's local
+  change to the vendored detector, recorded in `fall_detection/UPSTREAM.json`), and the
+  fall toolkit gets it too (`share(..., captured_at=...)`; with its own model, the time
+  `submit()` got the frame). Thresholds are unchanged; without a timestamp the detector
+  reads the clock as before. Offline tests pass; fall accuracy on the boards is pending
+  as before.
+
+- One check-in per fall. With v10's built-in fall detection (`fall_detection.enabled`,
+  on by default) and the fall toolkit (Setup's checkbox) both on, Gemini got two
+  check-ins for one fall ("[FALL ALERT] ..." and "[Local experimental fall detector]
+  ..."). The toolkit now leaves the check-in to the built-in detection
+  (`fall_worker.start(builtin=True)`) and keeps detecting on the shared pose for the
+  Monitor (state such as "Running on NPU (core pose)", inference time, FPS, results; its
+  event says check-ins come from Ember's built-in fall detection). With built-in
+  detection off, or with the toolkit's own model, it checks in as before. Offline tests
+  pass; live check pending.
+
+- The SD-card image verifier (`devops/opi4-flash/verify_image.py`) runs on Python
+  3.9 and newer, such as the `python3` that comes with macOS. It hashed with
+  `hashlib.file_digest` (Python 3.11+), so there it passed the other checks and
+  then crashed with a traceback (exit 1). It now hashes in 1 MiB reads; the exit
+  codes stay 0 (verified) and 2 (failed). Checked with macOS's Python 3.9.6.
+
+- Conversation timing can no longer affect audio. An error in it on the capture
+  thread switched Ember to the half-duplex fallback (mic muted during every reply)
+  and one in the speaker callback stopped the speaker until a restart (sounddevice
+  aborts the stream); now it turns timing off for the run with one log line, and the
+  Monitor's status line and the performance sampler (`timing_failed`, which fails a
+  requested latency check) say so. Timing work moved out of the playback lock the
+  speaker callback waits for; a reply's playback time counts from the speaker's byte
+  position, so one queued while a block is taken keeps its own time; and a reply
+  that opens with digital silence is timed from its first chunk with sound. Nothing
+  changes without an error; offline tests only.
+
+- Conversation timing (monitor and performance sampler) charges each reply to the
+  turn it answers. With proactive audio (on by default) Gemini stays silent on side
+  talk and hesitations, and its next answer was charged to that older turn (5.8 s
+  recorded for a 0.6 s reply) while the turn it answered kept "Waiting for reply".
+  A reply now goes to the newest waiting turn; an older turn without reply audio is
+  closed when the next one starts; a transcript that trails the reply's first audio
+  keeps that reply; a pause that splits one turn's speech ends the turn at its last
+  words. `recognition_ms` (the Monitor's "Speech end → last transcript", formerly
+  "Speech end → transcript") now runs to the transcript's last piece: the first
+  piece streams in while the person speaks, so it was negative and never shown.
+  `check.py` reports are format 2 for this; against a format-1 baseline they leave
+  out the `recognition_ms` delta. Times stay on the monotonic clock until the
+  monitor reads them, so an NTP correction after start no longer shifts them.
+  `check.py` counts only answered turns as `speech_turns` (`unanswered_turns`
+  reports the rest), so `--min-turns` no longer fails on a turn Gemini chose not to
+  answer. Replayed Live API orderings now measure 580-625 ms for a true 600 ms
+  (previously up to 10.6 s). Diagnostics only; audio is unchanged.
+
+- `check_release.py` and `tests/run.py` keep `BAYMAX_MEMORY_MODEL_DIR` while they
+  set the machine's own settings aside. It only points the real-model memory tests
+  at a downloaded model (it changes nothing in Ember), and removing it meant those
+  two tests never ran under either command: they always skipped.
+
+- Robot updates: `check_release.py` no longer runs the repository's bookkeeping
+  checks (`tests/overall/test_validation.py`: every test file listed in one
+  `suite.json`, the suites `tests/run.py --changed` picks) on a robot. The Orange
+  Pi 5 Max updater and the 4 Pro image run that gate before taking a release and
+  roll back when it fails, so one correct test file missing from a `suite.json`
+  stopped every robot updating (the 5 Max never retries that commit). CI, where
+  GitHub sets `GITHUB_ACTIONS=true`, and `tests/run.py` still run them; the
+  source, chat UI and performance-sampler checks stay in the robots' gate.
+  Offline: with an unlisted test file the gate now passes as a robot (core 571,
+  toolkit 241) and fails in CI.
+
 - Gemini Live model fallback. Google shuts Ember's model,
   `gemini-2.5-flash-native-audio-preview-12-2025`, down as early as 2026-11-17; its
   replacement is `gemini-3.8-live`. `BAYMAX_LIVE_MODELS` (documented in `.env.example`)
@@ -105,7 +235,10 @@
   empty turn, and the reply "I'm here." in the next turn was dropped. Speech
   from a turn with no reply now still counts for the next reply for up to 10 s
   after the person's last words (`CARRY_S`); a played reply clears it as before.
-  Offline tests pass; live check on the robot is pending.
+  Only the last quiet turn is carried: with continuous talk Gemini stayed quiet
+  for, every quiet turn kept the words before it, so a name overheard 20 minutes
+  earlier still let a reply through. Offline tests pass; live check on the
+  robot is pending.
 
 - Address gate: Hindi transcribed in Devanagari now counts as saying Ember's
   name (एम्बर, एंबर, एमबर, ऍम्बर, ऐम्बर, ऐंबर, and the Amber mishearing अम्बर,
@@ -166,7 +299,8 @@
     cannot start (e.g. librknnrt crashing it during NPU setup) or dies later is started
     again once, on the CPU; video continues. The vision process reports
     the model's device with every frame, so the fall toolkit shows NPU/CPU correctly.
-    A pose process that hangs without exiting is not detected yet.
+    A pose process that hangs without exiting was not detected yet; it is now stopped
+    and restarted the same way (see "Pose: a pose process that hangs" above).
   - Fast-core pinning: `BAYMAX_CPU_PINNING=auto` (default) pins only on an RK3588,
     where it was measured; `on` pins on any ARM big.LITTLE board (to try the 4 Pro's
     two A76s, which would also carry the pose/face processes); `off` never pins.

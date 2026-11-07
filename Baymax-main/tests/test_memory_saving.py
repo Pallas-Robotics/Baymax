@@ -185,6 +185,8 @@ class SummariseAndEmbedTests(unittest.TestCase):
                       "User: I really like green tea.\nGemini: Green tea is lovely.\n--- TRANSCRIPT END ---",
                       gemini.prompts[0])
         self.assertNotIn("EARLIER CONTEXT", gemini.prompts[0])
+        # The memory embedder (all-MiniLM-L6-v2) is English-only.
+        self.assertIn("Write each line in English", gemini.prompts[0])
         (texts, ids, metadatas), = store.saved
         self.assertEqual(texts, ["User's name is Joe", "Joe likes green tea"])
         self.assertEqual([m["line_index"] for m in metadatas], ["0", "1"])

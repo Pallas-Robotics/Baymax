@@ -2,7 +2,8 @@
   "name": "everyday",
   "sources": [
     "Baymax-main/features/toolkits/everyday/**",
-    "Baymax-main/features/toolkits/checkins.py"
+    "Baymax-main/features/toolkits/checkins.py",
+    "Baymax-main/features/conversational_ability/engage.py"
   ],
   "python": [
     {
