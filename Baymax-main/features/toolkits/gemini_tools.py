@@ -106,9 +106,10 @@ def search_thinking_budget():
     error") whenever it tried to call a function tool. Measured with evals/live_eval.py
     and the real MVP config (Gemini 2.5 native audio, 2026-11-06/07): budget 0 with
     search, 7 of 27 runs dropped (reminder 0/3, radio 0/3); budgets 32, 128, 512 and
-    dynamic thinking, none dropped. 128 was the fastest of those: median first reply
-    audio 2.3 s for a greeting (1.9 s without search), 2.9 s weather, 3.7 s reminder,
-    2.4 s radio. BAYMAX_SEARCH_THINKING_BUDGET (1-1024) changes it; 0 is not accepted
+    dynamic thinking, none dropped. 128 was the only budget with every run passing (32
+    was about as fast, but one greeting took 4.3 s): median first reply audio 2.3 s for
+    a greeting (1.9 s without search), 2.9 s weather, 3.7 s reminder, 2.4 s radio.
+    BAYMAX_SEARCH_THINKING_BUDGET (1-1024) changes it; 0 is not accepted
     because it brings the closes back (turn search off instead for the fastest replies)."""
     global _budget_warned
     value = os.getenv("BAYMAX_SEARCH_THINKING_BUDGET", "").strip()

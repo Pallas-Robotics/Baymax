@@ -307,10 +307,10 @@
   "1011 internal error" whenever it tried to call one: in `evals/live_eval.py` with the
   real MVP config, 7 of 27 runs dropped (reminder 0/3, radio 0/3). On the robot each is a
   dropped connection and a deaf reconnect. Changing the tool layout or declaring the
-  tools blocking did not help (3-6 of 9 runs dropped); any thinking budget did (32, 128,
+  tools blocking did not help (4-6 of 9 runs dropped); any thinking budget did (32, 128,
   512 and dynamic: no run dropped). So while search is on (the default;
   `BAYMAX_GOOGLE_SEARCH=0` turns it off) Gemini gets a 128-token thinking budget
-  (`BAYMAX_SEARCH_THINKING_BUDGET`, 1-1024), the fastest that held: median first reply
+  (`BAYMAX_SEARCH_THINKING_BUDGET`, 1-1024), the only budget with every run passing: median first reply
   audio 2.3 s for a greeting (1.9 s with search off), 2.9 s weather, 3.7 s reminder, 2.4 s
   radio, with no dropped runs. Asked "who won the World Series this year?", Ember answered
   from a search (the 2026 winner); with search off it could not. With search off Ember

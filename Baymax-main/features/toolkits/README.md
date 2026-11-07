@@ -22,10 +22,11 @@ session with "1011 internal error" whenever it tried to call a function tool: a 
 connection and a reconnect during which Ember can't hear. Measured with
 `evals/live_eval.py` and Ember's real MVP config (2026-11-06/07): with search on and
 budget 0, 7 of 27 runs dropped (reminder 0/3, radio 0/3); merging the function tools or
-moving the search tool did not help (3-4 of 9 runs dropped), nor did declaring the tools
-blocking; with budgets of 32, 128, 512 or dynamic thinking no run dropped. 128 was the
-fastest of those (median first reply audio: greeting 2.3 s against 1.9 s with search
-off, weather 2.9 s, reminder 3.7 s, radio 2.4 s). Asked "who won the World Series this
+moving the search tool did not help (4 and 6 of 9 runs dropped), nor did declaring the
+tools blocking (5 of 9); with budgets of 32, 128, 512 or dynamic thinking no run dropped.
+128 was the only budget with every run passing (32 was about as fast, but one greeting
+took 4.3 s), with median first reply audio: greeting 2.3 s against 1.9 s with search
+off, weather 2.9 s, reminder 3.7 s, radio 2.4 s. Asked "who won the World Series this
 year?", Ember answered from a search (the 2026 winner); with search off it could not.
 Turn search off for the fastest replies. On Gemini 3 models the thinking budget is not
 set (`live_models.adapt` drops `thinking_config`). A regular Gemini API call with Google

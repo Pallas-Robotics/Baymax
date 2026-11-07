@@ -211,8 +211,9 @@ class ToolkitTests(unittest.TestCase):
             with self.subTest(value=value), patch.dict('os.environ', {"BAYMAX_SEARCH_THINKING_BUDGET": value}), \
                     patch("builtins.print"):
                 self.assertEqual(gemini_tools.search_thinking_budget(), budget)
-        # A config without a zero budget (v8, or Gemini 3 where thinking_config is dropped) is
-        # left as it is: only Ember's "no thinking" is raised.
+        # A config that already thinks (no thinking_config, or a nonzero budget) is left as it
+        # is: only Ember's "no thinking" (v10 and v8 both send 0) is raised. On Gemini 3,
+        # live_models.adapt removes thinking_config afterwards.
         with patch.dict('os.environ', {"BAYMAX_TOOLKIT_ENABLED": "1", "BAYMAX_GOOGLE_SEARCH": "1"}):
             for config in ({"system_instruction": "base"},
                            {"system_instruction": "base", "thinking_config": {"thinking_budget": 300}}):
