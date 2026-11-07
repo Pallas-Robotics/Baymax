@@ -1,5 +1,18 @@
 # MVP (unreleased)
 
+- Weather questions no longer wait on a fetch after Ember's first 10 minutes. The
+  weather was cached for 10 minutes and preloaded once at start; the prewarm thread
+  now fetches it again every 9 minutes (in each unit asked for, Celsius at least)
+  and the IP location every 54 minutes, before each copy expires. A failed refresh
+  keeps the copy that is still valid. This adds about 27 IPWho and 160 Open-Meteo
+  requests a day per robot while the toolkit is on (documented in the toolkit
+  README); only one refresh thread runs even if `run()` starts again.
+
+- The family's "about the person" note waits for a quiet moment, like messages and
+  reminders: it was sent (`turn_complete=False`) whenever the profile changed,
+  polled every 3 s, even while Gemini was replying, which can cut the reply off. It
+  now waits for `available_to_speak()` and stays pending until then.
+
 - Speaker stream knobs for a board A/B of reply latency, documented in
   `.env.example`: `BAYMAX_OUTPUT_BLOCKSIZE` (frames per speaker callback, default
   1024; 0 lets PortAudio choose) and `BAYMAX_OUTPUT_LATENCY` (`low`, `high` or

@@ -3,6 +3,7 @@ import asyncio
 import copy
 import os
 import threading
+import time
 import runtime_monitor as monitor
 from .location import Location
 from .weather import Weather
@@ -15,6 +16,13 @@ from features.eyes import tools as eye_tools
 
 location = Location()
 weather = Weather(location)
+# Kept fresh by prewarm's thread, so weather questions never wait on a fetch: the
+# weather is cached for 10 minutes (weather.py) and the IP location for an hour
+# (location.py); each is fetched again before its copy expires.
+WEATHER_REFRESH_S = 9 * 60
+LOCATION_REFRESH_S = 54 * 60   # every 6th weather refresh
+_warm_thread = None
+_warm_stop = threading.Event()  # set only by tests
 
 INSTRUCTION = """
 [LOCATION AND WEATHER TOOLS]
@@ -200,14 +208,34 @@ async def handle_tool_call(session, tool_call):
         await session.send_tool_response(function_responses=replies)
 
 
+def _keep_warm(stop, clock=time.monotonic):
+    """Looks up location and weather at start (shown in the monitor), then quietly keeps
+    both cached: the weather every WEATHER_REFRESH_S, the IP location every
+    LOCATION_REFRESH_S. A failed lookup is tried again at the next refresh."""
+    monitor.activity('location/weather', background=True)
+    try:
+        weather.get()
+    except Exception:
+        pass
+    finally:
+        monitor.activity('location/weather', running=False, background=True)
+    located = clock()
+    while not stop.wait(WEATHER_REFRESH_S):
+        try:
+            if clock() - located >= LOCATION_REFRESH_S:
+                location.refresh()
+                located = clock()
+            weather.refresh()
+        except Exception:
+            pass
+
+
 def prewarm():
+    global _warm_thread
     family.start()   # the Ember app link (messages, dashboard reminders, notes); needs a device key
-    if enabled():
-        def warm():
-            monitor.activity('location/weather', background=True)
-            try:
-                weather.get()
-            finally:
-                monitor.activity('location/weather', running=False, background=True)
-        # No audio/camera use and no delay to the Gemini connection.
-        threading.Thread(target=warm, name="toolkit-prewarm", daemon=True).start()
+    if enabled() and (_warm_thread is None or not _warm_thread.is_alive()):
+        # No audio/camera use and no delay to the Gemini connection. One thread, even if
+        # run() starts again after an error.
+        _warm_thread = threading.Thread(target=_keep_warm, args=(_warm_stop,), name="toolkit-prewarm",
+                                        daemon=True)
+        _warm_thread.start()

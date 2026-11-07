@@ -11,7 +11,7 @@ Every ~15 s `link.py` reads `GET /api/device/inbox` and reports through
 | A message | Kept in `toolkit_family.sqlite3`. At the next quiet moment (same rule as reminders) Ember reads it out, says who it's from and offers to reply. A reply is read back and sent only after the person confirms (`send_reply`). |
 | A reminder, one-time or repeating | Added to the everyday reminder store, labelled "dashboard" with the sender's name. One the store refuses (e.g. a time in the past) is reported back with the reason. |
 | A cancellation | Applied to that reminder, whether it was set on the app or by voice. |
-| Notes about the person | Summarised by Gemini (`gemini-3.5-flash`, as session summaries are) into a short profile. It goes into Ember's instructions as `[ABOUT THE PERSON]` at every connection, is sent mid-conversation when it changes, and goes back to the app so the owner sees exactly what Ember uses. |
+| Notes about the person | Summarised by Gemini (`gemini-3.5-flash`, as session summaries are) into a short profile. It goes into Ember's instructions as `[ABOUT THE PERSON]` at every connection, is sent mid-conversation when it changes (at the next quiet moment, like messages: a note sent while Ember is replying could cut the reply off), and goes back to the app so the owner sees exactly what Ember uses. |
 
 What goes back up: reminder definitions, states and next times; each
 announcement with its check-in answer; which messages were read out; replies;

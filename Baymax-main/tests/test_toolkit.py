@@ -1,7 +1,8 @@
 import asyncio
+import threading
 from types import SimpleNamespace
 import unittest
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 import requests
 from features.toolkits.location import Location
 from features.toolkits.weather import Weather
@@ -68,6 +69,93 @@ class ToolkitTests(unittest.TestCase):
         weather.get()
         self.assertEqual(calls[-1]["latitude"], 41.)
         self.assertEqual(len(calls), 3)
+
+    def test_weather_is_fetched_again_before_it_expires_in_each_unit_asked(self):
+        clock = [0.0]
+        calls = []
+        fail = [False]
+
+        def fetch(url, params):
+            calls.append(params["temperature_unit"])
+            if fail[0]:
+                raise requests.Timeout()
+            return WEATHER
+        weather = Weather(Location(lambda *args: IP, lambda: clock[0]), fetch, lambda: clock[0])
+        weather.get()
+        weather.get("fahrenheit")                    # asked in both units
+        clock[0] = 540                                # prewarm's 9-minute refresh
+        weather.refresh()
+        self.assertEqual(sorted(calls[2:]), ["celsius", "fahrenheit"])
+        clock[0] = 1000                               # the first copies expired at 600
+        self.assertTrue(weather.get()["cached"])
+        self.assertTrue(weather.get("fahrenheit")["cached"])
+        self.assertEqual(len(calls), 4)               # the questions did not wait on a fetch
+        fail[0] = True                                # Open-Meteo down at the next refresh:
+        clock[0] = 1080
+        weather.refresh()
+        self.assertNotIn("error", weather.get())      # the copy still valid is kept
+        clock[0] = 1200                               # and expires as before
+        self.assertIn("error", weather.get())
+
+    def test_location_is_looked_up_again_before_the_hour_is_up(self):
+        clock = [0.0]
+        calls = []
+        fail = [False]
+
+        def fetch(*args):
+            calls.append(clock[0])
+            if fail[0]:
+                raise requests.Timeout()
+            return IP
+        location = Location(fetch, lambda: clock[0])
+        location.get()
+        clock[0] = 3240                               # prewarm's refresh, before 3600
+        location.refresh()
+        clock[0] = 3700
+        self.assertEqual(location.get()["city"], "Sampletown")
+        self.assertEqual(calls, [0.0, 3240])          # no lookup for the question
+        fail[0] = True
+        clock[0] = 6480
+        location.refresh()
+        self.assertEqual(location.get()["city"], "Sampletown")   # a failed lookup keeps the valid copy
+        location.confirmed = {**CITY, "city": "Elsewhere"}
+        location.refresh()                            # a city the user gave needs no lookup
+        self.assertEqual(len(calls), 3)
+
+    def test_prewarm_keeps_location_and_weather_fresh(self):
+        clock = [0.0]
+        waits = []
+
+        class Ticks:                                  # stands in for the stop event
+            def wait(self, seconds):
+                waits.append(seconds)
+                clock[0] += seconds
+                return len(waits) > 12               # 12 refreshes (108 minutes), then stop
+        weather, location = Mock(), Mock()
+        weather.refresh.side_effect = [RuntimeError("offline")] + [None] * 11   # one bad refresh
+        with patch.object(gemini_tools, "weather", weather), patch.object(gemini_tools, "location", location), \
+                patch.object(gemini_tools.monitor, "activity") as activity:
+            gemini_tools._keep_warm(Ticks(), clock=lambda: clock[0])
+        weather.get.assert_called_once_with()         # at start, shown in the monitor
+        self.assertEqual(activity.call_count, 2)      # routine refreshes add no monitor events
+        self.assertEqual(set(waits), {540})
+        self.assertEqual(weather.refresh.call_count, 12)
+        self.assertEqual(location.refresh.call_count, 2)   # at 54 and 108 minutes
+
+    def test_prewarm_starts_one_refresh_thread(self):
+        stop = threading.Event()
+        self.addCleanup(stop.set)
+        with patch.dict('os.environ', {"BAYMAX_TOOLKIT_ENABLED": "1"}), \
+                patch.object(gemini_tools, "_warm_stop", stop), patch.object(gemini_tools, "_warm_thread", None), \
+                patch.object(gemini_tools.family, "start"), \
+                patch.object(gemini_tools, "_keep_warm", lambda event: event.wait(5)):
+            gemini_tools.prewarm()
+            first = gemini_tools._warm_thread
+            gemini_tools.prewarm()                    # run() starting again after an error
+            self.assertIs(gemini_tools._warm_thread, first)
+            self.assertTrue(first.is_alive())
+            stop.set()
+            first.join(2)
 
     def test_weather_failure_has_no_invented_conditions(self):
         weather = Weather(Location(lambda *args: IP), lambda *args: {})

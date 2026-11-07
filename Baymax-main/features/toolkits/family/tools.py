@@ -85,8 +85,11 @@ async def deliver_messages(session):
 
 
 async def refresh_profile(session):
-    """New notes summarised mid-conversation: tell Ember now (the next session has them in its instructions)."""
-    if not link.profile_changed.is_set():
+    """New notes summarised mid-conversation: tell Ember (the next session has them in its
+    instructions) once it is free, like messages: a note sent while Gemini is speaking,
+    thinking or calling a tool, or right after someone spoke, can cut off its reply. The
+    change stays pending until then."""
+    if not link.profile_changed.is_set() or not everyday.available_to_speak():
         return
     link.profile_changed.clear()
     summary = await asyncio.to_thread(store.profile)

@@ -157,13 +157,28 @@ class FamilyTests(unittest.TestCase):
             self.assertEqual("send_reply" in names, toolkit == "1")
 
         session = AsyncMock()
-        asyncio.run(family.refresh_profile(session))
-        session.send_client_content.assert_not_called()
-        self.link.profile_changed.set()
-        asyncio.run(family.refresh_profile(session))
+        with patch.object(family.everyday, "available_to_speak", return_value=True):
+            asyncio.run(family.refresh_profile(session))
+            session.send_client_content.assert_not_called()
+            self.link.profile_changed.set()
+            asyncio.run(family.refresh_profile(session))
         kwargs = session.send_client_content.call_args.kwargs
         self.assertFalse(kwargs["turn_complete"])
         self.assertIn("call her Ruthie", str(kwargs["turns"]))
+
+    def test_a_profile_change_waits_until_ember_is_free(self):
+        # Like a message: a note sent while Gemini is replying could cut the reply off.
+        self.store.set_profile("Ruth, 82; call her Ruthie.", "t1")
+        self.link.profile_changed.set()
+        session = AsyncMock()
+        with patch.object(family.everyday, "available_to_speak", return_value=False):
+            asyncio.run(family.refresh_profile(session))
+        session.send_client_content.assert_not_called()
+        self.assertTrue(self.link.profile_changed.is_set())     # still pending
+        with patch.object(family.everyday, "available_to_speak", return_value=True):
+            asyncio.run(family.refresh_profile(session))
+        self.assertIn("call her Ruthie", str(session.send_client_content.call_args))
+        self.assertFalse(self.link.profile_changed.is_set())
 
     def test_session_task_is_registered(self):
         from features.toolkits import fall_detection
