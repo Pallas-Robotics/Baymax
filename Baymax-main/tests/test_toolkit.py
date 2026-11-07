@@ -183,23 +183,41 @@ class ToolkitTests(unittest.TestCase):
         self.assertEqual(result["system_instruction"], "base")
         self.assertNotIn("tools", result)
 
-    def test_google_search_is_off_unless_turned_on(self):
-        # Next to Ember's function tools, google_search made the native-audio model close
-        # the session (1011) whenever it called one: a dropped, deaf reconnect each time.
+    def test_google_search_is_on_by_default_with_a_thinking_budget(self):
+        # With google_search next to Ember's function tools and no thinking (budget 0), the
+        # native-audio model closed the session (1011) whenever it called one: a dropped,
+        # deaf reconnect each time. Any thinking budget stopped that (live eval, 2026-11-07).
         import os
         from runtime_monitor import _search_status
-        base = {"system_instruction": "base", "tools": []}
-        for value in (None, "0", "", "yes"):
-            env = {key: v for key, v in os.environ.items() if key != "BAYMAX_GOOGLE_SEARCH"}
+        base = {"system_instruction": "base", "tools": [], "thinking_config": {"thinking_budget": 0}}
+        for value, on in ((None, True), ("1", True), ("yes", True), ("0", False)):
+            env = {key: v for key, v in os.environ.items()
+                   if key not in ("BAYMAX_GOOGLE_SEARCH", "BAYMAX_SEARCH_THINKING_BUDGET")}
             if value is not None:
                 env["BAYMAX_GOOGLE_SEARCH"] = value
             with self.subTest(value=value), patch.dict('os.environ', {**env, "BAYMAX_TOOLKIT_ENABLED": "1"}, clear=True):
                 result = gemini_tools.extend_config(base)
-                self.assertFalse(gemini_tools.search_enabled())
-                self.assertEqual(_search_status(), "Disabled")
-            self.assertFalse(any("google_search" in t for t in result["tools"]))
-            self.assertNotIn("[GOOGLE SEARCH]", result["system_instruction"])
+                self.assertEqual(gemini_tools.search_enabled(), on)
+                self.assertEqual(_search_status(), "Gemini built-in grounding" if on else "Disabled")
+            self.assertEqual(sum("google_search" in t for t in result["tools"]), 1 if on else 0)
+            self.assertEqual("[GOOGLE SEARCH]" in result["system_instruction"], on)
+            self.assertEqual(result["thinking_config"], {"thinking_budget": 128 if on else 0})
             self.assertIn("get_weather", {d["name"] for t in result["tools"] for d in t.get("function_declarations", [])})
+        self.assertEqual(base["thinking_config"], {"thinking_budget": 0})  # the caller's config is untouched
+
+    def test_search_thinking_budget_setting(self):
+        for value, budget in (("64", 64), ("1", 1), ("1024", 1024), ("0", 128), ("-5", 128), ("5000", 128),
+                              ("abc", 128), ("", 128)):
+            with self.subTest(value=value), patch.dict('os.environ', {"BAYMAX_SEARCH_THINKING_BUDGET": value}), \
+                    patch("builtins.print"):
+                self.assertEqual(gemini_tools.search_thinking_budget(), budget)
+        # A config without a zero budget (v8, or Gemini 3 where thinking_config is dropped) is
+        # left as it is: only Ember's "no thinking" is raised.
+        with patch.dict('os.environ', {"BAYMAX_TOOLKIT_ENABLED": "1", "BAYMAX_GOOGLE_SEARCH": "1"}):
+            for config in ({"system_instruction": "base"},
+                           {"system_instruction": "base", "thinking_config": {"thinking_budget": 300}}):
+                result = gemini_tools.extend_config(config)
+                self.assertEqual(result.get("thinking_config"), config.get("thinking_config"))
 
     def test_google_search_grounding_is_added_once_and_can_be_disabled(self):
         base = {"system_instruction": "base", "tools": []}

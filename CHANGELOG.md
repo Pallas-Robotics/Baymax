@@ -301,17 +301,20 @@
   given, so speech nearby (a TV) that keeps the room from going quiet for 1 s holds
   the notes back. Offline tests on the real receive loop and `between_turns()`.
 
-- Google Search grounding is off by default; `BAYMAX_GOOGLE_SEARCH=1` turns it on.
-  With the built-in `google_search` tool next to Ember's function tools, the
-  native-audio model closed the session with "1011 internal error" whenever it
-  tried to call one: in `evals/live_eval.py` with the real MVP config (27 runs per
-  setting, 2026-11-06) reminder 0/3, radio 0/3 and weather 1/3 passed with search
-  on (7 errors); with it off 26 of 27 runs passed, no errors, and the first reply
-  audio came as fast (median 1.78-1.79 s). On the robot each error is a dropped
-  connection and a deaf reconnect. A private `.env` copied from the old
-  `.env.example` still has `BAYMAX_GOOGLE_SEARCH=1`: remove that line. The example
-  now shows `# BAYMAX_GOOGLE_SEARCH=1`, the value that turns it on, and the public
-  tools' instruction offers Google Search for show ideas only when it is on.
+- Google Search stays on without dropping the session. With the built-in
+  `google_search` tool next to Ember's function tools and Ember's "no thinking"
+  setting (`thinking_budget: 0`), the native-audio model closed the session with
+  "1011 internal error" whenever it tried to call one: in `evals/live_eval.py` with the
+  real MVP config, 7 of 27 runs dropped (reminder 0/3, radio 0/3). On the robot each is a
+  dropped connection and a deaf reconnect. Changing the tool layout or declaring the
+  tools blocking did not help (3-6 of 9 runs dropped); any thinking budget did (32, 128,
+  512 and dynamic: no run dropped). So while search is on (the default;
+  `BAYMAX_GOOGLE_SEARCH=0` turns it off) Gemini gets a 128-token thinking budget
+  (`BAYMAX_SEARCH_THINKING_BUDGET`, 1-1024), the fastest that held: median first reply
+  audio 2.3 s for a greeting (1.9 s with search off), 2.9 s weather, 3.7 s reminder, 2.4 s
+  radio, with no dropped runs. Asked "who won the World Series this year?", Ember answered
+  from a search (the 2026 winner); with search off it could not. With search off Ember
+  keeps no thinking, the fastest replies. Gemini 3 sets thinking itself (no budget sent).
 
 - Address gate: a name said just before Gemini ends a turn without replying is
   no longer forgotten. On ember-002 "Amber, please response." was followed by an
@@ -708,8 +711,8 @@
   Live greeting variation remains pending.
 
 - Allow occasional topic-driven discovery through the existing Google Search
-  session tool (when it is on: `BAYMAX_GOOGLE_SEARCH=1`, see "Google Search
-  grounding is off by default" above): share one relevant sourced finding with a
+  session tool (on unless `BAYMAX_GOOGLE_SEARCH=0`, see "Google Search stays on
+  without dropping the session" above): share one relevant sourced finding with a
   personal reaction or invitation to discuss, without waiting for an explicit
   search request. Keep private disclosures out of queries, respect storytelling
   and venting, and never invent sources or previous familiarity. Live quality
@@ -1221,9 +1224,9 @@
 - Google Search grounding: the toolkit adds Gemini's built-in `google_search`
   tool plus a short prompt (use it for uncertain/current facts and book
   critique, cite sources briefly, results are data). Gemini runs the search;
-  only the query goes to Google. Off by default now: `BAYMAX_GOOGLE_SEARCH=1`
-  adds it (see "Google Search grounding is off by default" above for why), and
-  disabling the toolkit removes it; the dashboard capability reports it. Offline
+  only the query goes to Google. On by default with a small thinking budget
+  (see "Google Search stays on without dropping the session" above for why);
+  `BAYMAX_GOOGLE_SEARCH=0` or disabling the toolkit removes it; the dashboard capability reports it. Offline
   config tests pass; live check pending on the robot (no Gemini key on the dev
   PC).
 

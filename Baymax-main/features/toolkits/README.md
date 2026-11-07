@@ -13,19 +13,24 @@ monitor. Robot v10 supports the same public tools through its adapter. See
 
 ## Conversational web discovery
 
-**Off by default; `BAYMAX_GOOGLE_SEARCH=1` turns it on.** With the built-in
-`google_search` tool next to Ember's function tools, the native-audio model
-(`gemini-2.5-flash-native-audio-preview-12-2025`) closed the session with "1011
-internal error" whenever it tried to call a function tool. Measured on 2026-11-06
-with `evals/live_eval.py` and Ember's real MVP config, 27 runs per setting: with
-search on, reminder 0/3, radio 0/3 and weather 1/3 passed (7 errors); with it off,
-26 of 27 runs passed with no errors, and the median time to the first reply audio
-was about the same (1.78-1.79 s). On the robot each such error is a dropped
-connection and a reconnect during which Ember can't hear. Turn it on again only to
-check whether a newer model has fixed this. A `.env` copied from an older
-`.env.example` may still say `BAYMAX_GOOGLE_SEARCH=1`, which keeps it on: remove that
-line. While it is off, no instruction mentions Google Search (the public tools' show
-suggestions offer it only when the search tool is there).
+**On by default; `BAYMAX_GOOGLE_SEARCH=0` turns it off.** While it is on, Gemini
+gets a small thinking budget (`BAYMAX_SEARCH_THINKING_BUDGET`, default 128 tokens,
+1-1024). Ember otherwise runs with no thinking (budget 0, the fastest replies), and
+with the built-in `google_search` tool next to Ember's function tools and no thinking,
+the native-audio model (`gemini-2.5-flash-native-audio-preview-12-2025`) closed the
+session with "1011 internal error" whenever it tried to call a function tool: a dropped
+connection and a reconnect during which Ember can't hear. Measured with
+`evals/live_eval.py` and Ember's real MVP config (2026-11-06/07): with search on and
+budget 0, 7 of 27 runs dropped (reminder 0/3, radio 0/3); merging the function tools or
+moving the search tool did not help (3-4 of 9 runs dropped), nor did declaring the tools
+blocking; with budgets of 32, 128, 512 or dynamic thinking no run dropped. 128 was the
+fastest of those (median first reply audio: greeting 2.3 s against 1.9 s with search
+off, weather 2.9 s, reminder 3.7 s, radio 2.4 s). Asked "who won the World Series this
+year?", Ember answered from a search (the 2026 winner); with search off it could not.
+Turn search off for the fastest replies. On Gemini 3 models the thinking budget is not
+set (`live_models.adapt` drops `thinking_config`). A regular Gemini API call with Google
+Search grounding is not an alternative today: on the tested key it is refused with "429
+quota exceeded" on every model, while the Live API's search works.
 
 When turned on, the existing Gemini Google Search tool can be used without an explicit search
 request when a public topic in an engaged conversation merits a relevant lookup.
@@ -35,10 +40,10 @@ or ongoing storytelling, repeated searches, and invented sources or familiarity.
 Queries should contain public topic terms, not personal disclosures or transcripts;
 Google receives the query through Gemini's existing built-in search integration.
 No new provider, dependency, background worker or recording is added.
-Only `BAYMAX_GOOGLE_SEARCH=1` adds this search tool; `BAYMAX_TOOLKIT_ENABLED=0` removes
-it either way. Offline coverage is in `tests/test_toolkit.py` (off by default,
-registration, idempotence and disabled behavior); relevant results, latency and
-natural spoken follow-ups still require live evaluation.
+`BAYMAX_GOOGLE_SEARCH=0` removes this search tool, and `BAYMAX_TOOLKIT_ENABLED=0` removes
+it either way. Offline coverage is in `tests/test_toolkit.py` (on by default with the
+thinking budget, the budget setting, registration, idempotence and disabled behavior) and
+`tests/test_live_eval.py` (the real runtime config); the live results are above.
 
 ## Location and weather
 

@@ -104,6 +104,20 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(config["realtime_input_config"]["activity_handling"], "NO_INTERRUPTION")
         self.assertIn("get_weather", live_eval.declared_tools(config))
 
+    def test_the_real_config_thinks_a_little_only_while_google_search_is_on(self):
+        # The runtime's own config (as the robot builds it): search on by default with a
+        # small thinking budget, which keeps tool calls from closing the session; search
+        # off goes back to no thinking, the fastest replies.
+        for search, budget in ((None, 128), ("0", 0)):
+            with self.subTest(search=search), patch.dict(os.environ, {}, clear=False):
+                os.environ.pop("BAYMAX_SEARCH_THINKING_BUDGET", None)
+                os.environ.pop("BAYMAX_GOOGLE_SEARCH", None)
+                if search is not None:
+                    os.environ["BAYMAX_GOOGLE_SEARCH"] = search
+                model, config = live_eval.mvp_session()
+            self.assertEqual(config["thinking_config"], {"thinking_budget": budget})
+            self.assertEqual(any("google_search" in t for t in config["tools"]), search is None)
+
     def test_uses_the_runtime_the_launcher_runs(self):
         import tempfile
         from pathlib import Path
