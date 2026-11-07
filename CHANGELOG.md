@@ -13,6 +13,16 @@
   and the eye cues. Offline tests pass; the live `language-*` runs of
   `evals/live_eval.py` and a Hindi check on the robot are pending.
 
+- `evals/live_eval.py` checks what Ember says, not the transcript's tags: Gemini 2.5
+  often writes the tag of the message it answers before its reply ("[FALL ALERT] ..."),
+  which the audio doesn't say (none of 6 such saved replies did), so
+  `language-fall-alert-hindi` failed every correct Hindi answer on its `not_reply`.
+  `reply`, `not_reply` and `max_words` now leave leading `[TAG]`s out. The Hindi
+  scenarios also accept Hindi in Urdu script, as the persona's `[LANGUAGE]` treats it
+  (Gemini wrote one Hindi line that way in 9 of 14 runs), and the English and Spanish
+  steps reject it like Devanagari. Offline tests only; the scenarios are still to be
+  rerun live.
+
 - Orange Pi 5 Max core layout. Everything below applies only while Ember is
   pinned to the fast cores (cpu4-7; `BAYMAX_CPU_PINNING=auto` on an RK3588), so
   the Orange Pi 4 Pro (not pinned by default), x86 PCs, macOS and Windows run as

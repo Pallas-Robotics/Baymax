@@ -43,7 +43,11 @@ python evals/live_eval.py --root ../../Baymax-look-closely/Baymax-main   # test 
 - **Checks per turn:**
   - `heard` regex on the input transcript, which catches transcript-matched commands
     such as "Ember disengage".
-  - `reply` / `not_reply` regex.
+  - `reply` / `not_reply` regex. These and `max_words` read the reply without the
+    `[TAG]`s Gemini 2.5 often writes before it in the transcript ("[FALL ALERT] ...");
+    the audio doesn't say them (none of 6 such saved replies did). A tag later in the
+    reply is checked as it stands. The Hindi scenarios accept Hindi in Devanagari,
+    romanized or in Urdu script, as Gemini writes it all three ways.
   - `tools` / `not_tools` / `no_tools`.
   - `max_words`.
   - `max_latency_s`: the time from the end of speech to the first reply audio.

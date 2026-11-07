@@ -53,6 +53,10 @@ STEP_KINDS = ("say", "text", "note", "card", "image")
 EXPECT_KEYS = {"heard", "reply", "not_reply", "tools", "not_tools", "no_tools", "max_words", "max_latency_s",
                "silence_ok"}
 DEFAULT_TOOL_RESULT = {"result": "ok"}
+# Gemini 2.5 often starts its output transcript with the tag of the message it answers
+# ("[FALL ALERT] अरे! ...", "[PRESENCE] ..."), but doesn't say it: transcribed separately, none
+# of 6 such saved replies spoke the tag. Reply checks leave these leading tags out.
+LEADING_TAGS = re.compile(r"^\s*(?:\[[A-Z][A-Z0-9 _-]*\]\s*)+")
 
 
 # ── The MVP's real session config ────────────────────────────────────────────
@@ -207,10 +211,16 @@ def missing_requirements(scenario, config):
     return None
 
 
+def spoken(reply):
+    """The reply transcript without the [TAG]s Gemini writes before what it says."""
+    return LEADING_TAGS.sub("", reply)
+
+
 def check(expect, turn):
-    """Failed expectations for one recorded turn, as short sentences."""
+    """Failed expectations for one recorded turn, as short sentences. The reply checks
+    (`reply`, `not_reply`, `max_words`) read the reply without its leading tags (`spoken`)."""
     failures = []
-    heard, reply = turn["heard"], turn["reply"]
+    heard, reply = turn["heard"], spoken(turn["reply"])
     called = [call["name"] for call in turn["tools"]]
     if "heard" in expect and not re.search(expect["heard"], heard, re.IGNORECASE):
         failures.append(f"Gemini heard {heard!r}, expected /{expect['heard']}/")

@@ -180,6 +180,29 @@ class ScenarioTests(unittest.TestCase):
         self.assertEqual(live_eval.check({}, turn(audio_bytes=0, timed_out=True)), ["no reply before timeout"])
 
 
+    def test_a_tag_before_the_reply_is_not_checked_as_speech(self):
+        # Gemini 2.5 writes "[FALL ALERT]" before its answer in the transcript but doesn't say
+        # it, so language-fall-alert-hindi's not_reply failed every correct Hindi reply.
+        expect = {"reply": "[\\u0900-\\u097F]{2,}", "not_reply": "fall alert", "max_words": 5}
+        for reply in ("[FALL ALERT] अरे! क्या आप ठीक हैं?", " [PRESENCE] [FALL ALERT]  अरे! क्या आप ठीक हैं?"):
+            self.assertEqual(live_eval.check(expect, turn(reply=reply)), [], reply)
+        # Said out loud, or a tag later in the reply, still counts.
+        for reply in ("Fall alert! क्या आप ठीक हैं?", "क्या आप ठीक हैं? [FALL ALERT]"):
+            failures = live_eval.check(expect, turn(reply=reply))
+            self.assertTrue(any("matches forbidden" in failure for failure in failures), reply)
+        self.assertEqual(live_eval.check({}, turn(reply="[FALL ALERT]", audio_bytes=0)), ["empty reply"])
+
+    def test_hindi_replies_count_in_devanagari_romanized_or_urdu_script(self):
+        # Replies to the fall alert in a Hindi conversation, as in the live runs of 2026-11-07:
+        # the first three are right and failed only on the tag or the script; the last is English.
+        alert = {s["name"]: s for s in live_eval.load_scenarios()}["language-fall-alert-hindi"]["steps"][1]["expect"]
+        for reply in ("[FALL ALERT] अरे! क्या आप ठीक हैं? क्या आपको किसी मदद की ज़रूरत है?",
+                      "[FALL ALERT] Kya aap theek hain? Kya aapko madad ki zaroorat hai?",
+                      "[PRESENCE] میں سن رہی ہوں، کیا آپ کچھ بتانا چاہتی ہیں؟"):
+            self.assertEqual(live_eval.check(alert, turn(reply=reply)), [], reply)
+        self.assertTrue(live_eval.check(alert, turn(reply="Oh no! Are you okay? Do you need any help?")))
+
+
 class SessionTests(unittest.TestCase):
     def run_scenario(self, scenario, replies):
         session, seen = FakeSession(replies), []
