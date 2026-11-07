@@ -9,20 +9,20 @@ Each operator builds their own image. Settings, image, passwords and access
 metadata must remain private. A fresh-card boot of this published revision still
 needs verification; checksum success alone does not establish hardware support.
 
-## 1. Get this PR's tools
+## 1. Get the tools
 
 On a Linux build host or Linux VM with root and loop-device support:
 
 ```bash
-git clone --branch sd-card-flash --single-branch https://github.com/Pallas-Robotics/Baymax.git
+git clone --branch main --single-branch https://github.com/Pallas-Robotics/Baymax.git
 cd Baymax
 python3 --version  # Python 3.12 or newer
 ```
 
-After this PR is merged, cloning `main` provides the same tools. Windows/macOS
-can use a suitable Linux VM for building and an image writer on their desktop
-for the final card write. Direct Windows/macOS image building is not supported.
-Allow at least 20 GiB of free build space and an 8 GiB or larger microSD card.
+The tools are in `devops/opi4-flash/`. Windows/macOS can use a suitable Linux VM
+for building and an image writer on their desktop for the final card write.
+Direct Windows/macOS image building is not supported. Allow at least 20 GiB of
+free build space and an 8 GiB or larger microSD card.
 
 ## 2. Configure and build
 
@@ -38,8 +38,8 @@ sudo chown "$USER:$(id -gn)" output output/ember-opi4.img \
 ```
 
 Choose Wi-Fi, time zone, and a runtime branch. `release` is the default runtime;
-this tool branch does not automatically select an unmerged runtime PR. To test
-**OPi4 V1** (now merged) before it reaches `release`, select `main` in the
+the builder never selects an unmerged runtime PR by itself. To run what is on
+`main` (such as **OPi4 V1**) before it reaches `release`, select `main` in the
 configurator. Leave the Gemini key blank to wait for manual Setup before capture.
 A configured key can enable automatic microphone/camera use after installation.
 
@@ -50,8 +50,9 @@ Use a new output directory for another card; builds do not overwrite old outputs
 
 ## 3. Verify before writing
 
-Run this PR's read-only verifier on Linux, Windows or macOS with Python 3.9 or
-newer (the `python3` that comes with macOS works):
+Run the read-only verifier (`devops/opi4-flash/verify_image.py`, from the folder
+the build ran in) on Linux, Windows or macOS with Python 3.9 or newer (the `python3`
+that comes with macOS works):
 
 ```bash
 python3 verify_image.py --manifest output/ready-image.json
