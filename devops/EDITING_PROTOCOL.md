@@ -52,9 +52,10 @@ python tests/run.py
   Ownership and suite-selection checks (`tests/overall/test_validation.py`) run
   only in CI (`GITHUB_ACTIONS=true`) and `tests/run.py`, not on a robot: robots
   roll back a release whose gate fails.
-- Existing CI runs `check_release.py` for application, root test, chat UI,
-  sampler and SD-card tool changes, but not the SD-card or Graphify suites or
-  documentation-only changes. Enable the full workflow described in
+- Existing CI runs `check_release.py` for application, root test, chat UI and
+  `devops/` changes (the sampler, the robot updater and launchers, the SD-card
+  and Graphify tools), but not the SD-card or Graphify suites, and not for changes
+  only to root documentation. Enable the full workflow described in
   `tests/README.md`; until then run the root gate manually and include its
   report. Do not claim automatic coverage that is not enabled.
 - Node is needed for the chat UI check. Local machines without it record a skip;
