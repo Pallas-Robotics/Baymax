@@ -49,7 +49,7 @@ TRAILING_SILENCE_S = 1.5         # Lets Gemini's activity detection end the turn
 ROOM_NOISE = 200                 # Std dev of the background noise, int16 units (about -44 dBFS).
 LEAD_IN_S = 2.0
 TURN_TIMEOUT_S = 25.0
-STEP_KINDS = ("say", "text", "card", "image")
+STEP_KINDS = ("say", "text", "note", "card", "image")
 EXPECT_KEYS = {"heard", "reply", "not_reply", "tools", "not_tools", "no_tools", "max_words", "max_latency_s",
                "silence_ok"}
 DEFAULT_TOOL_RESULT = {"result": "ok"}
@@ -386,6 +386,10 @@ async def send_step(session, step, recorder, speak=synthesize):
         recorder.finish_speaking()
         await session.send_client_content(turns={"role": "user", "parts": [{"text": step["text"]}]},
                                           turn_complete=True)
+    elif "note" in step:
+        # A note that needs no reply, as the runtime sends recalled memories between turns.
+        await session.send_client_content(turns={"role": "user", "parts": [{"text": step["note"]}]},
+                                          turn_complete=False)
     else:
         jpeg = card(step["card"]) if "card" in step else image_file(step["image"])
         await session.send_realtime_input(video=types.Blob(data=jpeg, mime_type="image/jpeg"))
@@ -414,7 +418,7 @@ async def run_scenario(connect, model, config, scenario, real_tools=False, speak
         receiver = asyncio.create_task(receive(session, recorder, scenario.get("tool_results", {}), real_tools))
         try:
             for step in scenario["steps"]:
-                if "card" in step or "image" in step:
+                if "card" in step or "image" in step or "note" in step:  # no reply of its own
                     await send_step(session, step, recorder, speak)
                     continue
                 recorder.start()

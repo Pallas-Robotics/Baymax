@@ -33,6 +33,11 @@ python evals/live_eval.py --root ../../Baymax-look-closely/Baymax-main   # test 
   - `say`: macOS `say` (or `espeak-ng`) text-to-speech, sent as 16-bit 48 kHz PCM in
     real time over quiet room noise (2 s lead-in, 1.5 s after) so Gemini's activity detection starts and ends the turn. With the MVP's LOW start sensitivity, Gemini ignored clean speech framed by digital silence.
   - `text`: a client text turn, like the `[FALL ALERT]` and `[ENGAGED]` notes.
+  - `note`: client content with `turn_complete=False`, like the `[MEMORY CONTEXT]` note the
+    runtime gives between turns. It needs no reply and is not checked as a turn; the next
+    step is. `memory-note-then-speech` checks that a spoken turn after one still gets a
+    reply within 4 s that can use it. Run it with `--model gemini-3.8-live` before letting
+    Ember send such notes on Gemini 3 (`live_models.takes_quiet_notes`).
   - `card`: a generated 640×480 JPEG of text lines, sent as a camera frame.
   - `image`: a JPEG file next to the scenarios.
 - **Checks per turn:**
@@ -76,7 +81,7 @@ This is a developer tool. Nothing in the runtime imports it.
 ## Tests
 `tests/test_live_eval.py` (core, offline) builds the real config, validates
 `scenarios.json`, checks the expectation logic, and drives a fake Live session (spoken
-turn, tool call with a stub, card frames, timeout). It also confirms that a dry run or a
+turn, tool call with a stub, card frames, a note that needs no reply, timeout). It also confirms that a dry run or a
 declined prompt connects to nothing, and which model and adapted config `--model`, or the
 model list, sends.
 

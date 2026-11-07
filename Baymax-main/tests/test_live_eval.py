@@ -201,6 +201,30 @@ class SessionTests(unittest.TestCase):
         self.assertEqual(session.texts, ["What does it say?"])
         self.assertEqual(len(turns), 1)
 
+    def test_a_note_needs_no_reply_and_the_spoken_turn_after_it_is_checked(self):
+        # As the runtime gives recalled memories between turns: client content without turn_complete.
+        class Session(FakeSession):
+            async def send_client_content(self, turns, turn_complete):
+                self.texts.append((turns["parts"][0]["text"], turn_complete))
+                if turn_complete:
+                    await self.queue_reply()
+        note = "[MEMORY CONTEXT] Here are things you remember about this user:\n- grows tomatoes"
+        scenario = {"name": "memory", "steps": [{"note": note}, {"say": "What do I grow?",
+                                                                   "expect": {"reply": "tomato", "max_latency_s": 2}}]}
+        session = Session([[server(said="Cherry tomatoes."), server(audio=b"\0" * 8, complete=True)]])
+        with patch.object(live_eval, "TRAILING_SILENCE_S", 0.01), patch.object(live_eval, "LEAD_IN_S", 0.01), \
+                patch.object(live_eval, "ROOM_NOISE", 0):
+            turns = asyncio.run(live_eval.run_scenario(connector(session, []), "m", {}, scenario,
+                                                       speak=SPEECH, turn_timeout=3))
+        self.assertEqual(session.texts, [(note, False)])
+        self.assertEqual(len(turns), 1)                  # the note is not a turn of its own
+        self.assertEqual(turns[0]["failures"], [])
+        self.assertIsNotNone(turns[0]["latency_s"])
+        shipped = {s["name"]: s for s in live_eval.load_scenarios()}["memory-note-then-speech"]
+        self.assertEqual([next(k for k in live_eval.STEP_KINDS if k in step) for step in shipped["steps"]],
+                         ["say", "note", "say"])
+        self.assertTrue(shipped["steps"][1]["note"].startswith("[MEMORY CONTEXT]"))
+
     def test_a_turn_without_a_reply_times_out_and_fails(self):
         scenario = {"name": "silent", "steps": [{"text": "Hello?"}]}
         with patch.object(live_eval, "TURN_TIMEOUT_S", 1):
