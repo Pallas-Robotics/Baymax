@@ -6,8 +6,9 @@ from pathlib import Path
 import sys
 import tempfile
 import textwrap
+from types import SimpleNamespace
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from features.vision_process import Point, Remote
@@ -58,11 +59,44 @@ FAKE = textwrap.dedent('''
 
         def close(self):
             pass
+
+    class Placed:
+        """Its device: the roles the child asked pc_hardware.place_vision_child for before
+        building it (recorded by spy_on_placement instead of placing anything)."""
+        asked = []
+
+        def __init__(self):
+            self.device = list(Placed.asked)
+
+        def detect(self, frame):
+            return None
+
+    class PlacedFace(Placed):
+        vision_role = "face"
+
+    def spy_on_placement(factory):
+        import pc_hardware
+        pc_hardware.place_vision_child = Placed.asked.append
+        return factory
+
+    class Spied:
+        """Unpickles as spy_on_placement(factory): the child installs the spy as it reads the factory."""
+        def __init__(self, factory):
+            self.factory = factory
+
+        def __reduce__(self):
+            return spy_on_placement, (self.factory,)
 ''')
 
 
 class VisionProcessTests(unittest.TestCase):
     def setUp(self):
+        # Children inherit this environment: never let them place themselves here.
+        environment = patch.dict(os.environ)
+        environment.start()
+        self.addCleanup(environment.stop)
+        for name in ("BAYMAX_FAST_CPUS", "BAYMAX_SLOW_CPUS", "BAYMAX_VISION_CPUS"):
+            os.environ.pop(name, None)
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
         Path(directory.name, "fake_vision_model.py").write_text(FAKE)
@@ -128,6 +162,41 @@ class VisionProcessTests(unittest.TestCase):
             self.assertEqual(pose.device, "CPU")
         self.assertEqual(stamps, sorted(set(stamps)))   # strictly increasing
         self.assertIsNotNone(pose.child.poll())
+
+    def test_the_child_places_itself_before_it_builds_the_model(self):
+        # So the model's threads (MediaPipe's, the NPU runtime's) inherit the cores and nice value.
+        with Remote(self.fake.Spied(self.fake.Placed)) as pose, Remote(self.fake.Spied(self.fake.PlacedFace)) as face:
+            self.assertEqual(pose.device, ["pose"])
+            self.assertEqual(face.device, ["face"])
+
+    def test_pose_models_are_placed_as_pose_and_face_landmarks_as_face(self):
+        import pc_hardware
+        from features import vision_process
+        from features.toolkits.fall_detection import CpuPose
+        from features.toolkits.proactive import FaceLandmarks
+        factories = (partial(ChildPose, "pose_landmarker_lite.task", allow_npu=True),   # the camera's, NPU or CPU
+                     partial(CpuPose, None),                                          # the fall toolkit's own
+                     FaceLandmarks, self.fake.Model)
+        with patch.object(pc_hardware, "place_vision_child", return_value=None) as place:
+            for factory in factories:
+                vision_process._place(factory)
+        self.assertEqual([c.args for c in place.call_args_list], [("pose",), ("pose",), ("face",), ("pose",)])
+
+    def test_only_a_placed_child_turns_off_opencvs_pool_and_placement_never_stops_the_model(self):
+        import pc_hardware
+        from features import vision_process
+        cv2 = SimpleNamespace(setNumThreads=Mock())
+        with patch.dict(sys.modules, {"cv2": cv2}), patch("builtins.print") as printed:
+            with patch.object(pc_hardware, "place_vision_child", return_value=None):         # Ember not pinned
+                vision_process._place(self.fake.Model)
+            cv2.setNumThreads.assert_not_called()
+            with patch.object(pc_hardware, "place_vision_child", return_value={4, 5, 6, 7}):
+                vision_process._place(self.fake.Model)
+            cv2.setNumThreads.assert_called_once_with(1)
+            printed.assert_not_called()
+            with patch.object(pc_hardware, "place_vision_child", side_effect=ValueError("bad cores")):
+                vision_process._place(self.fake.Model)
+        self.assertIn("[VISION] Core placement skipped (ValueError: bad cores)", printed.call_args.args[0])
 
 
 if __name__ == "__main__":

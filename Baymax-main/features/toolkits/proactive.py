@@ -140,6 +140,10 @@ def ensure_model(path=MODEL_PATH, fetch=None):
 
 
 class FaceLandmarks:
+    # features/vision_process.py places this child as face landmarks: where Ember runs on the
+    # RK3588's fast cores, on the slow ones at nice 10 (a greeting waits 0.8 s for a look anyway).
+    vision_role = "face"
+
     def __init__(self):
         import mediapipe as mp
         from mediapipe.tasks import python as tasks
