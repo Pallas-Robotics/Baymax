@@ -70,6 +70,17 @@ class PerformanceTests(unittest.TestCase):
         self.assertNotIn('private', json.dumps(turns))
         self.assertEqual(check.report([], turns)['completed_turns'], 1)
 
+    def test_turn_still_being_spoken_is_collected_once_it_ends(self):
+        # The monitor publishes a matched turn while the person is still talking:
+        # speech_end is None until the local speech estimate ends.
+        turns = {}
+        data = {'conversation_timing': [dict(id=3, speech_start=101, speech_end=None, delays={})]}
+        check.timing_rows(data, 100, 120, turns)
+        self.assertEqual(turns, {})
+        data['conversation_timing'][0].update(speech_end=104, playback=105.2, delays={'audible_ms': 1200})
+        check.timing_rows(data, 100, 125, turns)
+        self.assertEqual(turns[3]['delays'], {'audible_ms': 1200})
+
     def test_percentiles_and_added_latency_budget(self):
         self.assertEqual(check.summary([1, 2, 3, 4, 100, None, float('nan')]),
                          dict(count=5, mean=22, p95=100, max=100))

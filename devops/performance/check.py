@@ -102,7 +102,10 @@ def timing_rows(data, start, end, turns):
     for row in data.get('conversation_timing', []):
         # Only turns whose detected speech ends inside this measurement window.
         # Overwrite observed turns as playback arrives; never store transcript text.
-        if start <= row.get('speech_end', 0) <= end:
+        # speech_end is None while the person is still talking (the transcript
+        # streams during speech); a later sample sees the ended turn.
+        speech_end = row.get('speech_end')
+        if isinstance(speech_end, (int, float)) and start <= speech_end <= end:
             turns[row['id']] = {key: row[key] for key in ('id', 'speech_end', 'playback', 'delays') if key in row}
 
 
