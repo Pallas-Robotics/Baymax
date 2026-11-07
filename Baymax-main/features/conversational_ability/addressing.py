@@ -96,6 +96,8 @@ class AddressGate:
         self._heard_at = None     # when that speech started
         self._heard_last = None   # when the latest fragment arrived
         self._carried = False     # _heard is from an earlier turn that had no reply
+        self._turn_from = 0       # where this turn's speech starts in _heard
+        self._turn_at = None      # when this turn's speech started
         self._prompted_at = None  # when Ember's own message, still unanswered, was sent
         self._sent = []           # [time, args, kwargs, heard_until] of Ember's recent delivered messages
         self._answers_prompt = False  # this reply was let through for that message
@@ -114,6 +116,8 @@ class AddressGate:
                 self._sent = []  # The conversation moved on: the next reply answers the person.
                 if self._heard_at is None:
                     self._heard_at = self.clock()
+                if self._turn_at is None:
+                    self._turn_at = self.clock()
                 self._heard_last = self.clock()
             self._heard.append(text)
             return self._release()
@@ -162,6 +166,7 @@ class AddressGate:
     # ── the decision ─────────────────────────────────────────────────────────
     def _clear_heard(self):
         self._heard, self._heard_at, self._heard_last, self._carried = [], None, None, False
+        self._turn_from = 0
 
     def _expire_carried(self):
         # Caller holds the lock. Speech kept from a turn with no reply lapses after CARRY_S.
@@ -229,9 +234,14 @@ class AddressGate:
             if replied:
                 self._clear_heard()
             else:
-                # No reply this turn: keep what was said for the next one (CARRY_S).
+                # No reply this turn: keep what was said for the next one (CARRY_S). When this
+                # turn had speech, only its words: overheard talk must not pile up over many
+                # quiet turns (a turn with no new speech keeps what was carried).
+                if self._turn_from and self._turn_at is not None:
+                    self._heard, self._heard_at = self._heard[self._turn_from:], self._turn_at
                 self._carried = bool(self._heard)
                 self._expire_carried()
+            self._turn_from, self._turn_at = len(self._heard), None
             self._decision, self._held, self._held_text = None, [], []
         if dropped:
             self.log(f"[ADDRESS] Not spoken to; dropped reply: {text or '(audio only)'}", flush=True)

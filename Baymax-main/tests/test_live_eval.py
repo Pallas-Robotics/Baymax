@@ -92,6 +92,12 @@ class ConfigTests(unittest.TestCase):
         self.assertIn("[LANGUAGE]\nAlways reply in the language the person is speaking to you.",
                       config["system_instruction"])
         self.assertNotIn("language_code", config.get("speech_config", {}))
+        # Nor a transcription language: Hindi is transcribed as Hindi, which the address
+        # gate and "Ember disengage" read. The offline pause words stay English.
+        self.assertEqual(config["input_audio_transcription"], {})
+        self.assertEqual(config["output_audio_transcription"], {})
+        self.assertIn('they can say "Hey Ember" or "stop", say those words in English',
+                      " ".join(config["system_instruction"].split()))
         self.assertEqual(config["response_modalities"], ["AUDIO"])
         self.assertEqual(config["realtime_input_config"]["activity_handling"], "NO_INTERRUPTION")
         self.assertIn("get_weather", live_eval.declared_tools(config))

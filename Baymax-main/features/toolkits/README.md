@@ -206,7 +206,9 @@ once from storage.googleapis.com to `.models/`, checksum-pinned) on the existing
 camera frames, which reach it through `fall_detection.frame_observers`; no new
 camera stream. Face and pose inference run in a child process
 (`features/vision_process.py`): in Ember's own process MediaPipe held Python's GIL,
-starving the mic callback and Gemini I/O. Only frames go in and landmark tuples
+starving the mic callback and Gemini I/O. Where Ember runs on the RK3588's fast cores,
+the face child runs on the slow cores at nice 10 (`FaceLandmarks.vision_role`; see
+ORANGE_PI_SETUP.md, Fast cores). Only frames go in and landmark tuples
 come out over local pipes; nothing leaves the device. The face model is downloaded
 before its child starts. If the face child cannot start (or has not loaded in 60 s),
 eye contact reports unavailable; one that dies, or stops answering a frame for 5 s and

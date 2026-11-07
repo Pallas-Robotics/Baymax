@@ -1,5 +1,40 @@
 # MVP (unreleased)
 
+- Ember answers in the language the person speaks (James's `[LANGUAGE]` in
+  `features/persona.py`): Hindi gets Hindi, Spanish gets Spanish, a switch is
+  followed on the next reply, a Hindi-English mix gets the same mix, and Ember's
+  own English notes (`[FALL ALERT]`, reminders, check-ins) are answered in the
+  conversation's language. The native-audio model picks the language itself; no
+  `language_code` or transcription language is set (a test keeps it that way).
+  The offline pause words stay English, so Ember says "Hey Ember" and "stop" in
+  English; "Ember disengage" also counts when Gemini writes it in Devanagari;
+  memory lines are written in English for the English-only embedder. Still
+  English: the startup hello before anyone speaks and the eye cues. Offline
+  tests pass; the live `language-*` runs of `evals/live_eval.py` and a Hindi
+  check on the robot are pending.
+
+- Orange Pi 5 Max core layout. Everything below applies only while Ember is
+  pinned to the fast cores (cpu4-7; `BAYMAX_CPU_PINNING=auto` on an RK3588), so
+  the Orange Pi 4 Pro (not pinned by default), x86 PCs, macOS and Windows run as
+  before. Every thread of Ember's own process stays on the A76s (they share one
+  GIL). Python's GIL switch interval drops from 5 ms to 1 ms
+  (`BAYMAX_GIL_SWITCH_MS`; 5 restores it): the mic callback lets go of the GIL
+  inside every WebRTC frame and must win it back, and on the board it took about
+  2.5 ms at the median but 9.3-10.2 ms at p99, as long with pose on the NPU as on
+  the CPU. Thread pools that only spun or idled there are single-threaded:
+  OpenCV's in Ember and the vision processes, and `OPENBLAS_NUM_THREADS=1`,
+  `OPENCV_FOR_THREADS_NUM=1`, `TOKENIZERS_PARALLELISM=false` for Ember and what
+  it starts, unless already set (ONNX Runtime keeps its two threads for memory
+  lookups). The pose process (NPU or MediaPipe) places itself on the fast cores
+  at nice 5 before its model starts, since the NPU path's CPU work would miss the
+  100 ms frame budget on an A55; the opt-in eye-contact (face) process goes to
+  the slow cores at nice 10. `BAYMAX_VISION_CPUS=fast|slow` moves both, to
+  measure. Nice values only go up; no real-time scheduling, and the audio cleanup
+  and memory stay in Ember's process. The effect on the mic callback's tail is
+  expected, not measured yet: the full-system A/B on the board is pending.
+  `features/pose/benchmark.py`, which pins itself like Ember, now also runs with
+  these settings. Offline tests pass.
+
 - Pose: a pose process that hangs without exiting is now stopped and restarted.
   `features/vision_process.py`'s `Remote` waited for a reply for good, so a child stuck
   (e.g. librknnrt in the NPU driver) froze the camera thread, and with it video to
@@ -49,7 +84,10 @@
   empty turn, and the reply "I'm here." in the next turn was dropped. Speech
   from a turn with no reply now still counts for the next reply for up to 10 s
   after the person's last words (`CARRY_S`); a played reply clears it as before.
-  Offline tests pass; live check on the robot is pending.
+  Only the last quiet turn is carried: with continuous talk Gemini stayed quiet
+  for, every quiet turn kept the words before it, so a name overheard 20 minutes
+  earlier still let a reply through. Offline tests pass; live check on the
+  robot is pending.
 
 - Address gate: Hindi transcribed in Devanagari now counts as saying Ember's
   name (एम्बर, एंबर, एमबर, ऍम्बर, ऐम्बर, ऐंबर, and the Amber mishearing अम्बर,

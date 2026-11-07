@@ -46,6 +46,10 @@ import queue
 import wave
 import requests as http_requests
 import cv2
+# Pinned to the RK3588's fast cores (pc_hardware.use_performance_cpus): no OpenCV thread pool.
+# Its three workers spun at 1.2-1.6% of a core each around the camera's 0.3 ms colour conversion.
+if os.getenv("BAYMAX_FAST_CPUS"):
+    cv2.setNumThreads(1)
 import sounddevice as sd
 import numpy as np
 # NOISE SUPPRESSION DISABLED (v10) — only the denoiser below used scipy.
@@ -2233,7 +2237,8 @@ def _summarise_claimed(context, new, end, deadline):
             "- Relationships and people they mentioned\n\n"
             "Output ONLY the summary lines, one per line.  No numbering, no "
             "bullets, no preamble.  Each line should be a self-contained fact "
-            "or observation.  If there is nothing meaningful to extract, "
+            "or observation.  Write each line in English, whatever language "
+            "the conversation was in.  If there is nothing meaningful to extract, "
             "output exactly: NOTHING_TO_REMEMBER\n\n"
             + earlier +
             "--- TRANSCRIPT START ---\n"

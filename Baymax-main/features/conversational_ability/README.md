@@ -205,8 +205,9 @@ When the optional strict gate is enabled, a reply plays only if:
 
 Gemini sometimes ends a turn without replying and answers in the next one, so
 speech from a turn with no reply (nothing played or held) still counts for the
-next reply for 10 s after the person's last words (`CARRY_S`). A played reply
-clears it.
+next reply for 10 s after the person's last words (`CARRY_S`). Only the last
+such turn's words are kept, so talk Gemini stays quiet for cannot pile up over
+many turns. A played reply clears it.
 
 The decision is made at the first reply audio. Transcription can trail the reply,
 so an undecided reply's audio and transcript are held and released in order if
@@ -337,7 +338,9 @@ engage" and it says a short hello and listens normally again. While engaged
 there is no wake word: people talk to Ember without saying its name.
 
 - **Disengage** is matched locally in Gemini's transcript of the user
-  ("Ember, disengage.", "amber dis-engage") through `runtime_monitor.transcript_listeners`.
+  ("Ember, disengage.", "amber dis-engage"; in a Hindi conversation also in
+  Devanagari, "एम्बर डिसएंगेज", "अंबर, डिस-एंगेज", using the address gate's Hindi
+  spellings of the name) through `runtime_monitor.transcript_listeners`.
   Ember's own transcript never counts.
 - **While disengaged**, the mic gate (first in `processing.input_gates`, ahead of
   the audiobook) sends Gemini silence, as during audiobooks. The same
