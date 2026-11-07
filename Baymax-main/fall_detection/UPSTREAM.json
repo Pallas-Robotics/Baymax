@@ -2,5 +2,7 @@
   "repository": "https://github.com/JoeKojima/Baymax",
   "commit": "6d2386101d676df476eb97554963d60f1b5950b2",
   "path": "Baymax-main/fall_detection/detector.py",
-  "sha256": "3d36ca75bc4f69530145fc6cfc743e2454cd6efdf5aeeeb4d6267ead4969d336"
+  "upstream_sha256": "3d36ca75bc4f69530145fc6cfc743e2454cd6efdf5aeeeb4d6267ead4969d336",
+  "sha256": "3bbe9927d2a58023249b42d75507f4f7f1e470d29c372cdbd2661c016a75635e",
+  "local_changes": "Optional monotonic capture timestamp for asynchronous inference; default timing and detection thresholds are unchanged."
 }

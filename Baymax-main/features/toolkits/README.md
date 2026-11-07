@@ -209,9 +209,14 @@ camera stream. Face and pose inference run in a child process
 starving the mic callback and Gemini I/O. Where Ember runs on the RK3588's fast cores,
 the face child runs on the slow cores at nice 10 (`FaceLandmarks.vision_role`; see
 ORANGE_PI_SETUP.md, Fast cores). Only frames go in and landmark tuples
-come out over local pipes; nothing leaves the device. If the face child cannot start,
-eye contact reports unavailable. If the core's pose child cannot start or
-dies, it is started again once, on the CPU; video continues either way. A look counts when the face is turned to the camera, both irises
+come out over local pipes; nothing leaves the device. The face model is downloaded
+before its child starts. If the face child cannot start (or has not loaded in 60 s),
+eye contact reports unavailable; one that dies, or stops answering a frame for 5 s and
+is stopped, ends eye-contact greetings until Ember restarts, with one log line
+(`[PRESENCE] Eye-contact greetings stopped until Ember restarts (...)`); a frame the
+face model itself fails is skipped and logged. If the core's pose child
+cannot start, dies or hangs, it is started again once, on the CPU; video continues
+either way. A look counts when the face is turned to the camera, both irises
 are centred, the face is within about 1-1.5 m (detector limit) and it lasts
 ~0.8 s after nobody looked for 30 s. The dashboard timeline shows "Eye contact
 started" and "Eye contact ended" (with why it did or did not greet). It only
@@ -289,7 +294,7 @@ overriding model expressions and delayed thinking. Missing/disabled eyes do not
 prevent the existing check-in. No external notification is added; fake-alert
 dispatch and priority tests cover the integration. See [eye behavior](../eyes/README.md).
 
-Enable the experimental fall-detection checkbox in Setup and restart Ember. In v10 with camera pose tracking on (the default) it reuses the core camera thread's pose instead of running a model of its own, and that pose runs in the core's pose process, on the Orange Pi 5's NPU once [features/pose](../pose/README.md) is set up there (MediaPipe on the CPU otherwise; its inference time includes the round trip to that process). With v10's built-in fall detection also on (the default) that is a second detector, so one fall can give two check-ins; in v8, or with pose tracking off, it runs its own CPU model on copies of the camera frames. It reports performance/state in the monitor and can ask a possible-fall check-in through Gemini; no external alerts are sent. See [fall inputs, dependencies, outputs and validation](FALL_DETECTION.md).
+Enable the experimental fall-detection checkbox in Setup and restart Ember. In v10 with camera pose tracking on (the default) it reuses the core camera thread's pose instead of running a model of its own, and that pose runs in the core's pose process, on the Orange Pi 5's NPU once [features/pose](../pose/README.md) is set up there (MediaPipe on the CPU otherwise; its inference time includes the round trip to that process). With v10's built-in fall detection also on (the default) the built-in detection sends the check-in and the toolkit only reports in the Monitor, so one fall gives one check-in; in v8, or with pose tracking off, it runs its own CPU model on copies of the camera frames and checks in itself. It reports performance/state in the monitor and can ask a possible-fall check-in through Gemini; no external alerts are sent. See [fall inputs, dependencies, outputs and validation](FALL_DETECTION.md).
 
 ## Conversation discovery
 

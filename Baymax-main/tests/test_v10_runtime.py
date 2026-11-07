@@ -675,7 +675,9 @@ class PoseProcessRestartTests(unittest.TestCase):
         def close(self):
             self.closed = True
 
-    def run_thread(self, children, frames=5, pose_tracking=True, download_error=None):
+    def run_thread(self, children, frames=5, pose_tracking=True, download_error=None, fall_detection=False,
+                   **names):
+        """names: replacements for the thread's globals (e.g. time, FallDetector)."""
         import collections
         shutdown = threading.Event()
 
@@ -715,7 +717,7 @@ class PoseProcessRestartTests(unittest.TestCase):
             "os": os, "time": time, "collections": collections, "CAMERA_INDICES": [0],
             "cv2": SimpleNamespace(VideoCapture=lambda index: Capture(), CAP_PROP_FRAME_WIDTH=3,
                                    CAP_PROP_FRAME_HEIGHT=4),
-            "POSE_TRACKING_ENABLED": pose_tracking, "FALL_DETECTION_ENABLED": False, "FallDetector": Mock(),
+            "POSE_TRACKING_ENABLED": pose_tracking, "FALL_DETECTION_ENABLED": fall_detection, "FallDetector": Mock(),
             "_ensure_pose_model": Mock(side_effect=download_error), "_open_pose": open_pose, "fall_worker": Mock(),
             "FALL_DETECTION_FPS": 1000, "FALL_ANGLE_THRESHOLD": 60.0, "FALL_ANG_VEL_THRESHOLD": 1.0,
             "FALL_HIP_VEL_THRESHOLD": 1.0, "FALL_HISTORY_FRAMES": 6, "FALL_CONFIRMATION_FRAMES": 2,
@@ -726,6 +728,7 @@ class PoseProcessRestartTests(unittest.TestCase):
             "_draw_annotated": Mock(), "_fall_detected_event": threading.Event(), "monitor": Mock(),
             "_notify_webapp": Mock(),
         })
+        ns.update(names)
         thread = load_function("_fall_detection_thread", ns)
         with patch.dict(os.environ, {"BAYMAX_HARDWARE_PROFILE": "test"}), patch("builtins.print") as printed:
             thread()
@@ -796,6 +799,166 @@ class PoseProcessRestartTests(unittest.TestCase):
         ns, latest, faces, opened, logged = self.run_thread([], pose_tracking=False)
         self.assertEqual(opened, [])
         self.assertEqual(latest[:-1], ["frame2", "frame3", "frame4", "frame5", "frame6"])
+
+    @staticmethod
+    def detector(stamps):
+        """A FallDetector stand-in that records each update's timestamp and sees no fall."""
+        class Detector:
+            _suspicious_streak = 0
+
+            def __init__(self, **settings):
+                pass
+
+            def update(self, landmarks, timestamp=None):
+                stamps.append(timestamp)
+                return dict(fall_detected=False, fall_active=False, fall_pending=False,
+                            trunk_angle=None, angular_vel=None, hip_descent_vel=None)
+        return Detector
+
+    def test_fall_velocities_use_each_frames_capture_time_not_its_pose_round_trip(self):
+        clock = SimpleNamespace(now=100.0)
+        clock.monotonic = lambda: clock.now
+        clock.sleep = lambda seconds: setattr(clock, "now", clock.now + seconds)
+        captured, stamps = [], []
+
+        class SlowPose(self.Working):
+            def detect(self, frame):
+                captured.append(clock.now)                 # the frame was read just now
+                clock.now += (0.02, 0.09)[len(captured) % 2]   # 20 or 90 ms in the pose process
+                return super().detect(frame)
+        ns, latest, faces, opened, logged = self.run_thread(
+            [SlowPose()], fall_detection=True, time=clock, FallDetector=self.detector(stamps))
+        self.assertEqual(len(captured), 5)
+        self.assertEqual(stamps, captured)
+        # The fall toolkit's own detector (Monitor, or check-ins when the built-in one is off) too.
+        self.assertEqual([c.kwargs["captured_at"] for c in ns["fall_worker"].share.call_args_list], captured)
+
+    def test_the_fall_toolkit_leaves_the_check_in_to_builtin_fall_detection(self):
+        # Setup's checkbox and device.toml's fall_detection.enabled both on: one check-in per fall.
+        for builtin in (True, False):
+            with self.subTest(builtin=builtin):
+                ns, latest, faces, opened, logged = self.run_thread(
+                    [self.Working()], fall_detection=builtin, FallDetector=self.detector([]))
+                start = ns["fall_worker"].start.call_args.kwargs
+                self.assertIs(start["builtin"], builtin)
+                self.assertIs(start["shared_pose"], True)        # the toolkit still gets the core's pose
+
+    HANGING = textwrap.dedent('''
+        import time
+
+        class Pose:
+            """Like ChildPose: the NPU child answers its first frame and never its second (as
+            if librknnrt were stuck in the driver); the CPU child (allow_npu=False) answers."""
+            def __init__(self, model_path, allow_npu=True):
+                self.device = "NPU" if allow_npu else "CPU"
+                self.frames = 0
+
+            def detect(self, frame):
+                self.frames += 1
+                if self.device == "NPU" and self.frames == 2:
+                    time.sleep(3600)
+                return None
+    ''')
+
+    def real_pose_processes(self, name, source, allow_npu, timeout=0.5):
+        """Real vision processes (features.vision_process.Remote), one per allow_npu value,
+        running `source`'s Pose (saved as module `name`), with a frame limit of `timeout` s
+        checked every 50 ms. Hung children are killed when the test ends."""
+        from functools import partial
+        from features.vision_process import Remote
+        import test_toolkit_vision_process as vision_tests
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        Path(directory.name, name + ".py").write_text(source)
+        sys.path.insert(0, directory.name)
+        self.addCleanup(sys.path.remove, directory.name)
+        self.addCleanup(sys.modules.pop, name, None)
+        module = __import__(name)
+        vision_tests.quick_watchdog(self, timeout=timeout)
+        path = os.pathsep.join(filter(None, (directory.name, os.environ.get("PYTHONPATH"))))
+        poses = []
+        with patch.dict(os.environ, {"PYTHONPATH": path}):
+            for allowed in allow_npu:
+                poses.append(Remote(partial(module.Pose, "pose_landmarker_lite.task", allow_npu=allowed)))
+                self.addCleanup(poses[-1].close)
+        for pose in poses:         # these run first: never leave a hung child behind
+            self.addCleanup(lambda child=pose.child: child.poll() is None and child.kill())
+        return poses
+
+    def test_a_hung_pose_process_is_stopped_and_restarted_once_on_the_cpu(self):
+        # Real vision processes: before the watchdog, the camera thread (and so video to
+        # Gemini, face presence and fall detection) waited on a hung child for good.
+        import test_toolkit_vision_process as vision_tests
+        npu, cpu = self.real_pose_processes("fake_hanging_pose", self.HANGING, allow_npu=(True, False))
+        outcome, took = vision_tests.finishes(self, lambda: self.run_thread([npu, cpu]))
+        ns, latest, faces, opened, logged = outcome["value"]
+        self.assertEqual(opened, [False, True])     # NPU allowed first, then forced to the CPU
+        self.assertIn("Pose process failed (vision process hung: no reply in 0.5 s, so it was stopped); "
+                      "restarting it on the CPU.", logged)
+        self.assertEqual(latest, ["frame2", "frame3", "frame4", "frame5", "frame6", None])
+        self.assertEqual([c.kwargs["device"] for c in ns["fall_worker"].share.call_args_list],
+                         ["NPU", "CPU", "CPU", "CPU"])
+        self.assertIsNotNone(npu.child.wait(timeout=2))      # stopped, not left hanging
+        self.assertLess(took, 5)
+
+    SWITCHING = textwrap.dedent('''
+        import time
+
+        from features.pose.backend import FallbackBackend
+
+        class Npu:
+            """Its second frame fails, as an RKNN error mid-run would."""
+            name, device = "NPU (fake)", "NPU"
+            frames = 0
+
+            def detect(self, frame, timestamp_ms):
+                self.frames += 1
+                if self.frames == 2:
+                    raise RuntimeError("RKNN inference failed")
+                return None
+
+            def close(self):
+                pass
+
+        class Cpu:
+            """MediaPipe as the NPU child loads it then: 1 s here (seconds on the 5 Max),
+            longer than a frame may take."""
+            name, device = "CPU (fake)", "CPU"
+
+            def __init__(self):
+                time.sleep(1.0)
+
+            def detect(self, frame, timestamp_ms):
+                return None
+
+            def close(self):
+                pass
+
+        class Pose:
+            """Like ChildPose on the NPU: the real FallbackBackend, from Npu to Cpu."""
+            def __init__(self, model_path, allow_npu=True):
+                self.backend = FallbackBackend(Npu(), Cpu, log=lambda message: None)
+
+            device = property(lambda self: self.backend.device)
+
+            def detect(self, frame):
+                return self.backend.detect(frame, 0)
+    ''')
+
+    def test_an_npu_error_mid_run_switches_to_the_cpu_in_the_same_pose_process(self):
+        # FallbackBackend loads MediaPipe inside that frame. With a frame's limit the watchdog
+        # stopped the child while it recovered and the camera thread spent its one restart on
+        # a second process; a later failure then left video only until Ember restarted.
+        import test_toolkit_vision_process as vision_tests
+        npu, = self.real_pose_processes("fake_switching_pose", self.SWITCHING, allow_npu=(True,))
+        outcome, took = vision_tests.finishes(self, lambda: self.run_thread([npu]))
+        ns, latest, faces, opened, logged = outcome["value"]
+        self.assertEqual(opened, [False])           # no second process: the one restart is still there
+        self.assertNotIn("Pose process failed", logged)
+        self.assertEqual([c.kwargs["device"] for c in ns["fall_worker"].share.call_args_list],
+                         ["NPU", "CPU", "CPU", "CPU", "CPU"])
+        self.assertEqual(latest, ["frame2", "frame3", "frame4", "frame5", "frame6", None])
+        self.assertIsNotNone(npu.child.wait(timeout=2))      # closed with the thread
 
 
 class PoseModelDownloadTests(unittest.TestCase):

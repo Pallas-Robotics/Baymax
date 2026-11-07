@@ -35,6 +35,50 @@
   `features/pose/benchmark.py`, which pins itself like Ember, now also runs with
   these settings. Offline tests pass.
 
+- Pose: a pose process that hangs without exiting is now stopped and restarted.
+  `features/vision_process.py`'s `Remote` waited for a reply for good, so a child stuck
+  (e.g. librknnrt in the NPU driver) froze the camera thread, and with it video to
+  Gemini, face presence and fall detection, until Ember restarted. A watchdog, one
+  thread per child that looks twice a second, kills a child that has not answered a
+  frame in 5 s, or its start in 60 s (imports and model load; the NPU's setup and
+  warm-up measured 0.6-1.7 s). The call then raises like a child that died, so the
+  camera thread restarts pose once on the CPU, as for a crash. An NPU error during a
+  frame still switches to MediaPipe inside the child, without that restart: the frame
+  that imports and loads MediaPipe (the NPU child never had: 1.2-1.3 s on the 5 Max's
+  fast cores with a warm page cache and Ember stopped; longer from a cold SD card or on
+  a busy board, not measured) first tells the parent (`vision_process.loading_model()`)
+  and gets the start's 60 s, so the watchdog does not stop a child that is recovering. A
+  frame only stores its deadline: on a Mac the parent's CPU per round trip stayed within
+  noise (238 vs 219 µs), where a `threading.Timer` per frame (Nate's opi4-demo, ff168ca,
+  which this ports without its regrouping) took 441 µs. The fall toolkit's own model and
+  the eye-contact face model are now downloaded before their child starts, so a slow
+  download is not taken for a hang. A face child stopped this way (or one that dies) is
+  not restarted: eye-contact greetings stop with one log line until Ember restarts
+  (every later frame was logged as skipped, up to 4 times a second). A child stuck
+  inside a kernel call dies only when the driver returns. Offline tests pass (fake hung
+  children, and the camera thread with real vision processes); a real hung NPU call on
+  the 5 Max is pending.
+
+- Fall detection: velocities use each frame's capture time. `FallDetector.update()`
+  read the clock when the frame's pose came back, so the varying round trip to the pose
+  process went into the angular and hip velocities. The camera thread now passes the
+  time right after `cap.read()` (`update(landmarks, timestamp=...)`, opi4-demo's local
+  change to the vendored detector, recorded in `fall_detection/UPSTREAM.json`), and the
+  fall toolkit gets it too (`share(..., captured_at=...)`; with its own model, the time
+  `submit()` got the frame). Thresholds are unchanged; without a timestamp the detector
+  reads the clock as before. Offline tests pass; fall accuracy on the boards is pending
+  as before.
+
+- One check-in per fall. With v10's built-in fall detection (`fall_detection.enabled`,
+  on by default) and the fall toolkit (Setup's checkbox) both on, Gemini got two
+  check-ins for one fall ("[FALL ALERT] ..." and "[Local experimental fall detector]
+  ..."). The toolkit now leaves the check-in to the built-in detection
+  (`fall_worker.start(builtin=True)`) and keeps detecting on the shared pose for the
+  Monitor (state such as "Running on NPU (core pose)", inference time, FPS, results; its
+  event says check-ins come from Ember's built-in fall detection). With built-in
+  detection off, or with the toolkit's own model, it checks in as before. Offline tests
+  pass; live check pending.
+
 - Address gate: a name said just before Gemini ends a turn without replying is
   no longer forgotten. On ember-002 "Amber, please response." was followed by an
   empty turn, and the reply "I'm here." in the next turn was dropped. Speech
@@ -104,7 +148,8 @@
     cannot start (e.g. librknnrt crashing it during NPU setup) or dies later is started
     again once, on the CPU; video continues. The vision process reports
     the model's device with every frame, so the fall toolkit shows NPU/CPU correctly.
-    A pose process that hangs without exiting is not detected yet.
+    A pose process that hangs without exiting was not detected yet; it is now stopped
+    and restarted the same way (see "Pose: a pose process that hangs" above).
   - Fast-core pinning: `BAYMAX_CPU_PINNING=auto` (default) pins only on an RK3588,
     where it was measured; `on` pins on any ARM big.LITTLE board (to try the 4 Pro's
     two A76s, which would also carry the pose/face processes); `off` never pins.

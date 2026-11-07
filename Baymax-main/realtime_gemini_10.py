@@ -149,8 +149,9 @@ def _open_pose(force_cpu=False):
     """Pose in its own process (features/vision_process.py): in Ember's process it held the
     GIL and starved the mic and Gemini I/O. The RK3588 NPU (checked full model) when ready
     and camera.pose_model is lite/full, else MediaPipe with camera.pose_model; heavy and
-    force_cpu always use MediaPipe on the CPU. None if the process could not start (the
-    camera thread then tries once on the CPU, or keeps video only)."""
+    force_cpu always use MediaPipe on the CPU. None if the process could not start, or
+    hung for 60 s while loading (the camera thread then tries once on the CPU, or keeps
+    video only)."""
     from functools import partial
     from features.vision_process import Remote
     from features.pose.backend import ChildPose
@@ -1143,8 +1144,9 @@ def _fall_detection_thread():
     process (_open_pose: the RK3588 NPU or MediaPipe on the CPU), draws visual
     overlays and shares frames with the Gemini video sender and the MJPEG stream,
     and runs fall detection.  The pose landmarks are also used for face presence
-    (conversation initiation). If the pose process cannot start or later fails, it is
-    started again once, on the CPU; video continues either way."""
+    (conversation initiation). If the pose process cannot start, later fails or hangs
+    (no reply to a frame in 5 s: features/vision_process.py stops it), it is started
+    again once, on the CPU; video continues either way."""
     global _latest_frame, _annotated_frame, _annotated_inputs
 
     pose_model_ready = False
@@ -1194,7 +1196,9 @@ def _fall_detection_thread():
         latest_frames_only(cv2, cap)
     # MVP features that watch the camera (greetings) get every frame. Its own CPU
     # fall detector stays off unless BAYMAX_FALL_DETECTION_ENABLED=1; v10's runs here.
+    # With both on, the check-in is this thread's (fall_alert_monitor): one per fall.
     fall_worker.start(fps=FALL_DETECTION_FPS, shared_pose=POSE_TRACKING_ENABLED,  # one pose model, not two
+                      builtin=FALL_DETECTION_ENABLED,
                       angle_threshold=FALL_ANGLE_THRESHOLD,
                       ang_vel_threshold=FALL_ANG_VEL_THRESHOLD, hip_vel_threshold=FALL_HIP_VEL_THRESHOLD,
                       history_window=FALL_HISTORY_FRAMES, confirmation_frames=FALL_CONFIRMATION_FRAMES,
@@ -1235,6 +1239,9 @@ def _fall_detection_thread():
             if not ret:
                 time.sleep(0.1)
                 continue
+            # Fall velocities use when the frame came, not when its pose came back:
+            # the round trip to the pose process varies from frame to frame.
+            captured_at = time.monotonic()
 
             # Share raw frame for Gemini video sender
             with _latest_frame_lock:
@@ -1247,7 +1254,7 @@ def _fall_detection_thread():
                 pose_t0 = time.monotonic()
                 try:
                     landmarks = landmarker.detect(frame)
-                except RuntimeError as error:  # vision process died/hung up or its model raised
+                except RuntimeError as error:  # vision process died, hung (and was stopped) or its model raised
                     landmarker.close()
                     landmarker = None
                     if not pose_restarts:
@@ -1261,12 +1268,12 @@ def _fall_detection_thread():
                               flush=True)
                 else:
                     fall_worker.share(landmarks, round((time.monotonic() - pose_t0) * 1000, 1),
-                                      device=landmarker.device)
+                                      device=landmarker.device, captured_at=captured_at)
 
             # Share face-presence signal with the initiation monitor
             _update_face_visibility(landmarks)
 
-            result = fall_detector.update(landmarks) if fall_detector else no_fall
+            result = fall_detector.update(landmarks, timestamp=captured_at) if fall_detector else no_fall
             if result["trunk_angle"] is not None:
                 angle_history.append(result["trunk_angle"])
                 a = result["trunk_angle"]
