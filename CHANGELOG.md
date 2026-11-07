@@ -273,6 +273,25 @@
   On the Orange Pi line the strict gate is opt-in (`BAYMAX_ADDRESS_GATE=1`), so
   both take effect only where it is turned on.
 
+- Integrate the tested language-adaptation instruction into the shared Ember
+  persona: follow the person's language, switches and mixed-language speech,
+  while keeping internal English messages in the conversation's language.
+  Preserve the rest of the persona/model settings and the measured limitations.
+
+- Record real Orange Pi language simulations: 80/81 automated response runs
+  passed across 240 turns; retain the Polish switching failure and synthetic
+  speech/ASR failures explicitly. Add automatic pass counts and reject/recheck
+  punctuation-only transcripts. Report the test-only prompt patch and measured
+  CPU/RAM/temperature/NPU evidence; add A733 viplite load sampling support.
+
+- Add multilingual simulation scenarios and a sourced 99-entry language candidate
+  catalog. Reuse the real-config Gemini evaluator for native turns, follow-ups,
+  language switching and Hindi-English mixing; optionally save synthetic reply
+  WAVs for review. Compile per-model/config statuses and only list audio languages
+  validated by repeated live runs, checks and exact-evidence human review. Add
+  offline regression coverage; API keys/raw audio stay local and no universal
+  language-support claim is made.
+
 - Add a shared, read-only Linux feature performance sampler for CPU, runtime/
   descendant RSS, system RAM, exposed NPU/thermal sensors and existing speech
   latency. Compare baseline/active/combined workloads, summarize mean/p95/peak

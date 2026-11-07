@@ -7,6 +7,7 @@ python tests/run.py                          # all suites
 python tests/run.py --feature eyes           # eyes + overall
 python tests/run.py --feature conversational_ability
 python tests/run.py --feature sd_card_flash
+python tests/run.py --feature languages       # offline multilingual harness checks
 python tests/run.py --changed origin/main     # changed features + overall
 python tests/run.py --list
 ```

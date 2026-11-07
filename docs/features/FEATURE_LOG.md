@@ -22,7 +22,7 @@ Paths below are relative to `Baymax-main/`.
 | Feature | Organized source | Behavior and limits | Tests / evidence |
 |---|---|---|---|
 | Startup | `run_mvp.py`, `run_pc.py`, `device_config.py` | Saved-device readiness, single instance, eye lifecycle and v10 startup | `tests/test_mvp.py` |
-| Conversation | `features/persona.py`, `features/conversational_ability/`, `realtime_gemini_10.py` | Gemini conversation, audio cleanup, turn-taking, wake/disengage and volume; remote processing requires connectivity | `tests/test_conversational_ability.py`, `tests/test_address_gate.py`, `tests/test_session.py`, `tests/test_voice_volume.py` |
+| Conversation | `features/persona.py`, `features/conversational_ability/`, `realtime_gemini_10.py` | Gemini conversation, language adaptation/switches/mixed speech, audio cleanup, turn-taking, wake/disengage and volume; remote processing requires connectivity | `tests/test_conversational_ability.py`, `tests/test_address_gate.py`, `tests/test_session.py`, `tests/test_voice_volume.py`, `tests/test_language_eval.py` |
 | Speech and latency | `features/conversational_ability/timing.py`, `runtime_monitor.py`, `static/emberdevUI.html` | Independent local speech indicator, updating chat timings, reply wait, output-underrun counter; speech/DAC times are estimates | `tests/test_conversation_timing.py`, `tests/test_runtime_monitor.py`; repository-root `test/monitor-chat.cjs` |
 | Memories | Memory hooks in `realtime_gemini_10.py`, `semantic_embedder.py` | Existing retrieval (recalled memories are looked up from the person's whole turn once its reply has played and reach Gemini between turns, never during a reply) and incremental persistence; settings control enablement, models download separately | `tests/test_memory_saving.py`, `tests/test_semantic_embedder.py` |
 | Person recognition boundary | `features/person_recognition/`; face-presence handling in `realtime_gemini_10.py` | Namespace reserved; face presence is not verified personal identity. This folder does not implement an identity engine | Person-recognition README and camera/pose tests |
@@ -62,6 +62,7 @@ Paths below are relative to the repository root.
 | 5 Max setup | `Baymax-main/ORANGE_PI_SETUP.md`, `devops/clickables/` | Board-appropriate installation; not the 4 Pro image |
 | Graphify | `graphify-out/`, this log | Source-linked graph/report and organized feature inventory; documentation only, outside the robot audio/inference loop |
 | Shared feature performance | `devops/performance/`, `tests/performance/` | Baseline/active/combined CPU, RAM, NPU load/availability, temperature and speech latency; explicit budgets and added p95 latency gate. Sampler offline tests are included in each feature selection; board measurements remain pending |
+| Multilingual simulations | `Baymax-main/evals/language_eval.py`, `Baymax-main/evals/languages/`, `docs/features/LANGUAGES.md`, `docs/features/OPI4_LANGUAGE_RESULTS.md` | Pi text-to-audio matrix: 80/81 automated runs passed across 240 turns, using a test-only language prompt patch; Polish switching and synthetic-speech transcription failures remain. 99 provider candidates stay separate from fully reviewed/validated languages |
 
 ## Change record
 

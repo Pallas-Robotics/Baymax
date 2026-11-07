@@ -62,7 +62,8 @@ def sensors(sysroot, npu_file=None):
                 temperatures.append(value)
         except ValueError:
             continue
-    paths = [npu_file] if npu_file else list((sysroot / 'kernel/debug').glob('rknpu*/load'))
+    paths = ([npu_file] if npu_file else list((sysroot / 'kernel/debug').glob('rknpu*/load'))
+             + [sysroot / 'kernel/debug/viplite/core_loading'])
     loads = []
     for path in paths:
         loads.extend(float(n) for n in re.findall(r'(\d+(?:\.\d+)?)\s*%', read(path)))

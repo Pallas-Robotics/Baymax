@@ -3,6 +3,23 @@
 Responsive turn-taking and local microphone processing, independent of memory or face recognition.
 Integrated with desktop v8 and robot v10.
 
+## Language adaptation
+
+The shared [persona](../persona.py) instructs Gemini to reply in the person's
+language, follow switches on the next reply, and match mixed-language speech.
+English internal system messages should retain the conversation's language.
+This uses the existing Gemini Live audio/text input and reply stream: no local
+language classifier, extra capture stream, model change or separate provider
+request is added. The existing remote-processing data flow is unchanged.
+
+It is enabled through the normal MVP persona, with no separate language toggle.
+An approved deployment/runtime restart picks up the prompt change. This guides
+reply generation; it does not fix transcription or verify pronunciation.
+The [Pi results](../../../docs/features/OPI4_LANGUAGE_RESULTS.md) record 80/81
+automated runs passing and a Polish switching failure. See the
+[multilingual test guide](../../evals/languages/README.md) for simulations and
+`tests/test_language_eval.py` for offline configuration/report checks.
+
 ## Conversation timing (OPI4 v10 monitor)
 
 The Monitor shows the last 20 turns (six visible) with estimated local speech

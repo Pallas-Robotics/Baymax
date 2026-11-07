@@ -50,6 +50,10 @@ class PerformanceTests(unittest.TestCase):
             npu = root / 'load'
             npu.write_text('NPU load: Core0: 20%, Core1: 70%, Core2: 0%')
             self.assertEqual(check.sensors(root, npu), dict(temperature_c=65, npu_percent=70))
+            vip = root / 'kernel/debug/viplite'
+            vip.mkdir(parents=True)
+            (vip / 'core_loading').write_text('NPU Loading -----> Core0:  0%')
+            self.assertEqual(check.sensors(root), dict(temperature_c=65, npu_percent=0))
 
     def test_fresh_monitor_requires_same_pid(self):
         with tempfile.TemporaryDirectory() as folder:

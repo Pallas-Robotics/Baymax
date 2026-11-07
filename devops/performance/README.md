@@ -46,7 +46,9 @@ normal warmed scenario does not measure boot time.
   `PASS` applies only to supplied requirements. Exit 1: unmet requirement.
   Exit 2: unsupported OS, missing runtime, invalid input or collection error.
 - Missing sensors are `null`/unavailable, never zero load. A required missing
-  measurement fails. NPU load uses readable vendor `rknpu*/load` debugfs files;
+  measurement fails. NPU load uses readable vendor `rknpu*/load` (RK3588) or
+  `viplite/core_loading` (observed on the 4 Pro A733) debugfs files, taking the
+  highest reported core percentage. Access may require a privileged read;
   `--npu-load-file /path/to/vendor/load` supports another percentage-format file.
   `--require-npu` requires telemetry; `--max-npu-percent` adds a load budget.
   Do not change driver permissions/mount debugfs as a side effect of this check.
