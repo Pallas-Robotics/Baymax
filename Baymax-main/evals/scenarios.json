@@ -491,7 +491,7 @@
         }
       },
       {
-        "note": "[MEMORY CONTEXT] Here are things you remember about this user from previous conversations:\n- The user grows cherry tomatoes on the balcony (relevance: 0.80)"
+        "note": "[MEMORY CONTEXT] Things you remember about this person from earlier conversations. Treat them as things you know; this note needs no reply:\n- The user grows cherry tomatoes on the balcony (relevance: 0.80)"
       },
       {
         "say": "Ember, what do I grow on my balcony?",

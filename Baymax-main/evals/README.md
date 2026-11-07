@@ -36,7 +36,8 @@ python evals/live_eval.py --root ../../Baymax-look-closely/Baymax-main   # test 
   - `note`: client content with `turn_complete=False`, like the `[MEMORY CONTEXT]` note the
     runtime gives between turns. It needs no reply and is not checked as a turn; the next
     step is. `memory-note-then-speech` checks that a spoken turn after one still gets a
-    reply within 4 s that can use it. Run it with `--model gemini-3.8-live` before letting
+    reply within 4 s that can use it; its note is the runtime's own `_memory_context`
+    text (a test keeps them equal). Run it with `--model gemini-3.8-live` before letting
     Ember send such notes on Gemini 3 (`live_models.takes_quiet_notes`).
   - `card`: a generated 640×480 JPEG of text lines, sent as a camera frame.
   - `image`: a JPEG file next to the scenarios.

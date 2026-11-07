@@ -136,6 +136,23 @@ class ConfigTests(unittest.TestCase):
         model, config = live_eval.core_session(live_eval.ROOT / "realtime_gemini_8.py")
         self.assertIn(persona.PERSONA, config["system_instruction"])
 
+    def test_notes_sent_between_turns_are_background_that_needs_no_reply(self):
+        # Recalled memories (between_turns) and the family's profile update go without
+        # turn_complete. The prompt said every bracket-labelled message "always need[s] a
+        # response" and only to use memories "naturally", so the note sent mixed signals.
+        import device_config
+        real = device_config.get
+        settings = {"conversation.only_when_addressed": True, "memory.retrieval_enabled": True}
+        with patch.object(device_config, "get", lambda key: settings.get(key, real(key))):
+            model, config = live_eval.core_session(live_eval.runtime())
+        prompt = " ".join(config["system_instruction"].split())
+        memory = prompt[prompt.index("[MEMORY CONTEXT]"):prompt.index("[WHEN TO SPEAK]")]
+        self.assertIn("Treat them as things you know about them", memory)
+        self.assertIn("The note itself needs no reply", memory)
+        when = prompt[prompt.index("[WHEN TO SPEAK]"):]
+        self.assertIn("always need a response, except background notes such as [MEMORY CONTEXT] or "
+                      "[ABOUT THE PERSON], which need no reply of their own", when)
+
     def test_launcher_defaults_come_from_run_mvp_and_run_pc(self):
         defaults = live_eval.launcher_defaults()
         self.assertEqual(defaults["BAYMAX_WAIT_CUE_ENABLED"], "0")
@@ -254,7 +271,11 @@ class SessionTests(unittest.TestCase):
         shipped = {s["name"]: s for s in live_eval.load_scenarios()}["memory-note-then-speech"]
         self.assertEqual([next(k for k in live_eval.STEP_KINDS if k in step) for step in shipped["steps"]],
                          ["say", "note", "say"])
-        self.assertTrue(shipped["steps"][1]["note"].startswith("[MEMORY CONTEXT]"))
+        # The scenario sends the runtime's own note for that memory.
+        from test_public_core_integration import load_function
+        note = load_function("_memory_context", {})
+        self.assertEqual(shipped["steps"][1]["note"],
+                         note([{"document": "The user grows cherry tomatoes on the balcony", "distance": 0.2}]))
 
     def test_a_turn_without_a_reply_times_out_and_fails(self):
         scenario = {"name": "silent", "steps": [{"text": "Hello?"}]}

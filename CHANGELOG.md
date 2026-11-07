@@ -241,22 +241,27 @@
 
 - Recalled memories no longer hold up or cut off Ember's replies. The receive loop
   used to wait up to 150 ms for the memory lookup at the first reply audio and then
-  send the `[MEMORY CONTEXT]` note while Gemini was generating, which per the Live
-  API reference "will interrupt any current model generation". Now nothing waits
-  for the lookup: it runs on a worker thread at the first quiet moment after the
-  person's turn (Gemini owes no reply and isn't producing one, nothing is queued
-  for the speaker, no speech for 1 s, none of Ember's own messages awaiting its
-  answer), so it never competes with a reply's first audio, and it searches all of
-  that turn's words. It used to start on the turn's first transcript fragment with
-  the previous turn's words ("We planted tomatoes Ember," for "Ember, what is my
-  dog's name?"), so it looked up the previous topic. The note goes out at the next
-  quiet moment, with `turn_complete=False`, and informs the person's next turn.
-  Memories already in the connection's prompt or given in its conversation are
-  skipped (a connection that resumes the conversation keeps the list; a fresh one
-  starts from its prompt); a recall is dropped when the person starts a new turn
-  before it could be given, so speech nearby (a TV) that keeps the room from going
-  quiet for 1 s holds the notes back. Offline tests on the real receive loop and
-  `between_turns()`.
+  send the `[MEMORY CONTEXT]` note while Gemini was generating, which per the Live API
+  reference "will interrupt any current model generation". Now nothing waits for the
+  lookup: it runs on a worker thread at the first quiet moment after the person's turn
+  (Gemini owes no reply and isn't producing one, nothing is queued for the speaker, no
+  speech for 1 s, none of Ember's own messages awaiting its answer), so it never
+  competes with a reply's first audio, and it searches all of that turn's words. It
+  used to start on the turn's first transcript fragment with the previous turn's words
+  ("We planted tomatoes Ember," for "Ember, what is my dog's name?"), so it looked up
+  the previous topic. The note goes out at the next quiet moment, with
+  `turn_complete=False`, and informs the person's next turn. The prompt's
+  `[MEMORY CONTEXT]` section and the note say its facts are things Ember knows and
+  that it needs no reply, and `[WHEN TO SPEAK]` no longer says every bracket-labelled
+  message needs a response (it exempts `[MEMORY CONTEXT]` and `[ABOUT THE PERSON]`
+  notes). With the earlier wording Gemini 2.5 used the note's fact in the next reply
+  in 1 of 3 and 2 of 5 live runs of `memory-note-then-speech`, and the note never
+  delayed that reply (2.1-2.5 s); the new wording is still to be run live. Memories
+  already in the connection's prompt or given in its conversation are skipped (a
+  connection that resumes the conversation keeps the list; a fresh one starts from its
+  prompt); a recall is dropped when the person starts a new turn before it could be
+  given, so speech nearby (a TV) that keeps the room from going quiet for 1 s holds
+  the notes back. Offline tests on the real receive loop and `between_turns()`.
 
 - Google Search grounding is off by default; `BAYMAX_GOOGLE_SEARCH=1` turns it on.
   With the built-in `google_search` tool next to Ember's function tools, the

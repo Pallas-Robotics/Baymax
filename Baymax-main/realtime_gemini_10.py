@@ -431,10 +431,14 @@ _HAZARD_TABLE = _build_hazard_table()
 # (gemini_tools.extend_config); stored memories are prepended in _build_config.
 _BASE_SYSTEM_INSTRUCTION = persona.PERSONA
 if MEMORY_RETRIEVAL_ENABLED:
+    # The note comes between turns without turn_complete (between_turns): background for
+    # the person's next words, not a message to answer.
     _BASE_SYSTEM_INSTRUCTION += (
-        "\n[MEMORY CONTEXT]\nYou may occasionally receive a '[MEMORY CONTEXT]' "
-        "message with facts recalled from earlier conversations. Use them "
-        "naturally alongside what you already know.\n"
+        "\n[MEMORY CONTEXT]\nBetween turns you may get a '[MEMORY CONTEXT]' note with "
+        "things you remember about this person from earlier conversations. Treat them "
+        "as things you know about them, and use them when the person asks or when they "
+        "fit. The note itself needs no reply: do not answer it or mention it; wait for "
+        "the person to speak.\n"
     )
 
 # Answer only speech meant for Ember, not people talking among themselves.
@@ -457,8 +461,9 @@ if ONLY_WHEN_ADDRESSED:
         "clear visual cues as context, not proof of who is speaking. If the speech is people talking "
         "among themselves, stay silent and do not respond at all. Messages that "
         "start with a label in square brackets, like [FALL ALERT] or [REMINDER], "
-        "come from your own systems and always need a response; never say the "
-        "label itself out loud.\n"
+        "come from your own systems and always need a response, except background "
+        "notes such as [MEMORY CONTEXT] or [ABOUT THE PERSON], which need no reply "
+        "of their own; never say the label itself out loud.\n"
     )
 
 # Optional strict transcript gate. Off by default: its name/20 s rule drops
@@ -748,10 +753,11 @@ def _retrieve_memories(query_text: str) -> list:
 
 
 def _memory_context(memories) -> str:
-    """The [MEMORY CONTEXT] note for recalled memories."""
+    """The [MEMORY CONTEXT] note for recalled memories (evals/scenarios.json's
+    memory-note-then-speech sends the same text)."""
     return (
-        "[MEMORY CONTEXT] Here are things you remember about this user "
-        "from previous conversations:\n"
+        "[MEMORY CONTEXT] Things you remember about this person from earlier "
+        "conversations. Treat them as things you know; this note needs no reply:\n"
         + "\n".join(f"- {m['document']} (relevance: {1 - m['distance']:.2f})" for m in memories)
     )
 
