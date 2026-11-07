@@ -2,7 +2,13 @@
   "name": "runtime",
   "sources": [
     "Baymax-main/realtime_gemini_*.py",
-    "Baymax-main/evals/**"
+    "Baymax-main/evals/**",
+    "Baymax-main/features/conversational_ability/addressing.py",
+    "Baymax-main/features/conversational_ability/engage.py",
+    "Baymax-main/features/conversational_ability/session.py",
+    "Baymax-main/features/conversational_ability/timing.py",
+    "Baymax-main/features/toolkits/audiobooks.py",
+    "Baymax-main/features/toolkits/listen.py"
   ],
   "python": [
     {

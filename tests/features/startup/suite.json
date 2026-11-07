@@ -5,7 +5,8 @@
     "Baymax-main/gemini_preflight.py",
     "Baymax-main/deploy/**",
     "devops/mvp/**",
-    "devops/clickables/**"
+    "devops/clickables/**",
+    "Baymax-main/dev_settings.py"
   ],
   "python": [
     {

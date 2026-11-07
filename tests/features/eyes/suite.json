@@ -1,7 +1,9 @@
 {
   "name": "eyes",
   "sources": [
-    "Baymax-main/features/eyes/**"
+    "Baymax-main/features/eyes/**",
+    "Baymax-main/features/conversational_ability/processing.py",
+    "Baymax-main/features/toolkits/fall_detection.py"
   ],
   "python": [
     {

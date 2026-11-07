@@ -34,6 +34,19 @@ class SuiteSelectionTests(unittest.TestCase):
     def test_changed_test_selects_its_feature(self):
         self.assertEqual(validation.selected_suites(self.suites, ['Baymax-main/tests/test_voice_volume.py'], self.policy), ['conversational_ability', 'overall', 'performance'])
 
+    def test_a_module_also_selects_the_suites_whose_tests_use_it(self):
+        # Tests are owned by file name, so a suite also lists the modules its tests
+        # construct, call or patch (not the shared registries such as gemini_tools.py).
+        for path, owners in [
+                ('Baymax-main/features/toolkits/fall_detection.py', ['conversational_ability', 'eyes', 'information', 'media', 'pose']),
+                ('Baymax-main/features/conversational_ability/processing.py', ['conversational_ability', 'eyes', 'media']),
+                ('Baymax-main/features/toolkits/wakeword.py', ['conversational_ability', 'information', 'media']),
+                ('Baymax-main/features/conversational_ability/addressing.py', ['conversational_ability', 'runtime']),
+                ('Baymax-main/pc_hardware.py', ['device_settings', 'pose'])]:
+            with self.subTest(path=path):
+                self.assertEqual(validation.selected_suites(self.suites, [path], self.policy),
+                                 sorted(owners + ['overall', 'performance']))
+
     def test_docs_select_graph_checks(self):
         self.assertEqual(validation.selected_suites(self.suites, ['docs/features/FEATURE_LOG.md'], self.policy), ['graphify', 'overall', 'performance'])
 
