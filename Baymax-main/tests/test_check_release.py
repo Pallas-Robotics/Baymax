@@ -114,7 +114,7 @@ class LocalSettingsTests(unittest.TestCase):
     def test_the_model_folder_for_the_real_model_memory_tests_is_kept(self):
         # Not a setting of Ember: it points test_semantic_embedder's real-model tests at a
         # downloaded model. Removed, those tests never ran under this gate or tests/run.py.
-        with patch.dict(os.environ, {"BAYMAX_MEMORY_MODEL_DIR": "/models/minilm"}), \
+        with patch.dict(os.environ, {"BAYMAX_MEMORY_MODEL_DIR": "/models/minilm", "BAYMAX_CPU_PINNING": "off"}), \
                 local_settings_ignored(self.root):
             self.assertEqual(os.environ.get("BAYMAX_MEMORY_MODEL_DIR"), "/models/minilm")
             self.assertNotIn("BAYMAX_CPU_PINNING", os.environ)
