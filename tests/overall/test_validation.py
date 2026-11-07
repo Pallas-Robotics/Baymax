@@ -28,7 +28,8 @@ class SuiteSelectionTests(unittest.TestCase):
         self.assertEqual(validation.selected_suites(self.suites, ['Baymax-main/features/eyes/driver.py'], self.policy), ['eyes', 'overall', 'performance'])
 
     def test_shared_and_unknown_changes_require_full_validation(self):
-        for path in ['Baymax-main/realtime_gemini_10.py', 'unknown_shared_module.py']:
+        for path in ['Baymax-main/realtime_gemini_10.py', 'unknown_shared_module.py',
+                     'Baymax-main/features/toolkits/gemini_tools.py']:  # the toolkit registry
             self.assertEqual(validation.selected_suites(self.suites, [path], self.policy), sorted(self.suites))
 
     def test_changed_test_selects_its_feature(self):
@@ -37,10 +38,13 @@ class SuiteSelectionTests(unittest.TestCase):
     def test_a_module_also_selects_the_suites_whose_tests_use_it(self):
         # Tests are owned by file name, so a suite also lists the modules its tests
         # construct, call, patch or read, also through a realtime_gemini_10.py function
-        # they run (not the shared registries such as gemini_tools.py), and the other
+        # they run (gemini_tools.py, the toolkit registry many suites call, selects them all), and the other
         # suites' test modules they import.
         for path, owners in [
-                ('Baymax-main/features/toolkits/fall_detection.py', ['conversational_ability', 'eyes', 'information', 'media', 'pose']),
+                ('Baymax-main/features/toolkits/fall_detection.py',
+                 ['conversational_ability', 'everyday', 'eyes', 'family', 'information', 'media', 'pose']),
+                # test_toolkit_vision_process (pose) runs the eye-contact face model.
+                ('Baymax-main/features/toolkits/proactive.py', ['conversational_ability', 'information', 'pose']),
                 ('Baymax-main/features/conversational_ability/processing.py', ['conversational_ability', 'eyes', 'media']),
                 ('Baymax-main/features/toolkits/wakeword.py', ['conversational_ability', 'information', 'media']),
                 # test_memory_saving runs the real receive loop and between_turns with an AddressGate.

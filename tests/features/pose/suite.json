@@ -7,7 +7,8 @@
     "Baymax-main/features/toolkits/fall_detection.py",
     "Baymax-main/features/toolkits/audiobooks.py",
     "Baymax-main/dev_settings.py",
-    "Baymax-main/pc_hardware.py"
+    "Baymax-main/pc_hardware.py",
+    "Baymax-main/features/toolkits/proactive.py"
   ],
   "python": [
     {

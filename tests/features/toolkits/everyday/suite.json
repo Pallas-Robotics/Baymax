@@ -3,7 +3,8 @@
   "sources": [
     "Baymax-main/features/toolkits/everyday/**",
     "Baymax-main/features/toolkits/checkins.py",
-    "Baymax-main/features/conversational_ability/engage.py"
+    "Baymax-main/features/conversational_ability/engage.py",
+    "Baymax-main/features/toolkits/fall_detection.py"
   ],
   "python": [
     {

@@ -7,7 +7,8 @@
     "Baymax-main/check_release.py",
     "Baymax-main/requirements*",
     "tests/**",
-    ".github/**"
+    ".github/**",
+    "Baymax-main/features/toolkits/gemini_tools.py"
   ],
   "documentation_paths": [
     "README.md",
