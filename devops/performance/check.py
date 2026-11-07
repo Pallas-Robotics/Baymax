@@ -110,6 +110,16 @@ def timing_rows(data, start, end, turns):
                                 if key in row}
 
 
+TIMING_OFF = ("Ember turned conversation timing off after an error in it (see its log); "
+              "latency coverage is incomplete")
+
+
+def timing_off(data):
+    # Audio continues, but turns get no more speech or playback times until Ember restarts.
+    detection = data.get('speech_detection')
+    return isinstance(detection, dict) and detection.get('timing_failed') is True
+
+
 def summary(values):
     values = sorted(value for value in values if isinstance(value, (int, float)) and math.isfinite(value))
     if not values:
@@ -206,7 +216,7 @@ def main(argv=None):
         if type(pid) is not int or pid <= 0:
             raise ValueError('Expected a positive runtime PID')
         started, deadline = time.time(), time.monotonic() + args.seconds
-        samples, turns, previous, stale = [], {}, None, 0
+        samples, turns, previous, stale, timing_failed = [], {}, None, 0, False
         while True:
             row, previous = sample(pid, previous, npu_file=args.npu_load_file)
             samples.append(row)
@@ -215,6 +225,7 @@ def main(argv=None):
                 stale += 1
             else:
                 timing_rows(data, started, time.time(), turns)
+                timing_failed = timing_failed or timing_off(data)
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 break
@@ -222,7 +233,8 @@ def main(argv=None):
         result = report(samples, turns, baseline)
         result.update(feature=args.feature, platform=sys.platform, board=board, kernel=os.uname().release,
                       cpu_count=os.cpu_count(), duration_s=round(time.time() - started, 2),
-                      recorded_utc=datetime.now(timezone.utc).isoformat(), samples=len(samples), stale_monitor_samples=stale)
+                      recorded_utc=datetime.now(timezone.utc).isoformat(), samples=len(samples), stale_monitor_samples=stale,
+                      timing_failed=timing_failed)
         limits = {metric: getattr(args, flag) for metric, flag in (
             ('cpu_percent', 'max_cpu_percent'), ('rss_mib', 'max_rss_mib'),
             ('temperature_c', 'max_temp_c'), ('audible_ms', 'max_audible_ms'), ('npu_percent', 'max_npu_percent'))
@@ -230,6 +242,8 @@ def main(argv=None):
         result['failures'] = violations(result, limits, args.min_turns, args.require_npu, args.max_added_latency_ms)
         if stale and (args.min_turns or args.max_audible_ms or args.max_added_latency_ms):
             result['failures'].append('Monitor was stale/missing or runtime restarted; latency coverage is incomplete')
+        if timing_failed and (args.min_turns or args.max_audible_ms or args.max_added_latency_ms):
+            result['failures'].append(TIMING_OFF)
         checked = bool(limits or args.min_turns or args.require_npu or args.max_added_latency_ms)
         result['status'] = 'FAIL' if result['failures'] else ('PASS' if checked else 'MEASURED')
         args.output.parent.mkdir(parents=True, exist_ok=True)

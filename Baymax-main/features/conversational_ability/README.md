@@ -38,7 +38,9 @@ latency estimate. Interruption clears unplayed timing marks. A reply is timed fr
 its first chunk with sound, counted in the speaker's byte stream. Timing never
 touches audio: its work runs outside the lock the speaker callback waits for, and
 an error in it on the mic, speaker or playback-queue path turns timing off for
-the run (one log line) instead of muting the mic or stopping the speaker.
+the run (one log line) instead of muting the mic or stopping the speaker. The
+Monitor's status line then says so, and the performance sampler reports
+`timing_failed` (a latency check it was asked for fails).
 No new recordings, dependencies, streams or external requests are added. Timing
 metadata is local and bounded. Times are kept on the monotonic clock and become
 wall-clock times when the monitor reads them, so a clock corrected after start

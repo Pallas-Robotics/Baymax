@@ -1,6 +1,6 @@
 const assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm');
 class Element{
- constructor(){this.children=[];this.textContent='';this.scrollHeight=0;this.clientHeight=420;this.scrollTop=0;}
+ constructor(){this.children=[];this.textContent='';this.scrollHeight=0;this.clientHeight=420;this.scrollTop=0;this.dataset={};}
  get firstChild(){return this.children[0]||null;}
  get nextSibling(){if(!this.parent)return null;return this.parent.children[this.parent.children.indexOf(this)+1]||null;}
  append(...nodes){for(const n of nodes){n.remove();n.parent=this;this.children.push(n);}}
@@ -40,4 +40,17 @@ const repeated={...updated,events:[finish,{...start,id:'tool-2',time:1006,starte
 context.chat.renderConversation(repeated);
 assert.equal(conversation.children.filter(x=>x.className==='message activity').length,2);
 assert.equal(conversation.children[1],tool);
-console.log('PASS: inline latency updates, stable single toolkit bubble, deduplication and distinct repeated calls');
+// The status line: an error turns conversation timing off (audio continues) and the page says so.
+const elements={};
+const status=vm.createContext({document:{getElementById:id=>elements[id]??=new Element(),createElement:()=>new Element()}});
+vm.runInContext(script+';globalThis.page={renderSpeech};',status);
+const detection={available:true,active:true,awaiting_transcript:false,speech_start:null,speech_end:null,output_underflows:0,timing_failed:false};
+status.page.renderSpeech({state:'listening',speech_detection:detection});
+assert.equal(elements.speechIndicator.textContent,'Speech detected locally');
+status.page.renderSpeech({state:'listening',speech_detection:{...detection,timing_failed:true}});
+assert.equal(elements.speechIndicator.textContent,'Conversation timing off after an error · audio continues');
+assert.equal(elements.speechIndicator.dataset.active,'false');
+assert.match(elements.speechTimes.textContent,/log has the error/);
+status.page.renderSpeech({state:'offline',speech_detection:{...detection,available:false,timing_failed:true}});
+assert.equal(elements.speechIndicator.textContent,'Local speech detector unavailable');
+console.log('PASS: inline latency updates, stable single toolkit bubble, deduplication, distinct repeated calls and a timing error on the status line');

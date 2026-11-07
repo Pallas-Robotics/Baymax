@@ -21,10 +21,11 @@ function timingDelay(value){return Number.isFinite(value)?(value/1000).toFixed(3
 function renderSpeech(data){
  const speech=data.speech_detection, indicator=$('speechIndicator');
  const available=speech?.available&&data.state!=='offline';
- const label=!available?'Local speech detector unavailable':speech.active?'Speech detected locally':speech.awaiting_transcript?'Speech ended locally · waiting for Gemini transcript':'No local speech detected';
+ const failed=speech?.timing_failed&&data.state!=='offline';  // turned off after an error; audio continues
+ const label=failed?'Conversation timing off after an error · audio continues':!available?'Local speech detector unavailable':speech.active?'Speech detected locally':speech.awaiting_transcript?'Speech ended locally · waiting for Gemini transcript':'No local speech detected';
  if(indicator.textContent!==label)indicator.textContent=label;
- indicator.dataset.active=available&&speech.active?'true':'false';
- const detail=speech?.speech_start?'Local estimate · start '+timingTime(speech.speech_start)+' · end '+timingTime(speech.speech_end):'Updates from microphone audio, independently of Gemini transcription. Local estimates can mistake noise for speech.';
+ indicator.dataset.active=!failed&&available&&speech.active?'true':'false';
+ const detail=failed?'Ember’s log has the error. Speech and playback times stop until Ember restarts.':speech?.speech_start?'Local estimate · start '+timingTime(speech.speech_start)+' · end '+timingTime(speech.speech_end):'Updates from microphone audio, independently of Gemini transcription. Local estimates can mistake noise for speech.';
  if($('speechTimes').textContent!==detail)$('speechTimes').textContent=detail;
  $('speakerHealth').textContent=speech?'Speaker underruns since restart: '+speech.output_underflows+' · A nonzero count can explain stuttering.':'';
 }

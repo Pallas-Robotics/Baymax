@@ -63,6 +63,9 @@ normal warmed scenario does not measure boot time.
   utterance for playback. Missing/stale monitor data fails a requested latency
   check. Check expected utterance count and manually record unrecognized speech;
   speech that never becomes a transcript may have no matched timing row.
+  `timing_failed` is true when Ember turned conversation timing off after an error
+  in it (audio continues; Ember's log has the error): turns get no more speech or
+  playback times until Ember restarts, so a requested latency check fails.
 - `speech_turns` counts turns Gemini answered with audio; `unanswered_turns` counts
   transcribed turns it left without a reply (with proactive audio, on by default,
   it stays silent on side talk and hesitations). Only an answered turn that never

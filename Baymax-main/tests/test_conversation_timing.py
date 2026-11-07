@@ -58,6 +58,13 @@ class TimingTests(unittest.TestCase):
         self.timing.transcript('user', 1)
         self.assertFalse(self.timing.speech_status()['awaiting_transcript'])
 
+    def test_a_timing_error_is_reported_not_only_logged(self):
+        # The mic, speaker and playback-queue paths set failed and stop calling
+        # (processing.py, realtime_gemini_10.py); the monitor and check.py read it here.
+        self.assertFalse(self.timing.speech_status()['timing_failed'])
+        self.timing.failed = True
+        self.assertTrue(self.timing.speech_status()['timing_failed'])
+
     def test_stale_microphone_does_not_leave_indicator_lit(self):
         self.speech()
         self.now = 10

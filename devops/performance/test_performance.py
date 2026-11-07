@@ -1,4 +1,6 @@
+import contextlib
 import importlib.util
+import io
 import json
 from pathlib import Path
 import tempfile
@@ -127,8 +129,39 @@ class PerformanceTests(unittest.TestCase):
             data = json.loads(output.read_text())
             self.assertEqual(data['status'], 'PASS')
             self.assertEqual(data['metrics']['rss_mib']['max'], 100)
+            self.assertFalse(data['timing_failed'])
             self.assertNotIn('transcripts', data)
             self.assertNotIn('samples_raw', data)
+
+    def run_cli(self, status, *options):
+        with tempfile.TemporaryDirectory() as folder:
+            output = Path(folder) / 'report.json'
+            with patch.object(check.sys, 'platform', 'linux'), \
+                 patch.object(check.os, 'uname', return_value=type('OS', (), dict(machine='aarch64', release='test'))(), create=True), \
+                 patch.object(check.time, 'monotonic', side_effect=[0, 2]), \
+                 patch.object(check, 'sample', return_value=({'rss_mib': 100}, {})), \
+                 patch.object(check, 'monitor', return_value=status), \
+                 contextlib.redirect_stdout(io.StringIO()):
+                code = check.main(['--feature', 'conversation', '--pid', '10', '--seconds', '1',
+                                   '--output', str(output), *options])
+            return code, json.loads(output.read_text())
+
+    def test_a_timing_error_in_ember_is_reported_and_fails_a_latency_check(self):
+        # Ember turns conversation timing off after an error in it (audio continues), so
+        # turns get no speech or playback times: "Speech turns without playback remain"
+        # alone did not say why.
+        status = {'pid': 10, 'heartbeat': 0, 'conversation_timing': [],
+                  'speech_detection': {'available': False, 'timing_failed': True}}
+        code, data = self.run_cli(status, '--min-turns', '1')
+        self.assertEqual(code, 1)
+        self.assertTrue(data['timing_failed'])
+        self.assertIn(check.TIMING_OFF, data['failures'])
+        code, data = self.run_cli(status)          # measuring only: reported, not a failure
+        self.assertEqual((code, data['status'], data['timing_failed']), (0, 'MEASURED', True))
+        for detection in ({'timing_failed': False}, None, 'broken'):
+            code, data = self.run_cli(dict(status, speech_detection=detection), '--min-turns', '1')
+            self.assertFalse(data['timing_failed'])
+            self.assertNotIn(check.TIMING_OFF, data['failures'])
 
 
 if __name__ == '__main__':

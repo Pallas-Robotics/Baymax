@@ -63,7 +63,10 @@ class ConversationTiming:
                     'awaiting_transcript': fresh and pending and self.speech is None,
                     'speech_start': None if start is None else start + offset,
                     'speech_end': None if end is None else end + offset,
-                    'output_underflows': self.output_underflows}
+                    'output_underflows': self.output_underflows,
+                    # Turned off after an error (the audio paths stop calling): the
+                    # monitor and the performance sampler say so, not only the log.
+                    'timing_failed': self.failed}
 
     def output_status(self, status):
         if getattr(status, 'output_underflow', False):
