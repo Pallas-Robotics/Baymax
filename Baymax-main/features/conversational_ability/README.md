@@ -8,7 +8,8 @@ Integrated with desktop v8 and robot v10.
 The Monitor shows the last 20 turns (six visible) with estimated local speech
 start/end, first/last Gemini transcript arrival, first reply text/audio arrival,
 and the first nonzero reply sample scheduled for playback. Durations separate
-speech-end to transcript, transcript to reply audio, and reply audio to playback.
+speech-end to the transcript's last piece (its first piece streams in while the
+person speaks), transcript to reply audio, and reply audio to playback.
 The status section shows local speech activity before a transcript exists,
 then "waiting for Gemini transcript" after detected speech ends. It refreshes
 with the existing 200 ms telemetry / 250 ms UI polling. Stale detector data is
@@ -24,13 +25,33 @@ The local detector observes existing cleaned audio (70% speech probability,
 at least -45 dBFS, 60 ms onset and 400 ms silence); it does not gate audio or
 change Gemini settings. Noise, echoes and pauses can split/miss detections.
 Speech times are omitted if multiple local segments could match a transcript.
+A reply belongs to the newest turn still waiting. Gemini answers a turn before the
+next starts, so an older turn with no reply audio (proactive audio stays silent on
+side talk and hesitations) is closed when a new one begins and never takes a later
+reply. A transcript that arrives after the reply's first audio keeps that reply if
+the person started speaking before it; speech over Ember's own message does not.
+A pause that ends a local segment inside one Gemini turn extends the turn to its
+last segment, whose end is the turn's speech end. Not checked live: a question
+that makes Gemini call a tool while the person speaks during the lookup. If Gemini
+said nothing before the call, the newer turn closes the asked one as unanswered
+and the tool's answer is charged to the newer turn (diagnostics only).
 Gemini's internal recognition time and actual acoustic output are not measured.
 Playback uses callback DAC timing; a missing timestamp falls back to the output
-latency estimate. Interruption clears unplayed timing marks.
+latency estimate. Interruption clears unplayed timing marks. A reply is timed from
+its first chunk with sound, counted in the speaker's byte stream. Timing never
+touches audio: its work runs outside the lock the speaker callback waits for, and
+an error in it on the mic, speaker or playback-queue path turns timing off for
+the run (one log line) instead of muting the mic or stopping the speaker. The
+Monitor's status line then says so, and the performance sampler reports
+`timing_failed` (a latency check it was asked for fails).
 No new recordings, dependencies, streams or external requests are added. Timing
-metadata is local and bounded; durations use a monotonic clock mapped to wall
-time. Offline tests: `test_conversation_timing.py`, `test_runtime_monitor.py`,
-`test_v10_runtime.py`. Live confirmation requires restarting v10 and speaking.
+metadata is local and bounded. Times are kept on the monotonic clock and become
+wall-clock times when the monitor reads them, so a clock corrected after start
+(NTP) moves them with the heartbeat. Offline tests: `test_conversation_timing.py`
+(including replayed Live API orderings), `test_runtime_monitor.py`,
+`test_v10_runtime.py`. Live confirmation requires restarting v10 and speaking;
+include a tool question (the weather) with a few words during the lookup and
+check which turn the reply is charged to.
 From the repository root, `node test/monitor-chat.cjs` checks inline timing
 updates and one stable toolkit bubble per invocation without opening devices.
 

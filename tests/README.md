@@ -38,6 +38,14 @@ RAM, NPU, temperature and added latency under baseline/feature/combined load;
 offline tests do not invent readings or launch a live scenario.
 
 Each folder's `suite.json` owns source patterns and references its test files.
+Tests are assigned by file name, so a suite's sources also list the application
+modules its tests construct, call, patch or read from other features (for example pose
+lists `features/toolkits/fall_detection.py`), including those a `realtime_gemini_10.py`
+function they run imports (runtime lists `features/vision_process.py`, which
+`_open_pose` starts), and the other suites' test modules they import (runtime lists
+`test_waiting_cue.py`); `--changed` then selects it. Shared registries
+(`features/toolkits/__init__.py`, `gemini_tools.py`, `fall_detection.session_tasks`)
+are left out. Choosing suites from what the tests import would replace these lists.
 Existing test modules stay in `Baymax-main/tests` and `devops` so imports and robot
 updaters keep working. New application tests must be assigned to one feature;
 overall checks reject missing or duplicate ownership. Suites run in separate
@@ -49,17 +57,25 @@ not presented as an implemented feature with passing tests. Feature selection is
 for fast development; a focused pass is not full release validation.
 
 `Baymax-main/check_release.py` remains the existing core/toolkit gate used by
-robots and CI and also runs root overall checks. Local skips are reported; the
-chat UI check requires Node in CI. Physical devices and provider calls are outside
-these offline suites. Follow [the editing protocol](../devops/EDITING_PROTOCOL.md)
-and the live checklist before release.
+robots and CI and also runs root overall checks. Its ownership and selection
+checks (`overall/test_validation.py`) run only in CI (`GITHUB_ACTIONS=true`) and
+in `tests/run.py`: a robot rolls back a release whose gate fails, and a test file
+missing from a `suite.json` must not stop the robots updating. Local skips are
+reported; the chat UI check requires Node in CI. Physical devices and provider
+calls are outside these offline suites. Follow [the editing
+protocol](../devops/EDITING_PROTOCOL.md) and the live checklist before release.
 
 ## CI activation
 
-The existing workflow filters for `Baymax-main/**`; changes confined to root
-tests, documentation or deployment tools do not trigger that workflow. The ready
-workflow at `devops/ci/feature-validation.yml.example` covers every PR and pushes
-to `main`/`release`, runs all suites and uploads the report/logs. A maintainer must
+The existing workflow (`offline-checks.yml`) runs `Baymax-main/check_release.py`
+for changes under `Baymax-main/**`, `tests/**`, `test/**` and `devops/**`: everything
+that gate runs or parses, including the robot updater (`devops/mvp`) and the
+launchers (`devops/clickables`) its tests load. That gate includes the overall
+checks and the sampler's tests but not the SD-card or Graphify suites, and changes
+only to root documentation (`README.md`, `CHANGELOG.md`, `AGENTS.md`, `docs/`,
+`graphify-out/`) do not trigger it. The ready workflow at
+`devops/ci/feature-validation.yml.example` covers every PR and pushes to
+`main`/`release`, runs all suites and uploads the report/logs. A maintainer must
 copy it to `.github/workflows/feature-validation.yml` using a credential with
 workflow-write access. The current publishing credential lacks that scope.
 Until enabled, run `python tests/run.py` explicitly for those changes and attach

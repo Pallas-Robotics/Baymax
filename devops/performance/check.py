@@ -13,6 +13,9 @@ import time
 ROOT = Path(__file__).resolve().parents[2]
 METRICS = ('cpu_percent', 'process_cpu_percent', 'rss_mib', 'system_used_mib',
            'temperature_c', 'npu_percent', 'recognition_ms', 'response_ms', 'audible_ms')
+# Report format 2: recognition_ms runs to the transcript's last piece. In format 1 it ran
+# to the first piece, so a format-1 baseline's recognition_ms is not compared.
+FORMAT = 2
 
 
 def read(path):
@@ -106,7 +109,18 @@ def timing_rows(data, start, end, turns):
         # streams during speech); a later sample sees the ended turn.
         speech_end = row.get('speech_end')
         if isinstance(speech_end, (int, float)) and start <= speech_end <= end:
-            turns[row['id']] = {key: row[key] for key in ('id', 'speech_end', 'playback', 'delays') if key in row}
+            turns[row['id']] = {key: row[key] for key in ('id', 'speech_end', 'reply_audio', 'playback', 'delays')
+                                if key in row}
+
+
+TIMING_OFF = ("Ember turned conversation timing off after an error in it (see its log); "
+              "latency coverage is incomplete")
+
+
+def timing_off(data):
+    # Audio continues, but turns get no more speech or playback times until Ember restarts.
+    detection = data.get('speech_detection')
+    return isinstance(detection, dict) and detection.get('timing_failed') is True
 
 
 def summary(values):
@@ -125,10 +139,16 @@ def report(samples, turns, baseline=None):
     if baseline:
         for key, value in metrics.items():
             old = baseline['metrics'].get(key)
+            if key == 'recognition_ms' and baseline.get('format') == 1:
+                continue
             if value and old:
                 deltas[key] = {stat: round(value[stat] - old[stat], 2) for stat in ('mean', 'p95', 'max')}
-    return dict(format=1, metrics=metrics, delta_from_baseline=deltas,
-                speech_turns=len(turns), completed_turns=sum('playback' in row for row in turns.values()),
+    # A speech turn is one Gemini answered with audio. With proactive audio (on by
+    # default) it stays silent on side talk and hesitations: no playback is coming.
+    answered = sum('reply_audio' in row for row in turns.values())
+    return dict(format=FORMAT, metrics=metrics, delta_from_baseline=deltas,
+                speech_turns=answered, unanswered_turns=len(turns) - answered,
+                completed_turns=sum('playback' in row for row in turns.values()),
                 unavailable=[key for key, value in metrics.items() if value is None])
 
 
@@ -156,9 +176,9 @@ def violations(result, limits, min_turns=0, require_npu=False, max_added_latency
 
 
 def validate_baseline(data, board):
-    if (not isinstance(data, dict) or data.get('format') != 1
+    if (not isinstance(data, dict) or type(data.get('format')) is not int or data['format'] not in (1, FORMAT)
             or not isinstance(data.get('metrics'), dict) or data.get('status') == 'FAIL'):
-        raise ValueError('Expected a successful format-1 performance baseline')
+        raise ValueError('Expected a successful format-1 or format-2 performance baseline')
     if data.get('board') != board:
         raise ValueError('Baseline board does not match; collect both runs on the same board.')
     for metric, value in data['metrics'].items():
@@ -201,7 +221,7 @@ def main(argv=None):
         if type(pid) is not int or pid <= 0:
             raise ValueError('Expected a positive runtime PID')
         started, deadline = time.time(), time.monotonic() + args.seconds
-        samples, turns, previous, stale = [], {}, None, 0
+        samples, turns, previous, stale, timing_failed = [], {}, None, 0, False
         while True:
             row, previous = sample(pid, previous, npu_file=args.npu_load_file)
             samples.append(row)
@@ -210,6 +230,7 @@ def main(argv=None):
                 stale += 1
             else:
                 timing_rows(data, started, time.time(), turns)
+                timing_failed = timing_failed or timing_off(data)
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 break
@@ -217,7 +238,8 @@ def main(argv=None):
         result = report(samples, turns, baseline)
         result.update(feature=args.feature, platform=sys.platform, board=board, kernel=os.uname().release,
                       cpu_count=os.cpu_count(), duration_s=round(time.time() - started, 2),
-                      recorded_utc=datetime.now(timezone.utc).isoformat(), samples=len(samples), stale_monitor_samples=stale)
+                      recorded_utc=datetime.now(timezone.utc).isoformat(), samples=len(samples), stale_monitor_samples=stale,
+                      timing_failed=timing_failed)
         limits = {metric: getattr(args, flag) for metric, flag in (
             ('cpu_percent', 'max_cpu_percent'), ('rss_mib', 'max_rss_mib'),
             ('temperature_c', 'max_temp_c'), ('audible_ms', 'max_audible_ms'), ('npu_percent', 'max_npu_percent'))
@@ -225,6 +247,8 @@ def main(argv=None):
         result['failures'] = violations(result, limits, args.min_turns, args.require_npu, args.max_added_latency_ms)
         if stale and (args.min_turns or args.max_audible_ms or args.max_added_latency_ms):
             result['failures'].append('Monitor was stale/missing or runtime restarted; latency coverage is incomplete')
+        if timing_failed and (args.min_turns or args.max_audible_ms or args.max_added_latency_ms):
+            result['failures'].append(TIMING_OFF)
         checked = bool(limits or args.min_turns or args.require_npu or args.max_added_latency_ms)
         result['status'] = 'FAIL' if result['failures'] else ('PASS' if checked else 'MEASURED')
         args.output.parent.mkdir(parents=True, exist_ok=True)

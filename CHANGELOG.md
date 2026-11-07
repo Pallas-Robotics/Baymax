@@ -79,6 +79,57 @@
   detection off, or with the toolkit's own model, it checks in as before. Offline tests
   pass; live check pending.
 
+- The SD-card image verifier (`devops/opi4-flash/verify_image.py`) runs on Python
+  3.9 and newer, such as the `python3` that comes with macOS. It hashed with
+  `hashlib.file_digest` (Python 3.11+), so there it passed the other checks and
+  then crashed with a traceback (exit 1). It now hashes in 1 MiB reads; the exit
+  codes stay 0 (verified) and 2 (failed). Checked with macOS's Python 3.9.6.
+
+- Conversation timing can no longer affect audio. An error in it on the capture
+  thread switched Ember to the half-duplex fallback (mic muted during every reply)
+  and one in the speaker callback stopped the speaker until a restart (sounddevice
+  aborts the stream); now it turns timing off for the run with one log line, and the
+  Monitor's status line and the performance sampler (`timing_failed`, which fails a
+  requested latency check) say so. Timing work moved out of the playback lock the
+  speaker callback waits for; a reply's playback time counts from the speaker's byte
+  position, so one queued while a block is taken keeps its own time; and a reply
+  that opens with digital silence is timed from its first chunk with sound. Nothing
+  changes without an error; offline tests only.
+
+- Conversation timing (monitor and performance sampler) charges each reply to the
+  turn it answers. With proactive audio (on by default) Gemini stays silent on side
+  talk and hesitations, and its next answer was charged to that older turn (5.8 s
+  recorded for a 0.6 s reply) while the turn it answered kept "Waiting for reply".
+  A reply now goes to the newest waiting turn; an older turn without reply audio is
+  closed when the next one starts; a transcript that trails the reply's first audio
+  keeps that reply; a pause that splits one turn's speech ends the turn at its last
+  words. `recognition_ms` (the Monitor's "Speech end → last transcript", formerly
+  "Speech end → transcript") now runs to the transcript's last piece: the first
+  piece streams in while the person speaks, so it was negative and never shown.
+  `check.py` reports are format 2 for this; against a format-1 baseline they leave
+  out the `recognition_ms` delta. Times stay on the monotonic clock until the
+  monitor reads them, so an NTP correction after start no longer shifts them.
+  `check.py` counts only answered turns as `speech_turns` (`unanswered_turns`
+  reports the rest), so `--min-turns` no longer fails on a turn Gemini chose not to
+  answer. Replayed Live API orderings now measure 580-625 ms for a true 600 ms
+  (previously up to 10.6 s). Diagnostics only; audio is unchanged.
+
+- `check_release.py` and `tests/run.py` keep `BAYMAX_MEMORY_MODEL_DIR` while they
+  set the machine's own settings aside. It only points the real-model memory tests
+  at a downloaded model (it changes nothing in Ember), and removing it meant those
+  two tests never ran under either command: they always skipped.
+
+- Robot updates: `check_release.py` no longer runs the repository's bookkeeping
+  checks (`tests/overall/test_validation.py`: every test file listed in one
+  `suite.json`, the suites `tests/run.py --changed` picks) on a robot. The Orange
+  Pi 5 Max updater and the 4 Pro image run that gate before taking a release and
+  roll back when it fails, so one correct test file missing from a `suite.json`
+  stopped every robot updating (the 5 Max never retries that commit). CI, where
+  GitHub sets `GITHUB_ACTIONS=true`, and `tests/run.py` still run them; the
+  source, chat UI and performance-sampler checks stay in the robots' gate.
+  Offline: with an unlisted test file the gate now passes as a robot (core 571,
+  toolkit 241) and fails in CI.
+
 - Address gate: a name said just before Gemini ends a turn without replying is
   no longer forgotten. On ember-002 "Amber, please response." was followed by an
   empty turn, and the reply "I'm here." in the next turn was dropped. Speech

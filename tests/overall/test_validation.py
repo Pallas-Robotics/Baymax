@@ -34,6 +34,30 @@ class SuiteSelectionTests(unittest.TestCase):
     def test_changed_test_selects_its_feature(self):
         self.assertEqual(validation.selected_suites(self.suites, ['Baymax-main/tests/test_voice_volume.py'], self.policy), ['conversational_ability', 'overall', 'performance'])
 
+    def test_a_module_also_selects_the_suites_whose_tests_use_it(self):
+        # Tests are owned by file name, so a suite also lists the modules its tests
+        # construct, call, patch or read, also through a realtime_gemini_10.py function
+        # they run (not the shared registries such as gemini_tools.py), and the other
+        # suites' test modules they import.
+        for path, owners in [
+                ('Baymax-main/features/toolkits/fall_detection.py', ['conversational_ability', 'eyes', 'information', 'media', 'pose']),
+                ('Baymax-main/features/conversational_ability/processing.py', ['conversational_ability', 'eyes', 'media']),
+                ('Baymax-main/features/toolkits/wakeword.py', ['conversational_ability', 'information', 'media']),
+                ('Baymax-main/features/conversational_ability/addressing.py', ['conversational_ability', 'runtime']),
+                # test_bootstrap patches pc_hardware.arm_linux; the runtime's camera thread imports it.
+                ('Baymax-main/pc_hardware.py', ['device_settings', 'pose', 'runtime', 'startup']),
+                # test_v10_runtime's OpenPoseTests run the real _open_pose and vision process.
+                ('Baymax-main/features/vision_process.py', ['pose', 'runtime']),
+                ('Baymax-main/features/pose/backend.py', ['pose', 'runtime']),
+                # test_memory_saving reads the service's stop timeout and the eyes' join.
+                ('devops/mvp/install_autostart.py', ['memory_palace', 'startup']),
+                ('Baymax-main/features/eyes/controller.py', ['conversational_ability', 'eyes', 'memory_palace']),
+                ('Baymax-main/tests/test_public_core_integration.py', ['conversational_ability', 'memory_palace', 'runtime']),
+                ('Baymax-main/tests/test_waiting_cue.py', ['conversational_ability', 'runtime'])]:
+            with self.subTest(path=path):
+                self.assertEqual(validation.selected_suites(self.suites, [path], self.policy),
+                                 sorted(owners + ['overall', 'performance']))
+
     def test_docs_select_graph_checks(self):
         self.assertEqual(validation.selected_suites(self.suites, ['docs/features/FEATURE_LOG.md'], self.policy), ['graphify', 'overall', 'performance'])
 

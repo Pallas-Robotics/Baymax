@@ -510,6 +510,9 @@ audio_queue_mic = asyncio.Queue()
 # Thread-safe playback buffer for callback-based output stream
 _playback_buffer = b""
 _playback_lock = threading.Lock()
+# Bytes the speaker has taken from the buffer since start (under _playback_lock).
+# Reply timing marks count from it, so they hold however the buffer moves on.
+_playback_taken = 0
 
 _gemini_speaking = False
 _gemini_speaking_lock = threading.Lock()
@@ -776,21 +779,36 @@ _last_mic_send_ts: float = 0.0
 # ─── Playback buffer helpers ─────────────────────────────────────────────────
 def _append_playback(data: bytes, *, new_turn=False, timing_id=None):
     global _playback_buffer
+    first = None
+    if timing_id is not None:
+        # The reply's first sound, found before taking the lock the speaker waits for.
+        samples = np.frombuffer(data, dtype=np.int16)
+        if samples.any():
+            first = int(np.argmax(samples != 0))
     with _playback_lock:
         if new_turn and _playback_buffer:
             # Separate queued replies without delaying a reply after silence.
             _playback_buffer += b"\x00" * (RECEIVE_SAMPLE_RATE * OUTPUT_CHANNELS * 2 * 180 // 1000)
-        if timing_id is not None:
-            nonzero = np.flatnonzero(np.frombuffer(data, dtype=np.int16))
-            if len(nonzero):
-                monitor.timing.queued(timing_id, len(_playback_buffer), int(nonzero[0]))
+        position = _playback_taken + len(_playback_buffer)
         _playback_buffer += data
+    if first is not None:
+        # Diagnostics, after the lock (the audio is already queued): an error turns timing off.
+        try:
+            if not monitor.timing.failed:
+                monitor.timing.queued(timing_id, position, first)
+        except Exception:
+            monitor.timing.failed = True
+            print("[AUDIO] Conversation timing turned off after an error; audio continues.", flush=True)
 
 def _flush_playback():
     global _playback_buffer
     with _playback_lock:
         _playback_buffer = b""
-        monitor.timing.clear_playback()
+    try:
+        monitor.timing.clear_playback()  # The flushed replies' timing marks.
+    except Exception:
+        monitor.timing.failed = True
+        print("[AUDIO] Conversation timing turned off after an error; audio continues.", flush=True)
 
 def _abandon_reply():
     """A lost connection ends the reply it was streaming. Without this the rest of
@@ -832,15 +850,24 @@ def _abort_connection(session):
 
 # ─── Callback-based output stream ────────────────────────────────────────────
 def _output_callback(outdata, frames, time_info, status):
-    global _playback_buffer
-    monitor.timing.output_status(status)
+    global _playback_buffer, _playback_taken
     n_bytes = frames * 2
     with _playback_lock:
+        start = _playback_taken
         chunk = _playback_buffer[:n_bytes]
         _playback_buffer = _playback_buffer[n_bytes:]
-        current, dac = getattr(time_info, 'currentTime', 0), getattr(time_info, 'outputBufferDacTime', 0)
-        delay = max(0, dac - current) if current > 0 and dac > 0 else getattr(_audio_enhancer, 'output_latency_ms', 0) / 1000
-        monitor.timing.played(len(chunk), delay, RECEIVE_SAMPLE_RATE)
+        _playback_taken = start + len(chunk)
+    # Diagnostics, after the lock so the next reply chunk never waits for them. sounddevice
+    # stops the speaker for good when this callback raises: an error turns timing off instead.
+    try:
+        if not monitor.timing.failed:
+            monitor.timing.output_status(status)
+            current, dac = getattr(time_info, 'currentTime', 0), getattr(time_info, 'outputBufferDacTime', 0)
+            delay = max(0, dac - current) if current > 0 and dac > 0 else getattr(_audio_enhancer, 'output_latency_ms', 0) / 1000
+            monitor.timing.played(start, len(chunk), delay, RECEIVE_SAMPLE_RATE)
+    except Exception:
+        monitor.timing.failed = True
+        print("[AUDIO] Conversation timing turned off after an error; audio continues.", flush=True)
     if _waiting_cue is not None:
         if _audio_enhancer is not None and _audio_enhancer.full_duplex:
             chunk = _waiting_cue.render(chunk, n_bytes)
@@ -2008,8 +2035,9 @@ async def receive_audio(session):
                                 audio_array = np.frombuffer(data, dtype=np.int16)
                                 upsampled_array = np.repeat(audio_array, 2)
                                 upsampled_bytes = upsampled_array.tobytes()
-                                _append_playback(upsampled_bytes, new_turn=new_turn,
-                                                 timing_id=timing_id if new_turn else None)
+                                # Every chunk: a reply that opens with digital silence is
+                                # timed from its first chunk with sound.
+                                _append_playback(upsampled_bytes, new_turn=new_turn, timing_id=timing_id)
                                 # -----------------------------------------------
                                 _address_gate.spoke(time.monotonic() + len(_playback_buffer)
                                                     / (RECEIVE_SAMPLE_RATE * 2 * OUTPUT_CHANNELS))

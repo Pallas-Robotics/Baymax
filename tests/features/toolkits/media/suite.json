@@ -4,7 +4,12 @@
     "Baymax-main/features/toolkits/audiobooks.py",
     "Baymax-main/features/toolkits/listen.py",
     "Baymax-main/features/toolkits/librivox.py",
-    "Baymax-main/features/toolkits/general_media_entertainment/**"
+    "Baymax-main/features/toolkits/general_media_entertainment/**",
+    "Baymax-main/features/conversational_ability/processing.py",
+    "Baymax-main/features/toolkits/wakeword.py",
+    "Baymax-main/features/toolkits/experimental.py",
+    "Baymax-main/features/toolkits/everyday/tools.py",
+    "Baymax-main/features/toolkits/fall_detection.py"
   ],
   "python": [
     {
