@@ -39,9 +39,9 @@ sudo chown "$USER:$(id -gn)" output output/ember-opi4.img \
 
 Choose Wi-Fi, time zone, and a runtime branch. `release` is the default runtime;
 this tool branch does not automatically select an unmerged runtime PR. To test
-**OPi4 V1** before it is merged, select `opi4-chat-timing` in the configurator.
-Leave the Gemini key blank to wait for manual Setup before capture. A configured
-key can enable automatic microphone/camera use after installation.
+**OPi4 V1** (now merged) before it reaches `release`, select `main` in the
+configurator. Leave the Gemini key blank to wait for manual Setup before capture.
+A configured key can enable automatic microphone/camera use after installation.
 
 The builder writes an image file, not a physical card. It checks pinned asset
 hashes, installs the selected runtime and runs its offline gate. Keep the private
