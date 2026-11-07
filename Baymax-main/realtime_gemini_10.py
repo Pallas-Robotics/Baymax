@@ -2067,7 +2067,7 @@ async def receive_audio(session):
     global _user_turn, _recalled, _reply_owed_since, _go_away_at, _turn_done_at
     _is_new_turn = True
     _reply_audio_started = False
-    _user_turn_open = False   # the person's current turn has started its memory lookup
+    _user_turn_open = False   # the person's current turn has begun (and its memory lookup)
 
     user_said = _TurnTranscript("user")
     gemini_said = _TurnTranscript("gemini")

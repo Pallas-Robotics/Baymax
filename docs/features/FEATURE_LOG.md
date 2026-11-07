@@ -70,6 +70,7 @@ Paths below are relative to the repository root.
 | Baseline `551f80a` | Consolidated Orange Pi runtime, tools, pose backends and SD builder | Existing code; hardware coverage is board-specific |
 | OPi4 V1 | Speech indicator, chat latency, grouped toolkit bubbles, underrun diagnostics, speech-end override | OPI4 offline and ARM64 CI passed; combined live release checklist pending |
 | OPi4 V1 documentation | Organized source inventory and Graphify relationships | Public source/docs; not hardware certification |
+| Conversation latency and robustness | Google Search off by default; recalled memories and GoAway reconnects only between turns; 0.3 s reconnect without an audio reset (backoff, full reset for device errors); 960-sample mic blocks; logging and video encoding off the real-time threads; `BAYMAX_OUTPUT_BLOCKSIZE`/`BAYMAX_OUTPUT_LATENCY` speaker knobs; weather and location kept cached; family profile note waits for a quiet moment | Offline gate passed; Orange Pi 5 Max A/B and live reconnect/GoAway timing pending |
 
 ## Verification
 
