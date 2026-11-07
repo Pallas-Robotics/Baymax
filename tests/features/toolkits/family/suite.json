@@ -2,7 +2,8 @@
   "name": "family",
   "sources": [
     "Baymax-main/features/toolkits/family/**",
-    "Baymax-main/features/toolkits/everyday/store.py"
+    "Baymax-main/features/toolkits/everyday/store.py",
+    "Baymax-main/features/conversational_ability/live_models.py"
   ],
   "python": [
     {

@@ -3,6 +3,8 @@
   "sources": [
     "Baymax-main/features/memory_palace/**",
     "Baymax-main/semantic_embedder.py",
+    "Baymax-main/features/conversational_ability/addressing.py",
+    "Baymax-main/features/conversational_ability/live_models.py",
     "Baymax-main/features/eyes/controller.py",
     "devops/mvp/install_autostart.py",
     "Baymax-main/tests/test_public_core_integration.py"

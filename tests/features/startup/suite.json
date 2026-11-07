@@ -3,6 +3,7 @@
   "sources": [
     "Baymax-main/run_*.py",
     "Baymax-main/gemini_preflight.py",
+    "Baymax-main/features/conversational_ability/live_models.py",
     "Baymax-main/deploy/**",
     "devops/mvp/**",
     "devops/clickables/**",

@@ -43,11 +43,22 @@ class SuiteSelectionTests(unittest.TestCase):
                 ('Baymax-main/features/toolkits/fall_detection.py', ['conversational_ability', 'eyes', 'information', 'media', 'pose']),
                 ('Baymax-main/features/conversational_ability/processing.py', ['conversational_ability', 'eyes', 'media']),
                 ('Baymax-main/features/toolkits/wakeword.py', ['conversational_ability', 'information', 'media']),
-                ('Baymax-main/features/conversational_ability/addressing.py', ['conversational_ability', 'runtime']),
+                # test_memory_saving runs the real receive loop and between_turns with an AddressGate.
+                ('Baymax-main/features/conversational_ability/addressing.py', ['conversational_ability', 'memory_palace', 'runtime']),
+                # Imported by test_v10_runtime, test_gemini_preflight, test_memory_saving and
+                # test_toolkit_family (whether Ember sends notes without turn_complete).
+                ('Baymax-main/features/conversational_ability/live_models.py',
+                 ['conversational_ability', 'family', 'memory_palace', 'runtime', 'startup']),
+                # test_engage, test_live_eval, test_v10_runtime and test_toolkit_eyes read the persona.
+                ('Baymax-main/features/persona.py', ['conversational_ability', 'eyes', 'languages', 'runtime']),
+                # test_language_eval imports the live eval and test_live_eval's fake session.
+                ('Baymax-main/evals/live_eval.py', ['languages', 'runtime']),
+                ('Baymax-main/tests/test_live_eval.py', ['languages', 'runtime']),
                 # test_bootstrap patches pc_hardware.arm_linux; the runtime's camera thread imports it.
                 ('Baymax-main/pc_hardware.py', ['device_settings', 'pose', 'runtime', 'startup']),
-                # test_v10_runtime's OpenPoseTests run the real _open_pose and vision process.
-                ('Baymax-main/features/vision_process.py', ['pose', 'runtime']),
+                # test_v10_runtime's OpenPoseTests run the real _open_pose and vision process;
+                # test_toolkit_proactive patches its Remote.
+                ('Baymax-main/features/vision_process.py', ['information', 'pose', 'runtime']),
                 ('Baymax-main/features/pose/backend.py', ['pose', 'runtime']),
                 # test_memory_saving reads the service's stop timeout and the eyes' join.
                 ('devops/mvp/install_autostart.py', ['memory_palace', 'startup']),

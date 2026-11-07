@@ -11,6 +11,7 @@
     "Baymax-main/features/toolkits/proactive.py",
     "Baymax-main/features/toolkits/transport.py",
     "Baymax-main/features/toolkits/wakeword.py",
+    "Baymax-main/features/persona.py",
     "Baymax-main/tests/test_public_core_integration.py"
   ],
   "python": [

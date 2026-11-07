@@ -2,7 +2,8 @@
   "name": "information",
   "sources": [
     "Baymax-main/features/toolkits/gemini_tools.py",
-    "Baymax-main/features/toolkits/*.py"
+    "Baymax-main/features/toolkits/*.py",
+    "Baymax-main/features/vision_process.py"
   ],
   "python": [
     {
