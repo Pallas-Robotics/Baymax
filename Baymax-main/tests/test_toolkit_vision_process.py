@@ -3,13 +3,18 @@ from functools import partial
 import io
 import os
 from pathlib import Path
+import subprocess
 import sys
 import tempfile
 import textwrap
+import threading
+import time
+from types import SimpleNamespace
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from features import vision_process
 from features.vision_process import Point, Remote
 from features.pose.backend import ChildPose
 
@@ -58,11 +63,143 @@ FAKE = textwrap.dedent('''
 
         def close(self):
             pass
+
+    class Hangs:
+        """Never answers the frame "hang", as librknnrt stuck in the NPU driver would not."""
+        device = "NPU"
+
+        def detect(self, frame):
+            import time
+            if frame == "hang":
+                time.sleep(3600)
+            return None
+
+    class HangsLoading:
+        def __init__(self):
+            import time
+            time.sleep(3600)
+
+    class LoadsSlowly:
+        """Takes 1.5 s to load: longer than a frame may take, far less than a start may."""
+        device = "CPU"
+
+        def __init__(self):
+            import time
+            time.sleep(1.5)
+
+        def detect(self, frame):
+            return None
+
+    class FailingNpu:
+        """An NPU backend (detect(frame, timestamp_ms)) whose inference fails on the frame "fail"."""
+        name, device = "NPU (fake)", "NPU"
+
+        def detect(self, frame, timestamp_ms):
+            if frame == "fail":
+                raise RuntimeError("RKNN inference failed")
+            return None
+
+        def close(self):
+            pass
+
+    class SlowCpu:
+        """MediaPipe as an NPU child loads it after an NPU error (seconds on the board):
+        SlowCpu.load seconds, longer than a frame may take. Never answers the frame "hang"."""
+        name, device = "CPU (fake)", "CPU"
+        load = 1.5
+
+        def __init__(self):
+            import time
+            time.sleep(SlowCpu.load)
+
+        def detect(self, frame, timestamp_ms):
+            import time
+            if frame == "hang":
+                time.sleep(3600)
+            return None
+
+        def close(self):
+            pass
+
+    class Switches:
+        """The real features.pose.backend.FallbackBackend, from FailingNpu to SlowCpu, as
+        ChildPose runs it in the pose child."""
+        def __init__(self, load=1.5):
+            from features.pose.backend import FallbackBackend
+            SlowCpu.load = load
+            self.backend = FallbackBackend(FailingNpu(), SlowCpu, log=lambda message: None)
+
+        device = property(lambda self: self.backend.device)
+
+        def detect(self, frame):
+            return self.backend.detect(frame, 0)
+
+    class Placed:
+        """Its device: the roles the child asked pc_hardware.place_vision_child for before
+        building it (recorded by spy_on_placement instead of placing anything)."""
+        asked = []
+
+        def __init__(self):
+            self.device = list(Placed.asked)
+
+        def detect(self, frame):
+            return None
+
+    class PlacedFace(Placed):
+        vision_role = "face"
+
+    def spy_on_placement(factory):
+        import pc_hardware
+        pc_hardware.place_vision_child = Placed.asked.append
+        return factory
+
+    class Spied:
+        """Unpickles as spy_on_placement(factory): the child installs the spy as it reads the factory."""
+        def __init__(self, factory):
+            self.factory = factory
+
+        def __reduce__(self):
+            return spy_on_placement, (self.factory,)
 ''')
+
+
+def quick_watchdog(test, timeout, start_timeout=60.0):
+    """Remote's limits shortened for `test`, checked every 50 ms. create=True: the Remote
+    from before the watchdog had no such settings and must fail by waiting, not by a
+    TypeError."""
+    for name, value in (("timeout", timeout), ("start_timeout", start_timeout), ("tick", 0.05)):
+        patcher = patch.object(Remote, name, value, create=True)
+        patcher.start()
+        test.addCleanup(patcher.stop)
+
+
+def finishes(test, call, within=10):
+    """call() in a thread: its outcome ({"value"} or {"error"}) and the seconds it took.
+    Fails `test`, rather than waiting for good, if the call is still blocked on a hung
+    child after `within` seconds."""
+    outcome = {}
+
+    def run():
+        try:
+            outcome["value"] = call()
+        except Exception as error:
+            outcome["error"] = error
+    thread = threading.Thread(target=run, daemon=True)
+    started = time.monotonic()
+    thread.start()
+    thread.join(within)
+    test.assertFalse(thread.is_alive(), "still waiting for a hung vision process")
+    return outcome, time.monotonic() - started
 
 
 class VisionProcessTests(unittest.TestCase):
     def setUp(self):
+        # Children inherit this environment: never let them place themselves here.
+        environment = patch.dict(os.environ)
+        environment.start()
+        self.addCleanup(environment.stop)
+        for name in ("BAYMAX_FAST_CPUS", "BAYMAX_SLOW_CPUS", "BAYMAX_VISION_CPUS"):
+            os.environ.pop(name, None)
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
         Path(directory.name, "fake_vision_model.py").write_text(FAKE)
@@ -95,8 +232,22 @@ class VisionProcessTests(unittest.TestCase):
             model = Remote.__new__(Remote)
             model.lock = threading.Lock()
             model.child = type("Child", (), {"stdin": io.BytesIO(), "stdout": io.BytesIO(garbage)})()
-            with self.subTest(garbage=garbage), self.assertRaises(RuntimeError):
+            with self.subTest(garbage=garbage), self.assertRaises(vision_process.Stopped):
                 model.detect("frame")
+
+    def test_a_gone_process_raises_stopped_and_a_models_own_error_does_not(self):
+        # Eye contact keeps its child after a frame the model failed, but must stop using
+        # one that is gone: every later frame fails ("[Errno 32] Broken pipe").
+        with Remote(self.fake.Model) as model:
+            with self.assertRaisesRegex(RuntimeError, "bad frame") as caught:
+                model.detect("boom")
+            self.assertNotIsInstance(caught.exception, vision_process.Stopped)
+            self.assertEqual(model.detect(0.5)[0].x, 0.5)          # the child goes on
+            model.child.kill()
+            model.child.wait(timeout=2)
+            for _ in range(2):
+                with self.assertRaisesRegex(vision_process.Stopped, "vision process stopped"):
+                    model.detect(0.5)
 
     def test_a_model_that_cannot_load_raises_and_leaves_no_process(self):
         with self.assertRaisesRegex(RuntimeError, "no mediapipe"):
@@ -128,6 +279,147 @@ class VisionProcessTests(unittest.TestCase):
             self.assertEqual(pose.device, "CPU")
         self.assertEqual(stamps, sorted(set(stamps)))   # strictly increasing
         self.assertIsNotNone(pose.child.poll())
+
+    def test_the_child_places_itself_before_it_builds_the_model(self):
+        # So the model's threads (MediaPipe's, the NPU runtime's) inherit the cores and nice value.
+        with Remote(self.fake.Spied(self.fake.Placed)) as pose, Remote(self.fake.Spied(self.fake.PlacedFace)) as face:
+            self.assertEqual(pose.device, ["pose"])
+            self.assertEqual(face.device, ["face"])
+
+    def test_pose_models_are_placed_as_pose_and_face_landmarks_as_face(self):
+        import pc_hardware
+        from features import vision_process
+        from features.toolkits.fall_detection import CpuPose
+        from features.toolkits.proactive import FaceLandmarks
+        factories = (partial(ChildPose, "pose_landmarker_lite.task", allow_npu=True),   # the camera's, NPU or CPU
+                     partial(CpuPose, None),                                          # the fall toolkit's own
+                     FaceLandmarks, self.fake.Model)
+        with patch.object(pc_hardware, "place_vision_child", return_value=None) as place:
+            for factory in factories:
+                vision_process._place(factory)
+        self.assertEqual([c.args for c in place.call_args_list], [("pose",), ("pose",), ("face",), ("pose",)])
+
+    def test_only_a_placed_child_turns_off_opencvs_pool_and_placement_never_stops_the_model(self):
+        import pc_hardware
+        from features import vision_process
+        cv2 = SimpleNamespace(setNumThreads=Mock())
+        with patch.dict(sys.modules, {"cv2": cv2}), patch("builtins.print") as printed:
+            with patch.object(pc_hardware, "place_vision_child", return_value=None):         # Ember not pinned
+                vision_process._place(self.fake.Model)
+            cv2.setNumThreads.assert_not_called()
+            with patch.object(pc_hardware, "place_vision_child", return_value={4, 5, 6, 7}):
+                vision_process._place(self.fake.Model)
+            cv2.setNumThreads.assert_called_once_with(1)
+            printed.assert_not_called()
+            with patch.object(pc_hardware, "place_vision_child", side_effect=ValueError("bad cores")):
+                vision_process._place(self.fake.Model)
+        self.assertIn("[VISION] Core placement skipped (ValueError: bad cores)", printed.call_args.args[0])
+
+
+class HungVisionProcessTests(unittest.TestCase):
+    """A child that hangs without exiting is killed by its watchdog, and the call raises
+    RuntimeError like a dead child's, so the camera thread restarts pose on the CPU."""
+
+    setUp = VisionProcessTests.setUp      # the same fake models (not the same tests)
+    quick_watchdog = quick_watchdog
+    finishes = finishes
+
+    def test_a_frame_the_child_never_answers_stops_it_like_a_dead_one(self):
+        self.quick_watchdog(timeout=0.5)
+        model = Remote(self.fake.Hangs)
+        self.addCleanup(model.close)
+        self.addCleanup(lambda: model.child.poll() is None and model.child.kill())  # runs first
+        self.assertIsNone(model.detect("frame"))
+        outcome, took = self.finishes(lambda: model.detect("hang"))
+        self.assertIsInstance(outcome.get("error"), vision_process.Stopped)   # a RuntimeError
+        self.assertIn("vision process hung: no reply in 0.5 s, so it was stopped", str(outcome["error"]))
+        self.assertLess(took, 3)
+        self.assertIsNotNone(model.child.wait(timeout=2))      # killed, not left running
+
+    def test_a_model_that_never_finishes_loading_is_stopped_after_the_start_limit(self):
+        self.quick_watchdog(timeout=0.1, start_timeout=0.6)
+        children = []
+
+        class Processes:                # vision_process's subprocess, keeping the children
+            PIPE, TimeoutExpired = subprocess.PIPE, subprocess.TimeoutExpired
+
+            @staticmethod
+            def Popen(*args, **kwargs):
+                children.append(subprocess.Popen(*args, **kwargs))
+                return children[-1]
+        self.addCleanup(lambda: [child.kill() for child in children if child.poll() is None])
+        with patch.object(vision_process, "subprocess", Processes):
+            outcome, took = self.finishes(lambda: Remote(self.fake.HangsLoading))
+        self.assertIsInstance(outcome.get("error"), RuntimeError)
+        self.assertIn("no reply in 0.6 s", str(outcome["error"]))   # the start's limit, not a frame's
+        self.assertLess(took, 5)
+        self.assertIsNotNone(children[0].wait(timeout=2))         # no process left behind
+
+    def test_loading_may_take_longer_than_a_frame(self):
+        self.quick_watchdog(timeout=5.0)                            # checked every 50 ms
+        with Remote(self.fake.LoadsSlowly, timeout=0.5) as model:   # loads in 1.5 s; start limit 60 s
+            self.assertEqual(model.device, "CPU")
+            self.assertIsNone(model.detect("frame"))
+            self.assertIsNone(model.child.poll())
+
+    def test_a_switch_to_the_cpu_inside_a_frame_gets_the_starts_limit(self):
+        # An NPU error mid-run: FallbackBackend imports and loads MediaPipe inside that
+        # frame, seconds on the 5 Max. With a frame's limit the watchdog stopped the child
+        # while it recovered, and the camera thread spent its one restart on a new process.
+        self.quick_watchdog(timeout=0.5, start_timeout=10)
+        model = Remote(self.fake.Switches)                          # the CPU loads in 1.5 s
+        self.addCleanup(model.close)
+        self.addCleanup(lambda: model.child.poll() is None and model.child.kill())  # runs first
+        self.assertEqual(model.device, "NPU")
+        self.assertIsNone(model.detect("frame"))
+        outcome, took = self.finishes(lambda: model.detect("fail"))
+        self.assertEqual(outcome, {"value": None})                  # answered on the CPU
+        self.assertGreater(took, 1.0)                               # longer than a frame may take
+        self.assertEqual(model.device, "CPU")
+        self.assertIsNone(model.child.poll())                       # the same process goes on
+        self.assertIsNone(model.detect("frame"))
+        outcome, took = self.finishes(lambda: model.detect("hang"))   # later frames: a frame's limit
+        self.assertIn("vision process hung: no reply in 0.5 s, so it was stopped", str(outcome.get("error")))
+        self.assertLess(took, 3)
+
+    def test_a_switch_that_never_finishes_loading_is_stopped_after_the_start_limit(self):
+        self.quick_watchdog(timeout=0.3, start_timeout=1.0)
+        model = Remote(partial(self.fake.Switches, load=3600))
+        self.addCleanup(model.close)
+        self.addCleanup(lambda: model.child.poll() is None and model.child.kill())  # runs first
+        outcome, took = self.finishes(lambda: model.detect("fail"))
+        self.assertIsInstance(outcome.get("error"), RuntimeError)
+        self.assertIn("vision process hung: no reply in 1 s, so it was stopped", str(outcome["error"]))
+        self.assertGreater(took, 0.9)                               # not a frame's 0.3 s
+        self.assertLess(took, 5)
+        self.assertIsNotNone(model.child.wait(timeout=2))          # killed, not left running
+
+    def test_one_watchdog_per_child_and_no_thread_or_timer_per_frame(self):
+        # A threading.Timer per frame doubled the parent's CPU per round trip (pose README).
+        made = []
+
+        class Threads:                  # vision_process's threading, keeping the threads it makes
+            Lock, Event = threading.Lock, threading.Event
+
+            @staticmethod
+            def Thread(*args, **kwargs):
+                made.append(threading.Thread(*args, **kwargs))
+                return made[-1]
+
+            @staticmethod
+            def Timer(*args, **kwargs):
+                made.append(threading.Timer(*args, **kwargs))
+                return made[-1]
+        with patch.object(vision_process, "threading", Threads):
+            model = Remote(self.fake.Model)
+            self.addCleanup(model.close)
+            self.assertEqual([t.name for t in made], ["vision-watchdog"])
+            for n in range(20):
+                self.assertEqual(model.detect(n / 100)[0].x, n / 100)
+            self.assertEqual(len(made), 1)                      # nothing more per frame
+            model.close()
+        made[0].join(2)
+        self.assertFalse(made[0].is_alive())                    # close() ends it
 
 
 if __name__ == "__main__":

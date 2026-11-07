@@ -54,11 +54,15 @@ def extend_config(config):
     if sensitivity not in ('low', 'high'):
         print('[AUDIO] Invalid speech-start sensitivity; using low.', flush=True)
         sensitivity = 'low'
+    end_sensitivity = os.getenv('BAYMAX_SPEECH_END_SENSITIVITY', 'low').strip().lower()
+    if end_sensitivity not in ('low', 'high'):
+        print('[AUDIO] Invalid speech-end sensitivity; using low.', flush=True)
+        end_sensitivity = 'low'
     result = copy.deepcopy(config)
     realtime = result.setdefault('realtime_input_config', {})
     realtime['automatic_activity_detection'] = {
         'disabled': False, 'start_of_speech_sensitivity': 'START_SENSITIVITY_' + sensitivity.upper(),
-        'end_of_speech_sensitivity': 'END_SENSITIVITY_LOW',
+        'end_of_speech_sensitivity': 'END_SENSITIVITY_' + end_sensitivity.upper(),
         'prefix_padding_ms': 0, 'silence_duration_ms': silence if silence is not None else 500}
     realtime['activity_handling'] = 'START_OF_ACTIVITY_INTERRUPTS' if interruptions else 'NO_INTERRUPTION'
     return result
@@ -96,8 +100,10 @@ def fan_filter_hz():
 class InputEnhancer:
     """DSP runs only on the capture thread; render callback only queues PCM.
 
-    Process complete 10ms frames, retaining leftovers across 1024-sample callbacks.
-    A fixed 10ms output delay avoids padding/discarding tails on every callback.
+    Process complete 10ms frames. v10's 960-sample (20 ms) blocks are two whole
+    frames, cleaned with no added delay. A block that isn't whole frames (v8's 1024)
+    starts a 10ms output carry once, retaining leftovers across callbacks, so no
+    tail is padded or discarded on every callback.
     """
     def __init__(self, rate=48000, processor=None, ns_level=None, clock=time.monotonic, fan_filter_hz=0):
         self.fan_filter = None
@@ -127,6 +133,7 @@ class InputEnhancer:
         self.clock = clock
         self.rate = rate
         self.frame = rate // 100
+        self.block_ms = 960 * 1000 / rate  # the latest mic block's length (see stale())
         self.lock = threading.Lock()
         self.render_buffer = bytearray()
         self.input_latency_ms = 0
@@ -147,7 +154,8 @@ class InputEnhancer:
         self.residual.reset()
         self.pending = np.empty(0, dtype=np.int16)
         self.far_pending = np.empty(0, dtype=np.int16)
-        self.output = np.zeros(self.frame, dtype=np.int16)
+        # Cleaned audio carried to the next callback: none while blocks are whole frames.
+        self.output = np.empty(0, dtype=np.int16)
         with self.lock:
             self.render_buffer.clear()
             self.speaker_until = float('-inf')
@@ -181,9 +189,11 @@ class InputEnhancer:
                 del self.render_buffer[:-maximum]
         self.residual.rendered(pcm)
 
-    def stale(self, queue_wait_ms, chunk_ms=1024 / 48):
+    def stale(self, queue_wait_ms, chunk_ms=None):
         """True for mic audio that waited too long to send (e.g. queued during a
-        network stall): sending it later replays old speech as a burst of turns."""
+        network stall): sending it later replays old speech as a burst of turns.
+        chunk_ms: its length; by default that of the blocks process() cleans."""
+        chunk_ms = self.block_ms if chunk_ms is None else chunk_ms
         if self.max_lag_ms <= 0 or queue_wait_ms <= self.max_lag_ms:
             now = self.clock()
             if self.live_reported is None or now - self.live_reported >= 1.0:  # Eyes: mic audio is really going to Gemini.
@@ -249,6 +259,7 @@ class InputEnhancer:
                 'clipped_percent': round(float(np.mean(np.abs(values) >= 32760)) * 100, 2) if values.size else 0}
 
     def process(self, samples, timing=None):
+        self.block_ms = len(samples) * 1000 / self.rate
         if np.any(samples):  # Exact digital silence means no working capture device.
             monitor.sensor_alive('microphone')
         if self.fan_filter is not None:
@@ -266,6 +277,10 @@ class InputEnhancer:
                 self.input_latency_ms = min(500, max(0, (current - adc) * 1000))
             echo_guard = self.speaker_active()
             voice_guard = self.voice_active()
+            if len(samples) % self.frame and not len(self.output) and not len(self.pending):
+                # Not whole 10 ms frames: from now on 10 ms of cleaned audio is carried
+                # to the next callback, so every callback still returns a full block.
+                self.output = np.zeros(self.frame, dtype=np.int16)
             self.pending = np.concatenate((self.pending, samples))
             self.far_pending = np.concatenate((self.far_pending, self._reference(len(samples))))
             self.processor.stream_delay_ms = int(min(500, max(0, self.input_latency_ms + self.output_latency_ms)))
@@ -319,12 +334,22 @@ class InputEnhancer:
                             'input_latency_ms': round(self.input_latency_ms, 1),
                             'output_latency_ms': round(self.output_latency_ms, 1),
                             'full_duplex': True}
-            return result
         except Exception:
             # Preserve microphone capture on DSP failure; restore half-duplex to
             # avoid feeding speaker echo back into Gemini. Expose the failure.
             self.failed = True
             return self._fallback(samples)
+        # Diagnostics, outside the cleanup's try: an error here turns conversation
+        # timing off and never switches Ember to the half-duplex fallback above.
+        try:
+            if not monitor.timing.failed:
+                monitor.timing.microphone(self.metrics['speech_probability'],
+                                          self.metrics['clean']['rms_dbfs'],
+                                          len(samples) / self.rate, self.input_latency_ms / 1000)
+        except Exception:
+            monitor.timing.failed = True
+            print('[AUDIO] Conversation timing turned off after an error; audio continues.', flush=True)
+        return result
 
     def _fallback(self, samples):
         if _active_enhancer is self:

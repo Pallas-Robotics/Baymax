@@ -251,6 +251,7 @@ class RuntimeLoadTests(unittest.TestCase):
                                            or SimpleNamespace(_collection=None),
             "ONNX_MODEL_DIR": "/models/minilm", "CHROMA_DIR": "/data/chroma",
             "_memory_embedder": None, "calls": calls,
+            "monitor": SimpleNamespace(memory_status="Disabled"),
         }
         with patch("test_public_core_integration.CORE", V10):
             for name in ("_load_memory_embedder", "_memory_model_to_download", "_download_memory_model"):
@@ -268,6 +269,7 @@ class RuntimeLoadTests(unittest.TestCase):
             ns["_download_memory_model"]()
         self.assertEqual(ns["calls"], [("download", "/models/minilm"), ("load", "/models/minilm")])
         self.assertIsNotNone(ns["_memory_embedder"])
+        self.assertEqual(ns["monitor"].memory_status, "On (0 memories at start)")  # what the monitor shows
 
     def test_failed_download_leaves_memory_off_for_the_session(self):
         ns = self.namespace(download_error=OSError("offline"))
@@ -276,6 +278,7 @@ class RuntimeLoadTests(unittest.TestCase):
         self.assertEqual(ns["calls"], [("download", "/models/minilm")])
         self.assertIsNone(ns["_memory_embedder"])
         self.assertIn("retried next start", " ".join(str(c) for c in printed.call_args_list))
+        self.assertIn("download failed", ns["monitor"].memory_status)
 
     def test_startup_starts_the_download_on_a_thread_instead_of_waiting(self):
         source = V10.read_text(encoding="utf-8")

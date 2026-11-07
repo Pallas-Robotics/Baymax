@@ -7,6 +7,9 @@ import os
 from pathlib import Path
 import threading
 import time
+from features.conversational_ability.timing import ConversationTiming
+
+timing = ConversationTiming()
 
 PATH = Path(__file__).with_name('.runtime-status.json')
 STOP_PATH = Path(__file__).with_name('.runtime-stop.json')
@@ -29,6 +32,7 @@ transcript_listeners = []  # More (speaker, {'id', 'text'}) consumers (e.g. 'Emb
 waiting_audio = None
 echo_text = {'suspected': False}
 sensors = {}  # Sensor name -> time.monotonic() of its last sign of life (MVP eyes watchdog).
+memory_status = 'Disabled'  # v10 reports its memory state here; v8 has no memory.
 
 
 def sensor_alive(name):
@@ -110,6 +114,8 @@ def transcribe(speaker, fragment):
             active_transcripts[speaker] = message
         message['text'] = (message['text'] + fragment)[-8000:]
         message['updated_at'] = time.time()
+        if speaker == 'user' and fragment.strip():
+            timing.transcript(speaker, message['id'])
         if speaker == 'user':
             from features.conversational_ability.echo import transcript_overlap
             now = time.time()
@@ -155,15 +161,18 @@ def snapshot(metrics=None):
                 'activities': dict(activities), 'events': [dict(event) for event in events], 'metrics': metrics or {},
                 'sensor_age_s': {name: round(time.monotonic() - seen, 1) for name, seen in dict(sensors).items()},
                 'transcripts': [dict(message) for message in transcripts],
-                'capabilities': {'memory': 'Disabled in version-8 demo', 'google_search': _search_status(),
+                'conversation_timing': timing.snapshot(),
+                'speech_detection': timing.speech_status(),
+                'capabilities': {'memory': memory_status, 'google_search': _search_status(),
                                  'toolkit': 'Location, weather and optional experimental fall detection',
                                  'fall_detection': fall_status}}
 
 
 def _search_status():
+    # On unless turned off, like features/toolkits/gemini_tools.search_enabled().
     if os.getenv('BAYMAX_TOOLKIT_ENABLED', '1') == '0' or os.getenv('BAYMAX_GOOGLE_SEARCH', '1') == '0':
         return 'Disabled'
-    return 'Gemini built-in grounding'
+    return 'Google Search grounding through the search_web tool'
 
 
 def write_status(metrics=None):

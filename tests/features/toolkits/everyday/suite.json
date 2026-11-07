@@ -1,0 +1,19 @@
+{
+  "name": "everyday",
+  "sources": [
+    "Baymax-main/features/toolkits/everyday/**",
+    "Baymax-main/features/toolkits/checkins.py",
+    "Baymax-main/features/conversational_ability/engage.py",
+    "Baymax-main/features/toolkits/fall_detection.py"
+  ],
+  "python": [
+    {
+      "directory": "Baymax-main/tests",
+      "patterns": [
+        "test_toolkit_everyday.py",
+        "test_toolkit_reminder_repeats.py",
+        "test_toolkit_checkins.py"
+      ]
+    }
+  ]
+}

@@ -106,6 +106,27 @@ remain opt-in. Setup device discovery opens cameras to check availability;
 device-test buttons deliberately record a short sample/play a tone/take a snapshot.
 No extra capture streams are added to the runtime.
 
+## Gemini model
+
+Ember talks to `gemini-2.5-flash-native-audio-preview-12-2025`. Google shuts it down as
+early as 2026-11-17 (the exact date is announced later); its replacement is
+`gemini-3.8-live`. Ember tries the Live models in `BAYMAX_LIVE_MODELS` in order (default:
+2.5, then 3.8) and moves to the next when the key can't use one (not found or retired),
+until it restarts. A quota close only retries the same model: a rate or session limit says
+the same and passes in seconds. The key's Google project needs Live quota for `gemini-3.8-live`
+(check https://aistudio.google.com/rate-limit for the project that owns the key): on
+2026-11-06 Ember's keys had none ("1011 You exceeded your current quota"), so 3.8 has not
+run with Ember yet and 2.5 stays first. Once the project has 3.8 quota and
+`python evals/live_eval.py --model gemini-3.8-live` passes, put 3.8 first in
+`Baymax-main/.env` and restart Ember:
+
+```bash
+BAYMAX_LIVE_MODELS=gemini-3.8-live,gemini-2.5-flash-native-audio-preview-12-2025
+```
+
+What changes between the models and what is still to be checked on 3.8:
+[conversational ability](features/conversational_ability/README.md#gemini-live-model-and-fallback-live_modelspy).
+
 ## Automatic startup
 
 The instructions below require a working Linux desktop/user session. A headless
@@ -226,8 +247,9 @@ The v10 built-in vision path defaults to `camera.pose_tracking = true` and
 a fresh device; saved `false` settings (including a temporary demo opt-out) still
 win until changed explicitly. These settings are separate from
 `BAYMAX_FALL_DETECTION_ENABLED`, the optional fall toolkit. With pose tracking on it
-reuses this pose (no second model), but adds a second fall detector, so one fall can
-give two check-ins; leave it off unless you are testing it. This default
+reuses this pose (no second model) and runs its own detector on it for the Monitor;
+with `fall_detection.enabled` on it leaves the check-in to the built-in detection, so
+one fall gives one check-in. This default
 does not provision caregiver recipients or validate fall accuracy on new hardware.
 
 Echo protection removes positive AGC boost while the speaker/device buffer and

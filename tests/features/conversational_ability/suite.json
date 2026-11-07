@@ -1,0 +1,35 @@
+{
+  "name": "conversational_ability",
+  "sources": [
+    "Baymax-main/features/conversational_ability/**",
+    "Baymax-main/runtime_monitor.py",
+    "Baymax-main/static/**",
+    "Baymax-main/features/eyes/controller.py",
+    "Baymax-main/features/toolkits/everyday/tools.py",
+    "Baymax-main/features/toolkits/experimental.py",
+    "Baymax-main/features/toolkits/fall_detection.py",
+    "Baymax-main/features/toolkits/proactive.py",
+    "Baymax-main/features/toolkits/transport.py",
+    "Baymax-main/features/toolkits/wakeword.py",
+    "Baymax-main/features/persona.py",
+    "Baymax-main/tests/test_public_core_integration.py"
+  ],
+  "python": [
+    {
+      "directory": "Baymax-main/tests",
+      "patterns": [
+        "test_address_gate.py",
+        "test_conversation_timing.py",
+        "test_conversational_ability.py",
+        "test_engage.py",
+        "test_residual_echo.py",
+        "test_runtime_monitor.py",
+        "test_session.py",
+        "test_voice_volume.py",
+        "test_waiting_cue.py",
+        "test_toolkit_engage.py",
+        "test_toolkit_conversation.py"
+      ]
+    }
+  ]
+}

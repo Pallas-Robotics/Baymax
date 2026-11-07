@@ -151,18 +151,43 @@ class HardwareTests(unittest.TestCase):
             self.assertEqual(select_audio_devices(audio), (0, 1))
 
 
+# Everything use_performance_cpus may set for the rest of Ember and what it starts, by the
+# names realtime_gemini_10.py, the vision children and the libraries read.
+FAST, SLOW = "BAYMAX_FAST_CPUS", "BAYMAX_SLOW_CPUS"
+SPEAKER = ("BAYMAX_OUTPUT_BLOCKSIZE", "BAYMAX_OUTPUT_LATENCY")
+FAST_CORE_ENV = (FAST, SLOW, "OPENBLAS_NUM_THREADS", "OPENCV_FOR_THREADS_NUM", "TOKENIZERS_PARALLELISM", *SPEAKER)
+
+
 class BigLittleCpuTests(unittest.TestCase):
     """Orange Pi 5 (RK3588): cpu0-3 are Cortex-A55s, cpu4-7 Cortex-A76s. Every case sets
     sys.platform and platform.machine, so the results are the same on Windows, macOS,
     x86 Linux and the Pi itself, and BAYMAX_CPU_PINNING is set for every case, so the
     documented BAYMAX_CPU_PINNING=off in the environment or in .env (which test_toolkit
-    loads) changes nothing."""
+    loads) changes nothing. The test process itself is never pinned, reniced or given
+    another GIL switch interval: setUp replaces those calls and checks afterwards."""
     RK3588 = {0: 414, 1: 414, 2: 414, 3: 414, 4: 1024, 5: 1024, 6: 1024, 7: 1024}
 
     def setUp(self):
+        before = self.own_state()
+        self.addCleanup(lambda: self.assertEqual(self.own_state(), before))   # runs last
         environment = patch.dict(os.environ, {"BAYMAX_CPU_PINNING": "auto"})
         environment.start()
         self.addCleanup(environment.stop)
+        for name in (*FAST_CORE_ENV, "BAYMAX_GIL_SWITCH_MS", "BAYMAX_VISION_CPUS"):
+            os.environ.pop(name, None)                  # the shell's own; restored by patch.dict
+        guards = [patch.object(sys, "setswitchinterval"), patch.object(pc_hardware, "_warned", set())]
+        for name in ("sched_setaffinity", "setpriority"):   # tests that expect calls patch them again
+            if hasattr(os, name):
+                guards.append(patch.object(pc_hardware.os, name))
+        for guard in guards:
+            guard.start()
+            self.addCleanup(guard.stop)
+        self.switch = sys.setswitchinterval
+
+    @staticmethod
+    def own_state():
+        return (sys.getswitchinterval(), os.getpriority(os.PRIO_PROCESS, 0) if hasattr(os, "getpriority") else None,
+                os.sched_getaffinity(0) if hasattr(os, "sched_getaffinity") else None)
 
     def sysfs(self, values, name="cpu_capacity"):
         root = tempfile.TemporaryDirectory()
@@ -224,13 +249,15 @@ class BigLittleCpuTests(unittest.TestCase):
             with patch.dict(os.environ, {"BAYMAX_CPU_PINNING": "off"}):
                 self.assertIsNone(pc_hardware.use_performance_cpus())
             setter.assert_not_called()
+            self.assertFalse(set(FAST_CORE_ENV) & set(os.environ))     # off: nothing else changes either
+            self.switch.assert_not_called()
             with patch.dict(os.environ, {"BAYMAX_CPU_PINNING": "auto"}):
                 self.assertEqual(pc_hardware.use_performance_cpus(), {4, 5, 6, 7})
             # The caller, then every thread that already exists (eyes, network watch, OpenBLAS).
             self.assertEqual([c.args for c in setter.call_args_list],
                              [(0, {4, 5, 6, 7}), (100, {4, 5, 6, 7}), (101, {4, 5, 6, 7}), (102, {4, 5, 6, 7})])
             self.assertEqual(printed.call_count, 1)
-            self.assertIn("[CPU] Running on the fast cores 4,5,6,7", printed.call_args.args[0])
+            self.assertIn("[CPU] Running on the fast cores 4,5,6,7, GIL switch interval 1 ms", printed.call_args.args[0])
             current.return_value = {4, 5, 6, 7}                 # run_pc's call after run_mvp's: quiet
             with patch.dict(os.environ, {"BAYMAX_CPU_PINNING": "auto"}):
                 self.assertEqual(pc_hardware.use_performance_cpus(), {4, 5, 6, 7})
@@ -255,8 +282,12 @@ class BigLittleCpuTests(unittest.TestCase):
                 self.assertIsNone(pc_hardware.use_performance_cpus())
             setter.assert_not_called()
             printed.assert_not_called()
+            self.assertFalse(set(FAST_CORE_ENV) & set(os.environ))     # the 4 Pro by default: as before
+            self.switch.assert_not_called()
             with patch.dict(os.environ, {"BAYMAX_CPU_PINNING": "on"}):
                 self.assertEqual(pc_hardware.use_performance_cpus(), {6, 7})
+                # Pose would share the two A76s with Ember; faces would go to the six A55s.
+                self.assertEqual((os.environ[FAST], os.environ[SLOW]), ("6,7", "0,1,2,3,4,5"))
             self.assertEqual([c.args for c in setter.call_args_list], [(0, {6, 7}), (100, {6, 7})])
             self.assertIn("[CPU] Running on the fast cores 6,7", printed.call_args.args[0])
 
@@ -270,6 +301,158 @@ class BigLittleCpuTests(unittest.TestCase):
             self.assertIsNone(pc_hardware.use_performance_cpus())
         others.assert_not_called()
         self.assertIn("Could not keep Ember on the fast cores", printed.call_args.args[0])
+        self.assertFalse(set(FAST_CORE_ENV) & set(os.environ))         # not pinned: nothing else either
+        self.switch.assert_not_called()
+
+    @patch.object(pc_hardware, "is_rk3588", Mock(return_value=True))
+    def test_fast_core_settings_come_only_with_the_pinning(self):
+        with patch.object(pc_hardware, "performance_cpus", return_value=None), \
+             patch("builtins.print") as printed:                            # x86, macOS, Windows, all-alike cores
+            self.assertIsNone(pc_hardware.use_performance_cpus())
+        self.assertFalse(set(FAST_CORE_ENV) & set(os.environ))
+        self.switch.assert_not_called()
+        printed.assert_not_called()
+        with patch.object(pc_hardware, "performance_cpus", return_value={4, 5, 6, 7}), \
+             patch.object(pc_hardware, "thread_ids", return_value=[100]), \
+             patch.object(pc_hardware.os, "sched_setaffinity", Mock(), create=True), \
+             patch.object(pc_hardware.os, "sched_getaffinity", Mock(return_value=set(range(8))), create=True), \
+             patch("builtins.print"), \
+             patch.dict(os.environ, {"OPENBLAS_NUM_THREADS": "4"}):         # a value already set wins
+            self.assertEqual(pc_hardware.use_performance_cpus(), {4, 5, 6, 7})
+            # The speaker: 512-frame callbacks and low latency, measured on the 5 Max (42 ms
+            # of output latency instead of about 96 ms, no underflows).
+            self.assertEqual({name: os.environ.get(name) for name in FAST_CORE_ENV},
+                             {FAST: "4,5,6,7", SLOW: "0,1,2,3", "OPENBLAS_NUM_THREADS": "4",
+                              "OPENCV_FOR_THREADS_NUM": "1", "TOKENIZERS_PARALLELISM": "false",
+                              "BAYMAX_OUTPUT_BLOCKSIZE": "512", "BAYMAX_OUTPUT_LATENCY": "low"})
+        self.switch.assert_called_once_with(0.001)
+        with patch.object(pc_hardware, "performance_cpus", return_value={4, 5, 6, 7}), \
+             patch.object(pc_hardware, "thread_ids", return_value=[100]), \
+             patch.object(pc_hardware.os, "sched_setaffinity", Mock(), create=True), \
+             patch.object(pc_hardware.os, "sched_getaffinity", Mock(return_value=set(range(8))), create=True), \
+             patch("builtins.print"), \
+             patch.dict(os.environ, {"BAYMAX_OUTPUT_BLOCKSIZE": "1024"}):   # e.g. from .env: it wins
+            pc_hardware.use_performance_cpus()
+            self.assertEqual([os.environ.get(name) for name in SPEAKER], ["1024", "low"])
+
+    @patch.object(pc_hardware, "is_rk3588", Mock(return_value=True))
+    def test_the_gil_switch_interval_can_be_changed_or_left_to_python(self):
+        with patch.object(pc_hardware, "performance_cpus", return_value={4, 5, 6, 7}), \
+             patch.object(pc_hardware, "thread_ids", return_value=[100]), \
+             patch.object(pc_hardware.os, "sched_setaffinity", Mock(), create=True), \
+             patch.object(pc_hardware.os, "sched_getaffinity", Mock(return_value=set(range(8))), create=True), \
+             patch("builtins.print") as printed:
+            for value, interval in (("", 0.001), (" 5 ", 0.005), ("0.5", 0.0005), ("0", None),
+                                    ("fast", 0.001), ("-1", 0.001), ("0.01", 0.001), ("1000", 0.001), ("nan", 0.001)):
+                self.switch.reset_mock()
+                printed.reset_mock()
+                with self.subTest(value=value), patch.dict(os.environ, {"BAYMAX_GIL_SWITCH_MS": value}):
+                    pc_hardware.use_performance_cpus()
+                    if interval is None:
+                        self.switch.assert_not_called()                    # 0: Python's own (5 ms)
+                    else:
+                        self.switch.assert_called_once_with(interval)
+                    warnings = [c.args[0] for c in printed.call_args_list if "Invalid BAYMAX_GIL_SWITCH_MS" in c.args[0]]
+                    self.assertEqual(len(warnings), 1 if value in ("fast", "-1", "0.01", "1000", "nan") else 0)
+
+    @patch.object(pc_hardware, "is_rk3588", Mock(return_value=True))
+    def test_an_invalid_gil_switch_interval_is_reported_once(self):
+        # run_mvp.py pins Ember, then run_pc.py calls use_performance_cpus again: the warning
+        # came twice, though a second call is meant to print nothing.
+        current = Mock(return_value=set(range(8)))
+        with patch.object(pc_hardware, "performance_cpus", return_value={4, 5, 6, 7}), \
+             patch.object(pc_hardware, "thread_ids", return_value=[100]), \
+             patch.object(pc_hardware.os, "sched_setaffinity", Mock(), create=True), \
+             patch.object(pc_hardware.os, "sched_getaffinity", current, create=True), \
+             patch.dict(os.environ, {"BAYMAX_GIL_SWITCH_MS": "fast"}), patch("builtins.print") as printed:
+            pc_hardware.use_performance_cpus()                              # run_mvp.py
+            current.return_value = {4, 5, 6, 7}
+            pc_hardware.use_performance_cpus()                              # run_pc.py
+        self.assertEqual([c.args[0] for c in printed.call_args_list],
+                         ["[CPU] Invalid BAYMAX_GIL_SWITCH_MS; using 1 ms.",
+                          "[CPU] Running on the fast cores 4,5,6,7, GIL switch interval 1 ms "
+                          "(BAYMAX_CPU_PINNING=off to use all)."])
+        self.assertEqual([c.args for c in self.switch.call_args_list], [(0.001,), (0.001,)])
+
+    @patch.object(pc_hardware, "is_rk3588", Mock(return_value=True))
+    def test_children_may_use_the_cores_ember_had_before_it_narrowed_itself(self):
+        allowed = Mock(return_value=set(range(8)))
+        with patch.object(pc_hardware, "performance_cpus", return_value={4, 5, 6, 7}), \
+             patch.object(pc_hardware, "thread_ids", return_value=[100]), \
+             patch.object(pc_hardware.os, "sched_setaffinity", Mock(), create=True), \
+             patch.object(pc_hardware.os, "sched_getaffinity", allowed, create=True), \
+             patch("builtins.print"):
+            pc_hardware.use_performance_cpus()                              # run_mvp.py
+            allowed.return_value = {4, 5, 6, 7}
+            pc_hardware.use_performance_cpus()                              # run_pc.py, already narrowed
+            self.assertEqual((os.environ[FAST], os.environ[SLOW]), ("4,5,6,7", "0,1,2,3"))
+            del os.environ[FAST], os.environ[SLOW]
+            pc_hardware.use_performance_cpus()                              # started under taskset -c 4-7
+            self.assertEqual(os.environ[FAST], "4,5,6,7")
+            self.assertNotIn(SLOW, os.environ)                              # so faces stay inside it too
+
+    def test_vision_children_pose_stays_on_the_fast_cores_faces_go_to_the_slow_ones(self):
+        setter = Mock()
+        with patch.object(pc_hardware.os, "sched_setaffinity", setter, create=True), \
+             patch.object(pc_hardware, "pin_threads") as pin, \
+             patch.object(pc_hardware, "lower_priority") as lower, \
+             patch("builtins.print") as printed:
+            for role in ("pose", "face"):                                   # Ember not pinned: as before
+                self.assertIsNone(pc_hardware.place_vision_child(role))
+            for calls in (setter, pin, lower, printed):
+                calls.assert_not_called()
+            places = []
+            def place(role, **env):
+                with patch.dict(os.environ, env):
+                    cores = pc_hardware.place_vision_child(role)
+                places.append((role, cores, lower.call_args.args[0]))
+                self.assertEqual(setter.call_args.args, (0, cores))         # this process, then its threads
+                self.assertEqual(pin.call_args.args, (cores,))
+            with patch.dict(os.environ, {FAST: "4,5,6,7", SLOW: "0,1,2,3"}):
+                place("pose")
+                place("face")
+                self.assertIn("[CPU] Face process on the slow cores 0,1,2,3 at nice 10.", printed.call_args.args[0])
+                place("something else")                                     # placed as pose
+                place("pose", BAYMAX_VISION_CPUS="slow")                    # to measure: cores move, nice stays
+                place("face", BAYMAX_VISION_CPUS="Fast")
+                place("face", BAYMAX_VISION_CPUS="a55")                     # mistyped: the role's own cores
+                self.assertTrue(any("unknown BAYMAX_VISION_CPUS=a55" in c.args[0] for c in printed.call_args_list))
+            with patch.dict(os.environ, {FAST: "4,5,6,7"}):                 # Ember under taskset -c 4-7
+                place("face")
+        self.assertEqual(places, [("pose", {4, 5, 6, 7}, 5), ("face", {0, 1, 2, 3}, 10),
+                                  ("something else", {4, 5, 6, 7}, 5), ("pose", {0, 1, 2, 3}, 5),
+                                  ("face", {4, 5, 6, 7}, 10), ("face", {0, 1, 2, 3}, 10),
+                                  ("face", {4, 5, 6, 7}, 10)])
+
+    def test_vision_children_leave_alone_what_they_cannot_change(self):
+        with patch.object(pc_hardware, "lower_priority") as lower, patch("builtins.print"):
+            for value in ("4,x", "-1", "4,,5", " "):                        # not written by Ember
+                with patch.dict(os.environ, {FAST: value}), \
+                     patch.object(pc_hardware.os, "sched_setaffinity", Mock(), create=True) as setter:
+                    self.assertIsNone(pc_hardware.place_vision_child("pose"))
+                setter.assert_not_called()
+            with patch.dict(os.environ, {FAST: "4,5,6,7"}):
+                with patch.object(pc_hardware, "os", SimpleNamespace(environ=os.environ, getenv=os.getenv)):
+                    self.assertIsNone(pc_hardware.place_vision_child("pose"))   # macOS, Windows: no affinity
+                with patch.object(pc_hardware.os, "sched_setaffinity", Mock(side_effect=OSError(22, "Invalid")),
+                                  create=True):
+                    self.assertIsNone(pc_hardware.place_vision_child("face"))   # refused: nice unchanged too
+        lower.assert_not_called()
+
+    def test_priority_is_only_ever_lowered(self):
+        current = {100: 0, 101: 7}
+        def getpriority(which, tid):
+            if tid not in current:
+                raise ProcessLookupError(3, "No such process")              # exited after the listing
+            return current[tid]
+        def setpriority(which, tid, value):
+            current[tid] = value
+        with patch.object(pc_hardware, "thread_ids", return_value=[100, 101, 102]), \
+             patch.object(pc_hardware.os, "PRIO_PROCESS", 0, create=True), \
+             patch.object(pc_hardware.os, "getpriority", getpriority, create=True), \
+             patch.object(pc_hardware.os, "setpriority", setpriority, create=True):
+            pc_hardware.lower_priority(5)
+        self.assertEqual(current, {100: 5, 101: 7})                         # 101 was already lower
 
     def test_threads_that_exit_or_start_meanwhile(self):
         tasks = tempfile.TemporaryDirectory()
@@ -309,6 +492,21 @@ class BigLittleCpuTests(unittest.TestCase):
         self.assertIn("    if pc:  # pc profile (run_pc.py: the Orange Pi, the LattePanda MVP); only the Orange Pi (arm_linux) keeps 1 frame\n"
                       "        from pc_hardware import latest_frames_only\n"
                       "        latest_frames_only(cv2, cap)\n", source)
+
+    def test_runtime_turns_off_opencvs_pool_only_on_the_fast_cores(self):
+        # Right after import cv2, before anything in Ember uses OpenCV: run the real statement.
+        tree = ast.parse((ROOT / "realtime_gemini_10.py").read_text(encoding="utf-8"))
+        imports = [i for i, node in enumerate(tree.body)
+                   if isinstance(node, ast.Import) and [alias.name for alias in node.names] == ["cv2"]]
+        self.assertEqual(len(imports), 1)
+        statement = ast.Module(body=[tree.body[imports[0] + 1]], type_ignores=[])
+        self.assertIsInstance(statement.body[0], ast.If)
+        code = compile(statement, "realtime_gemini_10.py", "exec")
+        for env, calls in (({}, []), ({FAST: "4,5,6,7"}, [(1,)])):
+            cv2 = Mock()
+            with patch.dict(os.environ, env):
+                exec(code, {"os": os, "cv2": cv2})
+            self.assertEqual([c.args for c in cv2.setNumThreads.call_args_list], calls, env)
 
 
 if __name__ == "__main__":

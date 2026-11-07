@@ -1,7 +1,421 @@
 # MVP (unreleased)
 
+- Ember answers in the language the person speaks: Hindi gets Hindi, Spanish gets
+  Spanish, a switch is followed on the next reply, a Hindi-English mix gets the same
+  mix, and Ember's own English notes (`[FALL ALERT]`, reminders, check-ins) are
+  answered in the conversation's language. It is one `[LANGUAGE]` section in
+  `features/persona.py`: James's text (1779a2c), which Nate's PR #1 also carries and
+  his Orange Pi simulations tested (below), plus follow-ups tested live since: judge
+  the language by the words, not the accent or the transcript's script (English with
+  an Indian accent is English, Hindi in Urdu script is Hindi), never say a tag or start
+  a reply with one, and say the pause words "Hey Ember" and "stop" in English, which
+  the offline listener knows. The native-audio model picks the language itself; no
+  `language_code` or transcription language is set (a test keeps it that way). "Ember
+  disengage" also counts when Gemini writes it in Devanagari (the name also in Urdu
+  script); memory lines are written in English for the English-only embedder. Still
+  English: the startup hello before anyone speaks and the eye cues. Live
+  `evals/live_eval.py` runs (Gemini 2.5, 3 each, 2026-11-07): Hindi, the Hindi-English
+  weather question, the English pause words in Hindi and the Hindi name 3/3; Spanish,
+  Indian-accented English, the English-Hindi-Spanish switch and the Spanish reminder
+  2/3 (a reply over the word limit, English heard and answered in Malayalam script, a
+  Devanagari word in a Spanish reply, no reply); the Hindi fall check-in 0/3, two of
+  them right in Hindi but failed on the transcript's `[FALL ALERT]` tag (see the next
+  entry). A Hindi check on the robot is pending.
+
+- `evals/live_eval.py` checks what Ember says, not the transcript's tags: Gemini 2.5
+  often writes the tag of the message it answers before its reply ("[FALL ALERT] ..."),
+  which the audio doesn't say (none of 6 such saved replies did), so
+  `language-fall-alert-hindi` failed every correct Hindi answer on its `not_reply`.
+  `reply`, `not_reply` and `max_words` now leave leading `[TAG]`s out. The Hindi
+  scenarios also accept Hindi in Urdu script, as the persona's `[LANGUAGE]` treats it
+  (Gemini wrote one Hindi line that way in 9 of 14 runs), and the English and Spanish
+  steps reject it like Devanagari. Offline tests only; the scenarios are still to be
+  rerun live.
+
+- Orange Pi 5 Max core layout. Everything below applies only while Ember is
+  pinned to the fast cores (cpu4-7; `BAYMAX_CPU_PINNING=auto` on an RK3588), so
+  the Orange Pi 4 Pro (not pinned by default), x86 PCs, macOS and Windows run as
+  before. Every thread of Ember's own process stays on the A76s (they share one
+  GIL). Python's GIL switch interval drops from 5 ms to 1 ms
+  (`BAYMAX_GIL_SWITCH_MS`; 5 restores it): the mic callback lets go of the GIL
+  inside every WebRTC frame and must win it back, and on the board it took about
+  2.5 ms at the median but 9.3-10.2 ms at p99, as long with pose on the NPU as on
+  the CPU. Thread pools that only spun or idled there are single-threaded:
+  OpenCV's in Ember and the vision processes, and `OPENBLAS_NUM_THREADS=1`,
+  `OPENCV_FOR_THREADS_NUM=1`, `TOKENIZERS_PARALLELISM=false` for Ember and what
+  it starts, unless already set (ONNX Runtime keeps its two threads for memory
+  lookups). The pose process (NPU or MediaPipe) places itself on the fast cores
+  at nice 5 before its model starts, since the NPU path's CPU work would miss the
+  100 ms frame budget on an A55; the opt-in eye-contact (face) process goes to
+  the slow cores at nice 10. `BAYMAX_VISION_CPUS=fast|slow` moves both, to
+  measure. The speaker stream gets 512-frame callbacks and low latency (see
+  "About 54 ms less speaker latency" below). Nice values only go up; no real-time
+  scheduling, and the audio cleanup and memory stay in Ember's process. The
+  effect on the mic callback's tail is expected, not measured yet: the
+  full-system A/B on the board is pending. `features/pose/benchmark.py`, which
+  pins itself like Ember, now also runs with these settings. Offline tests pass.
+
+- Pose: a pose process that hangs without exiting is now stopped and restarted.
+  `features/vision_process.py`'s `Remote` waited for a reply for good, so a child stuck
+  (e.g. librknnrt in the NPU driver) froze the camera thread, and with it video to
+  Gemini, face presence and fall detection, until Ember restarted. A watchdog, one
+  thread per child that looks twice a second, kills a child that has not answered a
+  frame in 5 s, or its start in 60 s (imports and model load; the NPU's setup and
+  warm-up measured 0.6-1.7 s). The call then raises like a child that died, so the
+  camera thread restarts pose once on the CPU, as for a crash. An NPU error during a
+  frame still switches to MediaPipe inside the child, without that restart: the frame
+  that imports and loads MediaPipe (the NPU child never had: 1.2-1.3 s on the 5 Max's
+  fast cores with a warm page cache and Ember stopped; longer from a cold SD card or on
+  a busy board, not measured) first tells the parent (`vision_process.loading_model()`)
+  and gets the start's 60 s, so the watchdog does not stop a child that is recovering. A
+  frame only stores its deadline: on a Mac the parent's CPU per round trip stayed within
+  noise (238 vs 219 µs), where a `threading.Timer` per frame (Nate's opi4-demo, ff168ca,
+  which this ports without its regrouping) took 441 µs. The fall toolkit's own model and
+  the eye-contact face model are now downloaded before their child starts, so a slow
+  download is not taken for a hang. A face child stopped this way (or one that dies) is
+  not restarted: eye-contact greetings stop with one log line until Ember restarts
+  (every later frame was logged as skipped, up to 4 times a second). A child stuck
+  inside a kernel call dies only when the driver returns. Offline tests pass (fake hung
+  children, and the camera thread with real vision processes); a real hung NPU call on
+  the 5 Max is pending.
+
+- Fall detection: velocities use each frame's capture time. `FallDetector.update()`
+  read the clock when the frame's pose came back, so the varying round trip to the pose
+  process went into the angular and hip velocities. The camera thread now passes the
+  time right after `cap.read()` (`update(landmarks, timestamp=...)`, opi4-demo's local
+  change to the vendored detector, recorded in `fall_detection/UPSTREAM.json`), and the
+  fall toolkit gets it too (`share(..., captured_at=...)`; with its own model, the time
+  `submit()` got the frame). Thresholds are unchanged; without a timestamp the detector
+  reads the clock as before. Offline tests pass; fall accuracy on the boards is pending
+  as before.
+
+- One check-in per fall. With v10's built-in fall detection (`fall_detection.enabled`,
+  on by default) and the fall toolkit (Setup's checkbox) both on, Gemini got two
+  check-ins for one fall ("[FALL ALERT] ..." and "[Local experimental fall detector]
+  ..."). The toolkit now leaves the check-in to the built-in detection
+  (`fall_worker.start(builtin=True)`) and keeps detecting on the shared pose for the
+  Monitor (state such as "Running on NPU (core pose)", inference time, FPS, results; its
+  event says check-ins come from Ember's built-in fall detection). With built-in
+  detection off, or with the toolkit's own model, it checks in as before. Offline tests
+  pass; live check pending.
+
+- The SD-card image verifier (`devops/opi4-flash/verify_image.py`) runs on Python
+  3.9 and newer, such as the `python3` that comes with macOS. It hashed with
+  `hashlib.file_digest` (Python 3.11+), so there it passed the other checks and
+  then crashed with a traceback (exit 1). It now hashes in 1 MiB reads; the exit
+  codes stay 0 (verified) and 2 (failed). Checked with macOS's Python 3.9.6.
+
+- Conversation timing can no longer affect audio. An error in it on the capture
+  thread switched Ember to the half-duplex fallback (mic muted during every reply)
+  and one in the speaker callback stopped the speaker until a restart (sounddevice
+  aborts the stream); now it turns timing off for the run with one log line, and the
+  Monitor's status line and the performance sampler (`timing_failed`, which fails a
+  requested latency check) say so. Timing work moved out of the playback lock the
+  speaker callback waits for; a reply's playback time counts from the speaker's byte
+  position, so one queued while a block is taken keeps its own time; and a reply
+  that opens with digital silence is timed from its first chunk with sound. Nothing
+  changes without an error; offline tests only.
+
+- Conversation timing (monitor and performance sampler) charges each reply to the
+  turn it answers. With proactive audio (on by default) Gemini stays silent on side
+  talk and hesitations, and its next answer was charged to that older turn (5.8 s
+  recorded for a 0.6 s reply) while the turn it answered kept "Waiting for reply".
+  A reply now goes to the newest waiting turn; an older turn without reply audio is
+  closed when the next one starts; a transcript that trails the reply's first audio
+  keeps that reply; a pause that splits one turn's speech ends the turn at its last
+  words. `recognition_ms` (the Monitor's "Speech end → last transcript", formerly
+  "Speech end → transcript") now runs to the transcript's last piece: the first
+  piece streams in while the person speaks, so it was negative and never shown.
+  `check.py` reports are format 2 for this; against a format-1 baseline they leave
+  out the `recognition_ms` delta. Times stay on the monotonic clock until the
+  monitor reads them, so an NTP correction after start no longer shifts them.
+  `check.py` counts only answered turns as `speech_turns` (`unanswered_turns`
+  reports the rest), so `--min-turns` no longer fails on a turn Gemini chose not to
+  answer. Replayed Live API orderings now measure 580-625 ms for a true 600 ms
+  (previously up to 10.6 s). Diagnostics only; audio is unchanged.
+
+- `check_release.py` and `tests/run.py` keep `BAYMAX_MEMORY_MODEL_DIR` while they
+  set the machine's own settings aside. It only points the real-model memory tests
+  at a downloaded model (it changes nothing in Ember), and removing it meant those
+  two tests never ran under either command: they always skipped.
+
+- Robot updates: `check_release.py` no longer runs the repository's bookkeeping
+  checks (`tests/overall/test_validation.py`: every test file listed in one
+  `suite.json`, the suites `tests/run.py --changed` picks) on a robot. The Orange Pi
+  5 Max updater runs that gate before taking a release and rolls back when it fails
+  (the 4 Pro image runs it only for a release that reinstalls packages: a code-only
+  update reuses the installed environment, which `bootstrap.py` then accepts without
+  the gate), so one correct test file missing from a `suite.json` stopped robots
+  updating (the 5 Max never retries that commit). CI, where GitHub sets
+  `GITHUB_ACTIONS=true`, and `tests/run.py` still run them; the source, chat UI and
+  performance-sampler checks stay in the robots' gate. Offline: with an unlisted
+  test file the gate now passes as a robot (core 571, toolkit 241) and fails in CI.
+  The source check (`tests/overall/test_repository.py`) parses only the repository's
+  own files: it skips hidden folders (`.venv`, `.models`, `.local-review`,
+  `.venv.previous-*`), `venv`, `__pycache__`, `site-packages` and `node_modules`. It
+  read every file of the 5 Max's NPU converter venvs under
+  `Baymax-main/.models/pose_npu/build` (TensorFlow, torch, rknn-toolkit2: about 59 s
+  of parsing on an M1 before Ember could start), and one third-party file that
+  didn't parse would have rolled the update back. All 181 tracked Python files are
+  still parsed.
+
+- Gemini Live model fallback. Google shuts Ember's model,
+  `gemini-2.5-flash-native-audio-preview-12-2025`, down as early as 2026-11-17; its
+  replacement is `gemini-3.8-live`. `BAYMAX_LIVE_MODELS` (documented in `.env.example`)
+  lists the Live models in order: by default 2.5, then `gemini-3.8-live`. When this API
+  key can't use a model (Google refuses to set up a fresh connection, close 1007/1008,
+  or closes one before Gemini finished a turn saying the model is not found or no longer
+  available), Ember connects with the next one at once, logs it once and keeps it until
+  it restarts, without the old model's resume handle. A quota close ("1011 You exceeded
+  your current quota") never moves it: a per-minute or concurrent-session limit says the
+  same and passes in seconds, so Ember backs off and retries the same model. When every
+  model has failed in a row it waits as after any lost connection (0.3 s, doubling up to
+  4.8 s) and tries again: no fast spin. Network drops, Google's resets and "1011
+  internal error" never switch. For Gemini 3 the config leaves out `thinking_config` and
+  declares Ember's functions `BLOCKING`, as 2.5 runs them; 2.5's config is unchanged.
+  `evals/live_eval.py --model gemini-3.8-live` tests a model with the same settings
+  (without `--model` the eval uses the list's first model). On Gemini 3 Ember sends no
+  notes without `turn_complete` (recalled memories, the family's profile update) until
+  that eval's memory-note scenario passes: the server waits for more input after one,
+  and whether 3.x still answers the person's next words is untested. On 2026-11-06
+  Ember's keys had no 3.8 quota ("1011 You exceeded your current quota") while 2.5
+  worked, so 2.5 stays first and 3.8 is untested live: MVP.md "Gemini model" says when
+  and how to put it first.
+
+- The startup key check (`run_pc.py`) accepts the first model of `BAYMAX_LIVE_MODELS`
+  that Google lists for the key. It required `MODEL` itself, so once 2.5 is retired it
+  would have stopped Ember from starting at all. A model that isn't listed ("not found")
+  is passed over for the next, asked about only then; any other error, or no model listed,
+  still stops startup with the same messages.
+
+- The receive loop no longer drops the end of a turn when a message's model turn has no
+  parts: looping over `None` raised, and the rest of that message (its `turn_complete`:
+  the speaking state, the address gate's turn end) was lost, followed by a 0.5 s pause.
+  Messages with several parts (Gemini 3 can send text and audio parts together) were
+  already handled part by part, in order; both are now tested on the real receive loop.
+
+- Weather questions no longer wait on a fetch after Ember's first 10 minutes. The
+  weather was cached for 10 minutes and preloaded once at start; the prewarm thread
+  now fetches it again every 9 minutes (in each unit asked for, Celsius at least)
+  and the IP location every 54 minutes, before each copy expires. A failed refresh
+  keeps the copy that is still valid. This adds about 27 IPWho and 160 Open-Meteo
+  requests a day per robot while the toolkit is on (documented in the toolkit
+  README); only one refresh thread runs even if `run()` starts again.
+
+- The family's "about the person" note waits for a quiet moment, like messages and
+  reminders: it was sent (`turn_complete=False`) whenever the profile changed,
+  polled every 3 s, even while Gemini was replying, which can cut the reply off. It
+  now waits for `available_to_speak()` and stays pending until then.
+
+- About 54 ms less speaker latency on the Orange Pi 5 Max: with Ember on the RK3588's
+  fast cores the speaker stream uses 512-frame callbacks and PortAudio's `low` latency
+  instead of sounddevice's 1024 frames and `high`. Measured on the 5 Max with its USB
+  speaker on PipeWire's default device: PortAudio reported 42.7 ms before and 10.7 ms
+  after, and the audio cleanup measured about 96 ms and about 42 ms of output latency,
+  with no output underflows (the timing monitor's counter, read every 2 s) in three
+  3.5-minute runs, one with MediaPipe pose on the CPU, and the mic and speaker
+  callbacks' timing unchanged. Two settings, documented in `.env.example` and the
+  conversational_ability README, change it: `BAYMAX_OUTPUT_BLOCKSIZE` (frames per
+  speaker callback, 64-4096) and `BAYMAX_OUTPUT_LATENCY` (`low`, `high` or seconds up
+  to 0.5); a value in `.env` or the shell wins. Read once at start; a bad or
+  out-of-range value prints one line and falls back to 1024 / sounddevice's default (a
+  longer block than the echo reference's 250 ms, or more than 0.5 s of latency, would
+  break echo cancellation and the mute during replies). Elsewhere (the Orange Pi 4 Pro
+  unless pinned, x86, macOS, Windows) the stream is opened as before; when it isn't
+  the 1024/default one, its reported latency is logged at each connection.
+
+- Less work on the real-time threads. PortAudio's capture callback printed a flushed
+  `[MIC LEVEL]` line every 50 blocks, and a `[MIC STATUS]` line for every input status
+  (an overflow on every block while the event loop lags), each of which can stall the
+  capture when the log is slow; it now only stores the level and counts the statuses,
+  and the existing 3 s `[QUEUES]` monitor prints the level and, when there were any, the
+  latest status with how many came since its last report. The `[PROFILE]` summaries
+  print about every 10 s instead of every ~1 s (each still covers the last 50 samples).
+  The camera frame Gemini gets every 3 s is resized and JPEG-encoded on a worker thread
+  instead of the event loop that sends the mic and plays replies.
+
+- Expected 10 ms less mic delay: v10 captures 960-sample (20 ms) mic blocks instead of
+  1024. The WebRTC audio cleanup works in whole 10 ms frames (480 samples), so
+  1024-sample blocks kept a permanent 10 ms carry; 960 are two whole frames, cleaned and
+  sent at once. Not measured yet: the saving needs the host to deliver 960-frame
+  periods, and where the device keeps 1024 (some PipeWire/ALSA setups) PortAudio's
+  buffer adapter holds a carry of its own. The Orange Pi 5 Max A/B will tell. The carry
+  now starts empty and appears only for a block that isn't whole frames (v8's 1024 still
+  works as before), and the stale-audio count uses the real block length.
+  `evals/live_eval.py` sends speech in the runtime's own block size.
+
+- Faster, quieter reconnects. Every session end used to wait 2 s, then reset PortAudio
+  with a blocking 5 s `time.sleep` on the event loop and choose the audio devices again:
+  at least 7 s with the mic closed, every ~10 minutes when Google resets the connection.
+  Now a session ended only by lost connections (`connection_lost`, or another `OSError`:
+  DNS or "network unreachable" from a reconnect while the Wi-Fi is still down, which
+  each ran the full reset) reconnects after 0.3 s without the device reset; connections
+  that keep failing within 60 s back off (0.3, 0.6, 1.2, 2.4 s, then 4.8 s each time)
+  and never reset the devices, which can't help a network. The full reset is kept for
+  device/PortAudio and other errors, now awaited and off the event loop (its
+  worker-thread PortAudio calls are untested on Windows). After a GoAway, Ember moves to
+  a new connection at the next quiet moment (no reply owed, generating or playing, no
+  speech for 1 s), with the newest resume handle, so routine resets don't land
+  mid-utterance. It moves only once Gemini has sent that connection a handle of its own:
+  the one that set it up is not offered twice, so moving with it would start the
+  conversation over. A move from a connection shorter than 60 s backs off like a quick
+  loss, so GoAways soon after every setup can't make Ember reconnect in a loop. A retry
+  that never reached Gemini (DNS, network unreachable, refused, the websocket's open
+  timeout: an `OSError` before setup) no longer uses up the conversation's resume handle
+  (`session.not_tried`): with the first retry 0.3 s after a drop instead of 7 s, a Wi-Fi
+  drop of a few seconds otherwise started the conversation over. Gemini's own refusals
+  still drop the handle. The abandon/resend of Ember's own messages,
+  `MIC_SEND_TIMEOUT_S`, the socket abort and the stop path are unchanged. Offline tests
+  through the real `run()`; live check pending.
+
+- Recalled memories no longer hold up or cut off Ember's replies. The receive loop
+  used to wait up to 150 ms for the memory lookup at the first reply audio and then
+  send the `[MEMORY CONTEXT]` note while Gemini was generating, which per the Live API
+  reference "will interrupt any current model generation". Now nothing waits for the
+  lookup: it runs on a worker thread at the first quiet moment after the person's turn
+  (Gemini owes no reply and isn't producing one, nothing is queued for the speaker, no
+  speech for 1 s, none of Ember's own messages awaiting its answer), so it never
+  competes with a reply's first audio, and it searches all of that turn's words. It
+  used to start on the turn's first transcript fragment with the previous turn's words
+  ("We planted tomatoes Ember," for "Ember, what is my dog's name?"), so it looked up
+  the previous topic. The note goes out at the next quiet moment, with
+  `turn_complete=False`, and informs the person's next turn. The prompt's
+  `[MEMORY CONTEXT]` section and the note say its facts are things Ember knows and
+  that it needs no reply, and `[WHEN TO SPEAK]` no longer says every bracket-labelled
+  message needs a response (it exempts `[MEMORY CONTEXT]` and `[ABOUT THE PERSON]`
+  notes). Checked live (2026-11-07, Gemini 2.5 native audio, `evals/live_eval.py`):
+  the note never delayed the next reply (1.6-2.5 s), but Gemini did not use it: asked
+  "what is my dog's name?" after a note saying the dog is Biscuit, it answered "I don't
+  know your dog's name" in 10 of 10 runs (5 with the old persona, 5 with a persona that
+  explicitly counts remembered facts), and a note sent with `turn_complete=True` was used
+  but answered out loud every time. The same fact among the memories at the start of the
+  instructions was used 5 of 5 times. So these notes are now **opt-in**
+  (`BAYMAX_MEMORY_NOTES=1`, e.g. to test another model): by default Ember does no
+  per-turn lookups or notes and relies on the newest 50 memories in its instructions
+  (`MEMORY_PROMPT_COUNT`); older memories are not recalled mid-conversation (a recall
+  tool Gemini can call is the follow-up). `memory-note-then-speech` now checks only that
+  a note doesn't delay the next reply. Memories
+  already in the connection's prompt or given in its conversation are skipped (a
+  connection that resumes the conversation keeps the list; a fresh one starts from its
+  prompt); a recall is dropped when the person starts a new turn before it could be
+  given, so speech nearby (a TV) that keeps the room from going quiet for 1 s holds
+  the notes back. Offline tests on the real receive loop and `between_turns()`.
+
+- Google Search stays on without dropping the session or slowing replies. With
+  Gemini's built-in `google_search` tool next to Ember's function tools and Ember's "no
+  thinking" setting (`thinking_budget: 0`), the native-audio model closed the session with
+  "1011 internal error" whenever it tried to call one: in `evals/live_eval.py` with the
+  real MVP config, 7 of 27 runs dropped (reminder 0/3, radio 0/3). On the robot each is a
+  dropped connection and a deaf reconnect. Moving or merging the tools or declaring them
+  blocking did not help (4-6 of 9 runs dropped). A thinking budget did (32, 128, 512 or
+  dynamic), but it slowed every reply (median first reply audio 2.85 s against 1.9 s) and
+  made the language rule answer English spoken with an Indian accent in Malayalam (0-1 of
+  5 runs stayed English, with four wordings of the rule). Search is now a `search_web`
+  function tool (`features/toolkits/web_search.py`), and the conversation keeps no
+  thinking:
+  - Each call goes to a lookup session that has Google Search and nothing else, so
+    nothing can drop. Its model answers in text: `gemini-robotics-er-2-streaming-preview`
+    (`BAYMAX_SEARCH_MODEL`), 1.3-2.2 s per grounded answer, the only Live model on the
+    tested key that does. Only the query Gemini writes is sent.
+  - Its quota counts sessions, not questions (one session answered 8 back to back), so
+    one session is kept for follow-up searches and closed after two idle minutes. On the
+    tested free-tier key it refused new sessions after 25 in a morning; then the
+    conversation's own model looks the question up and Ember uses the first sentence of
+    its spoken answer (5.0-6.4 s per lookup; it answers only in audio, at talking pace).
+  - A whole search, fallback and any wait for an earlier search included, ends within
+    13 s. The runtime now counts a reply as owed while any tool call runs and again from
+    when its result went back, so a slow tool or a batch of searches can't use up the 15 s
+    window (`REPLY_OWED_MAX_S`) and let a GoAway handover or memory note in while Gemini
+    answers. A reused session drops anything an earlier answer left queued (the SDK gives a
+    transcription no order relative to `turn_complete`); sessions close, and stalled setups
+    are abandoned, in the background, outside the time limits. The fallback is asked to
+    answer in English and reads sentence ends in any script, never cutting at an ordinal
+    date, a decimal or an abbreviation; once generation is done it takes the whole
+    transcript after 0.3 s without more. Each kind of failure is logged once
+    (`[SEARCH] ...`, never the query). `evals/live_eval.py --real-tools` gives the real
+    toolkit the key (also over an empty `GOOGLE_API_KEY=` line) and the model under test.
+    Found by two multi-reviewer passes with skeptic verification.
+  - Live (2026-11-07, 20 scenarios x 3, 70 turns): median first reply audio 2.03 s (p90
+    3.08 s), against 2.85 s (p90 4.28 s) with the thinking budget; every tool scenario
+    3/3; no search where none was needed; one server error in 60 sessions, as before.
+    English with an Indian accent stayed English in 5 of 8 runs. "Who won the World
+    Series this year?": `search_web` was called in every run; answered right with first
+    audio at 3.6 and 4.8 s through the text model, and at 5.7-11.1 s (5 of 5) through the
+    fallback; before the fallback existed the quota refusals made Ember say it
+    couldn't check.
+  - `BAYMAX_GOOGLE_SEARCH=0` turns search off. A regular Gemini API call with Google
+    Search grounding was not an option: the tested key's project is refused grounding
+    ("429 quota exceeded") on every model while plain calls work; it needs billing.
+
+- Address gate: a name said just before Gemini ends a turn without replying is
+  no longer forgotten. On ember-002 "Amber, please response." was followed by an
+  empty turn, and the reply "I'm here." in the next turn was dropped. Speech
+  from a turn with no reply now still counts for the next reply for up to 10 s
+  after the person's last words (`CARRY_S`); a played reply clears it as before.
+  Only the last quiet turn is carried: with continuous talk Gemini stayed quiet
+  for, every quiet turn kept the words before it, so a name overheard 20 minutes
+  earlier still let a reply through. Offline tests pass; live check on the
+  robot is pending.
+
+- Address gate: Hindi transcribed in Devanagari now counts as saying Ember's name
+  (एम्बर, एंबर, एमबर, ऍम्बर, ऐम्बर, ऐंबर, and the Amber mishearing अम्बर, अंबर, also
+  split as "एम् बर"). Python's \b misplaces word edges at the virama and vowel signs,
+  so the match uses explicit Devanagari boundaries. अंबर also means sky and may
+  occasionally let an overheard reply through. Hindi in Urdu script counts too (ایمبر,
+  امبر): in the live evals Gemini wrote "एम्बर, मैं रसोई में चाय बना रही हूँ।" in Urdu
+  script in 9 of 14 runs, always with ایمبر, and the gate dropped the reply. On the
+  Orange Pi line the strict gate is opt-in (`BAYMAX_ADDRESS_GATE=1`), so both take
+  effect only where it is turned on. "Ember disengage" (on by default) also matches
+  the Urdu-script name, with the word in Latin or Devanagari script: the Urdu spelling
+  of "disengage" has not been seen live, so a transcript wholly in Urdu script does
+  not disengage. Offline tests pass; live Hindi on the robot is pending.
+
+- Record real Orange Pi language simulations: 80/81 automated response runs
+  passed across 240 turns; retain the Polish switching failure and synthetic
+  speech/ASR failures explicitly. Add automatic pass counts and reject/recheck
+  punctuation-only transcripts. Report the test-only prompt patch and measured
+  CPU/RAM/temperature/NPU evidence; add A733 viplite load sampling support.
+
+- Add multilingual simulation scenarios and a sourced 99-entry language candidate
+  catalog. Reuse the real-config Gemini evaluator for native turns, follow-ups,
+  language switching and Hindi-English mixing; optionally save synthetic reply
+  WAVs for review. Compile per-model/config statuses and only list audio languages
+  validated by repeated live runs, checks and exact-evidence human review. Add
+  offline regression coverage; API keys/raw audio stay local and no universal
+  language-support claim is made.
+
+- Add a shared, read-only Linux feature performance sampler for CPU, runtime/
+  descendant RSS, system RAM, exposed NPU/thermal sensors and existing speech
+  latency. Compare baseline/active/combined workloads, summarize mean/p95/peak
+  and gate explicit budgets/added p95 latency. Include sampler regression checks
+  in feature selections and the existing release gate; require performance
+  evidence for future feature PRs. Missing telemetry is reported, never zero.
+
+- Document OPi4 V1 with an organized feature/source/validation log and an optional
+  Graphify map/viewer. Keep board-specific evidence and pending live checks explicit.
+  Add `devops/EDITING_PROTOCOL.md`, a concise repository README and feature-owned
+  suite definitions under root `tests/`. `tests/run.py` supports full, feature and
+  changed-path validation; shared or unknown changes select all suites. CI and the
+  robots' gate (`check_release.py`) also run the overall source-syntax and chat UI
+  checks; the ownership and suite-selection checks run in CI and `tests/run.py` only
+  (see "Robot updates" above).
+
+- Add local speech detection and per-turn latency to the chat debugger. User
+  bubbles show speech/transcript timing and live reply waits; Ember bubbles show
+  reply arrival, scheduled speaker playback and response delays. Keep toolkit
+  start/end in one updating centered bubble and collapse the timing history.
+  Track output underruns, preserve interruption/reconnect cleanup, and support
+  a device override for speech-end sensitivity. Diagnostics use existing audio
+  streams, keep bounded local metadata, and omit ambiguous speech matches.
+
+- Add an SD CARD Flash quickstart and cross-platform, read-only image verifier.
+  New builder manifests identify the Orange Pi 4 Pro and format version;
+  verification checks the source repository, safe image filename, byte length
+  and SHA256 before the operator uses a separate image writer. No physical disk
+  is written by the builder or verifier; fresh-card hardware checks remain pending.
+
 - **Ember for Orange Pi: one repository for the Orange Pi 4 Pro and the Orange Pi 5
-  Max.** Made from JoeKojima/Baymax PR #29 (`opi4-demo`), PR #22 (`codex/opi4-flash`),
+  Max.** Made from JoeKojima/Baymax PR #29 (`opi4-demo`), PR #22 (the SD-image builder),
   the Orange Pi 5 Max branches `orangepi5-npu` + `memory-incremental-saves`,
   `orangepi-features` (opi4-demo with Svanik's PRs #23-#28 and #30 and the voice
   volume control: the entries below from "Let the person change how loud" to
@@ -22,10 +436,12 @@
     cannot start (e.g. librknnrt crashing it during NPU setup) or dies later is started
     again once, on the CPU; video continues. The vision process reports
     the model's device with every frame, so the fall toolkit shows NPU/CPU correctly.
-    A pose process that hangs without exiting is not detected yet.
+    A pose process that hangs without exiting was not detected yet; it is now stopped
+    and restarted the same way (see "Pose: a pose process that hangs" above).
   - Fast-core pinning: `BAYMAX_CPU_PINNING=auto` (default) pins only on an RK3588,
     where it was measured; `on` pins on any ARM big.LITTLE board (to try the 4 Pro's
-    two A76s, which would also carry the pose/face processes); `off` never pins.
+    two A76s, which would then carry Ember and the pose process, with faces on the
+    A55s: see "Orange Pi 5 Max core layout" above); `off` never pins.
   - Kept from the 5 Max work: the live view drawn only while watched (replaces
     opi4-demo's viewer counter, with its tests), the 1-frame V4L2 buffer on ARM, the
     fall toolkit's shared pose, the per-platform MVP updater, memory saved during
@@ -325,11 +741,13 @@
   them to explain an unclear view. Separate calm delivery from scene and mood.
   Live greeting variation remains pending.
 
-- Allow occasional topic-driven discovery through the existing Google Search
-  session tool: share one relevant sourced finding with a personal reaction or
-  invitation to discuss, without waiting for an explicit search request. Keep
-  private disclosures out of queries, respect storytelling and venting, and never
-  invent sources or previous familiarity. Live quality and latency remain pending.
+- Allow occasional topic-driven discovery through the Google Search tool (now
+  `search_web`, on unless `BAYMAX_GOOGLE_SEARCH=0`; see "Google Search stays on
+  without dropping the session" above): share one relevant sourced finding with a
+  personal reaction or invitation to discuss, without waiting for an explicit
+  search request. Keep private disclosures out of queries, respect storytelling
+  and venting, and never invent sources or previous familiarity. Live quality
+  and latency remain pending.
 
 - Strengthen conversation guidance against praise-and-question loops: contribute
   a grounded thought, avoid invented categories and redundant confirmation,
@@ -564,8 +982,9 @@
     Pi 5 Max with 500 memories: a lookup takes 34 ms of CPU and is ready in 19 ms on two
     fast cores (about 140 ms on a slow core); in the full-system test Ember went from
     42.7% to 42.8% of one core (NPU pose) and from 91.8% to 92.0% (CPU pose), with one
-    lookup per user turn and none timed out; RAM about 170-230 MB more (the torch-based
-    setup measured 410-500 MB on a Mac). Not yet run in a live conversation.
+    lookup per user turn and none timed out (the reply then waited up to 150 ms for it;
+    see "Recalled memories no longer hold up" above); RAM about 170-230 MB more (the
+    torch-based setup measured 410-500 MB on a Mac). Not yet run in a live conversation.
   - `requirements-orange-pi.txt` also installs rknn-toolkit-lite2 2.3.2 (aarch64,
     Python <= 3.12), the NPU's Python side, which was a manual step: the same version
     as the converter's default, which the accuracy check records. It is imported only
@@ -751,8 +1170,8 @@
   and gave up when it failed. TVmaze search is title-only and currently
   returns 502 for some queries ("mystery thriller", "crime drama", even "the
   crown"; "the office" works). `public_shows` now says title lookup only, and
-  the prompt says to recommend from Gemini's own knowledge or Google Search
-  and keep helping when a source fails.
+  the prompt says to recommend from Gemini's own knowledge (or Google Search,
+  when it is on) and keep helping when a source fails.
 
 - Discovery tools (trivia, TVmaze shows, PoetryDB, radio station lookup,
   TheMealDB recipes, Wikipedia, Open Library) are on by default via
@@ -839,6 +1258,8 @@
   only the query goes to Google. `BAYMAX_GOOGLE_SEARCH=0` (or disabling the
   toolkit) removes it; the dashboard capability reports it. Offline config
   tests pass; live check pending on the robot (no Gemini key on the dev PC).
+  Since replaced by the `search_web` tool, on by default (see "Google Search
+  stays on without dropping the session" above).
 
 - Audiobook book mode: while a LibriVox book plays the mic is withheld from
   Gemini (it answered the narrator as the person) and fed to an offline Vosk

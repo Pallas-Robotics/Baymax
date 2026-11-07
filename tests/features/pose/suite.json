@@ -1,0 +1,24 @@
+{
+  "name": "pose",
+  "sources": [
+    "Baymax-main/features/pose/**",
+    "Baymax-main/features/vision_process.py",
+    "Baymax-main/fall_detection/**",
+    "Baymax-main/features/toolkits/fall_detection.py",
+    "Baymax-main/features/toolkits/audiobooks.py",
+    "Baymax-main/dev_settings.py",
+    "Baymax-main/pc_hardware.py",
+    "Baymax-main/features/toolkits/proactive.py"
+  ],
+  "python": [
+    {
+      "directory": "Baymax-main/tests",
+      "patterns": [
+        "test_pose_backend.py",
+        "test_pose_fall_defaults.py",
+        "test_toolkit_fall_detection.py",
+        "test_toolkit_vision_process.py"
+      ]
+    }
+  ]
+}

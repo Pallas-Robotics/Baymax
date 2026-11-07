@@ -86,9 +86,9 @@ class WaitingCueTests(unittest.TestCase):
         self.assertEqual(self.cue.render(b'', 8), b'')
 
     def callback(self, enhancer):
-        namespace = {'_playback_buffer': b'', '_playback_lock': threading.Lock(),
+        namespace = {'_playback_buffer': b'', '_playback_lock': threading.Lock(), '_playback_taken': 0,
                      '_waiting_cue': self.cue, '_audio_enhancer': enhancer,
-                     'np': np, 'OUTPUT_CHANNELS': 1,
+                     'np': np, 'OUTPUT_CHANNELS': 1, 'monitor': monitor, 'RECEIVE_SAMPLE_RATE': 48000,
                      'voice_volume': SimpleNamespace(apply=lambda chunk: chunk)}  # v10's speaker volume
         with patch('test_public_core_integration.CORE', CORE):
             fn = load_function('_output_callback', namespace)

@@ -9,14 +9,20 @@
 # still needed (TESTING_PROTOCOL.md).
 name: Offline checks
 
+# Paths: everything check_release.py runs or reads: the application, the root checks
+# it also runs (tests/overall with test/monitor-chat.cjs, the devops/performance
+# sampler) and all of devops/, whose Python those checks parse and whose robot
+# updater (devops/mvp/update.py) and launchers (devops/clickables) its tests load.
+# The SD-card and Graphify suites themselves run with tests/run.py
+# (devops/ci/feature-validation.yml.example).
 on:
   pull_request:
-    paths: ["Baymax-main/**", ".github/workflows/offline-checks.yml"]
+    paths: ["Baymax-main/**", "tests/**", "test/**", "devops/**", ".github/workflows/offline-checks.yml"]
   push:
     # release: the branch Orange Pi 4 Pro SD cards (ember-update) and the Orange Pi 5
     # Max's autostart updater (devops/mvp/update.py) follow by default.
     branches: [main, MVP, release]
-    paths: ["Baymax-main/**", ".github/workflows/offline-checks.yml"]
+    paths: ["Baymax-main/**", "tests/**", "test/**", "devops/**", ".github/workflows/offline-checks.yml"]
   workflow_dispatch:
 
 permissions:

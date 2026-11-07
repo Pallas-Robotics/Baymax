@@ -6,7 +6,7 @@ import threading
 import time
 from types import SimpleNamespace
 import unittest
-from unittest.mock import Mock, patch
+from unittest.mock import Mock, call, patch
 
 import numpy as np
 
@@ -72,6 +72,86 @@ class AddressGateTests(unittest.TestCase):
                       ["E mber"]):
             g, _, _ = gate()
             self.assertEqual(turn(g, words), ["ok"], words)
+
+    def test_name_before_a_turn_with_no_reply_counts_for_the_next_reply(self):
+        # ember-002, 2026-11-06: "Amber, please response." -> Gemini ended a turn
+        # without replying -> "I'm here." in the next turn was dropped.
+        for interrupted in (False, True):
+            g, clock, _ = gate()
+            for held in g.heard("Amber, please response."):
+                held()
+            g.end(interrupted=interrupted)  # no reply this turn
+            clock.now += 3
+            played = []
+            g.reply(lambda: played.append("I'm here."), "I'm here.")
+            g.end()
+            self.assertEqual(played, ["I'm here."], interrupted)
+
+    def test_speech_from_a_turn_with_no_reply_lapses(self):
+        g, clock, log = gate()
+        g.heard("Ember, are you there?")
+        g.end()
+        clock.now += 11  # longer than CARRY_S after the last words
+        self.assertEqual(turn(g, [], "overheard"), [])
+        self.assertIn("overheard", log.call_args_list[-1].args[0])
+
+    def test_only_the_last_quiet_turn_is_carried(self):
+        # A name overheard once, then minutes of talk Gemini rightly stays quiet for
+        # (a fragment every few seconds, so CARRY_S never lapses): the name must not
+        # let a reply through 20 minutes later.
+        g, clock, _ = gate()
+        g.heard("The amber light came on.")
+        g.end()
+        for i in range(400):
+            clock.now += 3
+            g.heard(f" and the weather report says rain {i}.")
+            g.end()
+        self.assertLess(len(g._heard), 3)
+        clock.now += 1
+        self.assertEqual(turn(g, [], "overheard"), [])
+        # Carried speech that lapsed is dropped, and the next quiet turn is carried whole.
+        g.heard("unrelated words")
+        g.end()
+        clock.now += 11
+        g.heard("Ember, are you there?")
+        g.end()
+        clock.now += 2
+        self.assertEqual(turn(g, [], "I'm here."), ["I'm here."])
+        # Two quiet turns in a row with nothing new said keep the name.
+        g.heard("Amber, please response.")
+        g.end()
+        g.end()
+        clock.now += 3
+        self.assertEqual(turn(g, [], "I'm here."), ["I'm here."])
+
+    def test_played_reply_still_clears_what_was_heard(self):
+        g, clock, _ = gate()
+        self.assertEqual(turn(g, ["Ember, hi"]), ["ok"])
+        clock.now += 1
+        self.assertEqual(turn(g, [], "unprompted"), [])  # no new speech, no prompt, never spoke
+
+    def test_hindi_name_in_devanagari_counts(self):
+        for words in (["एम्बर, क्या तुम मुझे सुन सकते हो?"], ["हाय", " एंबर"], ["अंबर, मौसम कैसा है?"],
+                      ["ऐम्बर"], ["एम्", "बर, सुनो"], ["Ember, नमस्ते"]):
+            g, _, _ = gate()
+            self.assertEqual(turn(g, words), ["ok"], words)
+        # Longer Hindi words that only contain the letters, and the name glued to other letters.
+        for text in ("बर", "अंबरीश", "सम्बर", "एम्बरों", "मैं घर जा रहा हूँ", "नमस्ते"):
+            self.assertFalse(addressing.names_ember(text), text)
+
+    def test_hindi_name_in_urdu_script_counts(self):
+        # Gemini also writes Hindi in Urdu script: in the live evals "एम्बर, मैं रसोई में चाय बना रही
+        # हूँ।" came back like the first line in 9 of 14 runs, the name always ایمبر, and the gate
+        # dropped Ember's reply as not spoken to.
+        for words in (["ایمبر میں رسوائی میں چائے بنا رہی ہوں۔"], ["ایمبر، کیا تم مجھے سن سکتی ہو؟"],
+                      ["امبر، موسم کیسا ہے؟"], ["ہائے", " ایمبر"], ["ايمبر، سنو"]):
+            g, _, log = gate()
+            self.assertEqual(turn(g, words), ["ok"], words)
+            log.assert_not_called()
+        # Longer words that start or end with the letters: Ambreen, chamber, November,
+        # December, member, umbrella, Cambridge; and a sentence without the name.
+        for text in ("امبرین", "چیمبر", "نومبر", "دسمبر", "ممبر", "امبریلا", "کیمبرج", "میں گھر جا رہی ہوں"):
+            self.assertFalse(addressing.names_ember(text), text)
 
     def test_side_conversation_and_noise_are_dropped_and_logged(self):
         g, _, log = gate()
@@ -280,16 +360,18 @@ class V10ReceiveLoopTests(unittest.TestCase):
         self.heard = heard  # the user's transcript, now recorded through _transcript_add
         self.playback_states = []
         self.playback_starts = []
-        def append_playback(data, *, new_turn=False):
+        self.playback_timing = []
+        def append_playback(data, *, new_turn=False, timing_id=None):
             played.append(data)
             self.playback_states.append(namespace['_gemini_speaking'])
             self.playback_starts.append(new_turn)
+            self.playback_timing.append(timing_id)
         g, clock, log = gate()
         namespace = {
             "asyncio": asyncio, "np": np, "_address_gate": g,
             "time": SimpleNamespace(monotonic=clock, perf_counter=time.perf_counter),
             "public_toolkit": SimpleNamespace(), "monitor": SimpleNamespace(emit=Mock(), transcribe=Mock(),
-                                                                           finish_transcripts=Mock()),
+                                                                           finish_transcripts=Mock(), timing=Mock()),
             "_transcript_add": lambda speaker, text: (said if speaker == "gemini" else heard).append(text.strip()),
             "_TurnTranscript": lambda *a: SimpleNamespace(add=Mock(), flush=Mock()),
             "_initiation_ts_lock": threading.Lock(), "_recent_user_words_lock": threading.Lock(),
@@ -343,6 +425,42 @@ class V10ReceiveLoopTests(unittest.TestCase):
             content(audio=pcm), content(done=True),
         ])
         self.assertEqual(self.playback_starts, [True, False, True, False])
+
+    # Gemini 3 Live models can put several content parts in one message.
+    def test_one_message_with_text_and_several_audio_parts_loses_none(self):
+        first, second = (np.array(samples, dtype=np.int16).tobytes() for samples in ([1, 2], [3, 4]))
+        audio = lambda pcm: SimpleNamespace(text=None, inline_data=SimpleNamespace(mime_type="audio/pcm;rate=24000",
+                                                                                  data=pcm))
+        message = content(ember="Hello there.", done=True)
+        message.server_content.model_turn = SimpleNamespace(parts=[
+            SimpleNamespace(text="Hello there.", inline_data=None), audio(first), audio(second)])
+        with patch("builtins.print") as printed:
+            played, said, _ = self.run_receive([content(user="Ember, say hello"), message])
+        self.assertEqual(played, [np.repeat(np.frombuffer(pcm, dtype=np.int16), 2).tobytes() for pcm in (first, second)])
+        self.assertEqual(self.playback_starts, [True, False])  # one reply, in order
+        self.assertEqual(said, ["Hello there."])
+        self.assertIn(call("[GEMINI] Hello there.", flush=True), printed.call_args_list)
+        self.assertFalse(self.namespace["_gemini_speaking"])  # and its turn ended
+
+    def test_a_model_turn_without_parts_still_ends_the_turn(self):
+        pcm = np.array([1, 2], dtype=np.int16).tobytes()
+        end = content(done=True)
+        end.server_content.model_turn = SimpleNamespace(parts=None)  # a Content with no parts
+        with patch("builtins.print") as printed:
+            played, said, _ = self.run_receive([content(user="Ember, are you there?"),
+                                                content(ember="Yes.", audio=pcm), end])
+        self.assertEqual((len(played), said), (1, ["Yes."]))
+        self.assertFalse(self.namespace["_gemini_speaking"])
+        self.assertIn("_turn_done_at", self.namespace)
+        self.assertFalse([c for c in printed.call_args_list if "Receive error" in str(c.args)])
+
+    def test_every_audio_chunk_carries_its_replys_timing(self):
+        # A reply that opens with digital silence is timed from its first chunk with sound.
+        pcm = np.array([1, 2], dtype=np.int16).tobytes()
+        self.run_receive([content(user="Ember, tell me about cats"), content(audio=bytes(4)),
+                          content(audio=pcm), content(done=True)])
+        self.assertEqual(len(self.playback_timing), 2)
+        self.assertNotIn(None, self.playback_timing)
 
 
 if __name__ == "__main__":

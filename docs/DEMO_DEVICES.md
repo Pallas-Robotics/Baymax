@@ -33,9 +33,11 @@ The same code runs on both boards; the board decides at runtime:
   NPU; heavy always stays on the CPU. Everywhere else it is MediaPipe on the CPU. A
   pose process that cannot start or dies is started again once, on the CPU; video
   continues either way.
-- **Pinning:** `auto` pins only on the RK3588. Child processes (pose, face) inherit
-  it, which on the 4 Pro would leave Ember and both children on its 2 A76 cores, so
-  that is left off until measured.
+- **Pinning:** `auto` pins only on the RK3588. Only then does the pose process stay
+  with Ember on the fast cores (at nice 5) while the face process goes to the slow ones
+  (at nice 10), with a 1 ms GIL switch interval and no idle library thread pools
+  (`Baymax-main/ORANGE_PI_SETUP.md`, Fast cores). On the 4 Pro that would leave Ember
+  and pose on its 2 A76 cores, so it is left off until measured.
 - **The camera** keeps one buffered frame on Linux ARM64 (unmeasured on both boards).
 - **rknn-toolkit-lite2** installs on both boards (same requirements file) but is
   imported only on an RK3588 with converted, checked models.

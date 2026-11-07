@@ -14,6 +14,7 @@ listed by --dry-run (or pass --yes). Reports go to .local-review/ (gitignored).
 
     python evals/live_eval.py --dry-run
     python evals/live_eval.py --only greeting --repeat 3
+    python evals/live_eval.py --model gemini-3.8-live   # another Live model, adapted as the runtime does
     python evals/live_eval.py --root ../../Baymax-brain-games/Baymax-main   # another PR's checkout
 """
 import argparse
@@ -42,17 +43,20 @@ FALLBACK_CORE = "realtime_gemini_8.py"   # Older MVP checkouts: run_pc.py runs v
 SCENARIOS = Path(__file__).resolve().parent / "scenarios.json"
 REPORT_DIR = ROOT / ".local-review"
 RATE = 48000                     # SEND_SAMPLE_RATE (v8 and v10)
-CHUNK = 1024                     # CHUNK_SIZE (v8 and v10)
 TRAILING_SILENCE_S = 1.5         # Lets Gemini's activity detection end the turn.
 # A real mic always carries room tone. Gemini's LOW start sensitivity (the MVP's)
 # ignored clean TTS framed by digital silence, but hears it over quiet noise.
 ROOM_NOISE = 200                 # Std dev of the background noise, int16 units (about -44 dBFS).
 LEAD_IN_S = 2.0
 TURN_TIMEOUT_S = 25.0
-STEP_KINDS = ("say", "text", "card", "image")
+STEP_KINDS = ("say", "text", "note", "card", "image")
 EXPECT_KEYS = {"heard", "reply", "not_reply", "tools", "not_tools", "no_tools", "max_words", "max_latency_s",
                "silence_ok"}
 DEFAULT_TOOL_RESULT = {"result": "ok"}
+# Gemini 2.5 often starts its output transcript with the tag of the message it answers
+# ("[FALL ALERT] अरे! ...", "[PRESENCE] ..."), but doesn't say it: transcribed separately, none
+# of 6 such saved replies spoke the tag. Reply checks leave these leading tags out.
+LEADING_TAGS = re.compile(r"^\s*(?:\[[A-Z][A-Z0-9 _-]*\]\s*)+")
 
 
 # ── The MVP's real session config ────────────────────────────────────────────
@@ -114,6 +118,18 @@ def _imported(node):
     return {(a.asname or a.name).split(".")[0] for a in node.names}
 
 
+def chunk_size(core=CORE):
+    """The runtime's mic block, CHUNK_SIZE (960 samples in v10, 1024 in v8): speech is
+    sent in blocks of this size, as from the robot's microphone."""
+    for node in ast.parse(core.read_text(encoding="utf-8")).body:
+        if _assigned(node) == {"CHUNK_SIZE"} and isinstance(node.value, ast.Constant):
+            return node.value.value
+    return 1024
+
+
+CHUNK = chunk_size()
+
+
 def core_session(core=CORE):
     """(model, config) from the runtime's own source, without importing its devices."""
     from google.genai import types
@@ -127,7 +143,7 @@ def core_session(core=CORE):
             body.append(node)   # v10: `if ONLY_WHEN_ADDRESSED: _BASE_SYSTEM_INSTRUCTION += ...`
         elif isinstance(node, ast.FunctionDef) and node.name == "_build_config":
             body.append(node)
-    namespace = {"types": types, "os": os, "_memory_embedder": None}
+    namespace = {"types": types, "os": os, "_memory_embedder": None, "_memories_given": set()}
     exec(compile(ast.Module(body=body, type_ignores=[]), str(core), "exec"), namespace)
     return namespace["MODEL"], namespace["_build_config"]()
 
@@ -138,6 +154,20 @@ def mvp_session(environ=os.environ, root=ROOT):
         if name != "BAYMAX_HARDWARE_PROFILE":  # Device selection only; nothing is opened here.
             environ.setdefault(name, value)
     return core_session(runtime(root))
+
+
+def for_model(model, config, requested=None):
+    """(model, config) to test: `requested` (--model), else the first Live model the
+    runtime connects with (BAYMAX_LIVE_MODELS, else its MODEL), and Ember's config with
+    the settings that model needs, adapted as the runtime adapts it."""
+    try:
+        from features.conversational_ability import live_models
+    except ImportError:  # --root on a branch from before the model list: its MODEL, as it was
+        if requested:
+            print("That branch has no live_models.py: the config is sent as it is, not adapted to the model.")
+        return requested or model, config
+    model = requested or live_models.configured(model)[0]
+    return model, live_models.adapt(config, model)
 
 
 def declared_tools(config):
@@ -181,10 +211,16 @@ def missing_requirements(scenario, config):
     return None
 
 
+def spoken(reply):
+    """The reply transcript without the [TAG]s Gemini writes before what it says."""
+    return LEADING_TAGS.sub("", reply)
+
+
 def check(expect, turn):
-    """Failed expectations for one recorded turn, as short sentences."""
+    """Failed expectations for one recorded turn, as short sentences. The reply checks
+    (`reply`, `not_reply`, `max_words`) read the reply without its leading tags (`spoken`)."""
     failures = []
-    heard, reply = turn["heard"], turn["reply"]
+    heard, reply = turn["heard"], spoken(turn["reply"])
     called = [call["name"] for call in turn["tools"]]
     if "heard" in expect and not re.search(expect["heard"], heard, re.IGNORECASE):
         failures.append(f"Gemini heard {heard!r}, expected /{expect['heard']}/")
@@ -279,13 +315,16 @@ def image_file(path):
 class Recorder:
     """Collects one turn's server messages: transcripts, audio, tool calls, completion."""
 
-    def __init__(self):
+    def __init__(self, capture_audio=False):
         self.turn = None
+        self.capture_audio = capture_audio
         self.changed = asyncio.Event()
         self.speech_ended = None
         self.closed = False
 
     def start(self):
+        self.audio_pcm = bytearray()
+        self.audio_rate = 24000
         self.turn = {"heard": "", "reply": "", "tools": [], "audio_bytes": 0, "latency_s": None,
                      "complete": False, "timed_out": False}
         self.speech_ended = None
@@ -330,6 +369,18 @@ async def _receive(session, recorder, tool_results, real_tools):
                         if turn["latency_s"] is None and recorder.speech_ended is not None:
                             turn["latency_s"] = round(time.perf_counter() - recorder.speech_ended, 2)
                         turn["audio_bytes"] += len(part.inline_data.data or b"")
+                        if recorder.capture_audio:
+                            mime = part.inline_data.mime_type or ''
+                            if not mime.startswith('audio/pcm'):
+                                raise ValueError('Reply review recording requires PCM output')
+                            rate = re.search(r'rate=(\d+)', mime)
+                            rate = int(rate[1]) if rate else 24000
+                            if recorder.audio_pcm and rate != recorder.audio_rate:
+                                raise ValueError('Reply audio rate changed during a turn')
+                            recorder.audio_rate = rate
+                            recorder.audio_pcm.extend(part.inline_data.data or b'')
+                            if len(recorder.audio_pcm) > 24000 * 2 * 120:
+                                raise ValueError('Reply review recording exceeded two-minute limit')
                 if content.turn_complete and (turn["audio_bytes"] or turn["reply"]):
                     turn["complete"] = True
             recorder.changed.set()
@@ -360,6 +411,10 @@ async def send_step(session, step, recorder, speak=synthesize):
         recorder.finish_speaking()
         await session.send_client_content(turns={"role": "user", "parts": [{"text": step["text"]}]},
                                           turn_complete=True)
+    elif "note" in step:
+        # A note that needs no reply, as the runtime sends recalled memories between turns.
+        await session.send_client_content(turns={"role": "user", "parts": [{"text": step["note"]}]},
+                                          turn_complete=False)
     else:
         jpeg = card(step["card"]) if "card" in step else image_file(step["image"])
         await session.send_realtime_input(video=types.Blob(data=jpeg, mime_type="image/jpeg"))
@@ -380,15 +435,15 @@ async def wait_for_turn(recorder, timeout=TURN_TIMEOUT_S, settle=1.0):
 
 
 async def run_scenario(connect, model, config, scenario, real_tools=False, speak=synthesize,
-                       turn_timeout=TURN_TIMEOUT_S):
+                       turn_timeout=TURN_TIMEOUT_S, audio_dir=None):
     """Fresh session for one run. Returns its turns with failures per turn."""
-    recorder = Recorder()
+    recorder = Recorder(capture_audio=audio_dir is not None)
     turns = []
     async with connect(model=model, config=config) as session:
         receiver = asyncio.create_task(receive(session, recorder, scenario.get("tool_results", {}), real_tools))
         try:
             for step in scenario["steps"]:
-                if "card" in step or "image" in step:
+                if "card" in step or "image" in step or "note" in step:  # no reply of its own
                     await send_step(session, step, recorder, speak)
                     continue
                 recorder.start()
@@ -398,6 +453,15 @@ async def run_scenario(connect, model, config, scenario, real_tools=False, speak
                     receiver.result()  # Raise the connection error.
                 turn = dict(recorder.turn, step=step.get("say") or step.get("text"))
                 turn["failures"] = check(step.get("expect", {}), turn)
+                if audio_dir is not None and recorder.audio_pcm:
+                    path = Path(audio_dir) / f'turn-{len(turns) + 1}.wav'
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    with wave.open(str(path), 'wb') as output:
+                        output.setnchannels(1)
+                        output.setsampwidth(2)
+                        output.setframerate(recorder.audio_rate)
+                        output.writeframes(recorder.audio_pcm)
+                    turn['audio_file'] = str(path.resolve())
                 turns.append(turn)
                 recorder.turn = None
         except Exception as error:
@@ -417,12 +481,13 @@ async def run_scenario(connect, model, config, scenario, real_tools=False, speak
 
 
 # ── Report ───────────────────────────────────────────────────────────────────
-def summarize(results):
+def summarize(results, model=None):
     lines = ["# Ember live evaluation (Gemini in the loop, no robot)", "",
-             f"Generated: {time.strftime('%Y-%m-%d %H:%M:%S %Z')}", "",
-             "Synthetic speech and pictures only. This is Gemini-behaviour evidence; the robot's "
-             "microphone, echo cancellation, speaker, camera and eyes are NOT exercised.", "",
-             "| Scenario | Passed | Median first audio | Notes |", "|---|---|---|---|"]
+             f"Generated: {time.strftime('%Y-%m-%d %H:%M:%S %Z')}", ""]
+    lines += [f"Model: {model}", ""] if model else []
+    lines += ["Synthetic speech and pictures only. This is Gemini-behaviour evidence; the robot's "
+              "microphone, echo cancellation, speaker, camera and eyes are NOT exercised.", "",
+              "| Scenario | Passed | Median first audio | Notes |", "|---|---|---|---|"]
     detail = []
     for name, outcome in results.items():
         if "skipped" in outcome:
@@ -458,7 +523,8 @@ def disclosure(model, config, plan, repeat, real_tools):
              f"  - Ember's MVP system prompt ({len(config.get('system_instruction', ''))} characters) and "
              f"{len(tools)} tool declarations{' plus ' + ', '.join(built_in) if built_in else ''}",
              "  - Synthetic text-to-speech audio of the scripted lines, generated picture cards, text notes",
-             "  - " + ("REAL tool results (network providers may be contacted; audio tools may play)"
+             "  - " + ("REAL tool results (network providers may be contacted; audio tools may play; "
+                       "search_web opens its own Gemini Live lookup sessions on this key)"
                        if real_tools else "Stub tool results from the scenarios (no providers contacted)"),
              "No microphone, camera or speaker is opened. Uses your Gemini API quota.", ""]
     for scenario in plan:
@@ -477,6 +543,19 @@ def main_checkout(root):
     except (OSError, subprocess.SubprocessError):
         return None
     return Path(common).parent / ROOT.name
+
+
+def prepare_real_tools(key, model):
+    """--real-tools runs the real toolkit, which reads the key from the environment as on the
+    robot (search_web's lookup session, the family link), and search_web's fallback looks up
+    with the model under test (live_models.in_use). Process-local only."""
+    if not os.environ.get("GOOGLE_API_KEY", "").strip():   # unset, or GOOGLE_API_KEY= from .env.example
+        os.environ["GOOGLE_API_KEY"] = key
+    try:
+        from features.conversational_ability import live_models
+    except ImportError:   # an older branch under --root
+        return
+    live_models.in_use = model
 
 
 def api_key(root=ROOT):
@@ -509,6 +588,7 @@ async def run_all(plan, model, config, repeat, real_tools, connect, speak=synthe
 
 
 def main(argv=None, connect=None, confirm=input):
+    global CHUNK
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--scenarios", type=Path, default=SCENARIOS)
     parser.add_argument("--only", action="append", help="Scenario name (repeatable)")
@@ -519,6 +599,8 @@ def main(argv=None, connect=None, confirm=input):
     parser.add_argument("--report", type=Path, default=REPORT_DIR / "live-eval.md")
     parser.add_argument("--root", type=Path, default=ROOT,
                         help="Baymax-main of the branch to test, e.g. a PR worktree (default: this one)")
+    parser.add_argument("--model", help="Gemini Live model to test, e.g. gemini-3.8-live (default: the first the "
+                        "runtime uses: BAYMAX_LIVE_MODELS, else its MODEL); the config is adapted to it as the runtime does")
     args = parser.parse_args(argv)
 
     root = args.root.resolve()
@@ -529,7 +611,8 @@ def main(argv=None, connect=None, confirm=input):
         sys.path.insert(0, str(root))  # That branch's features, prompts and tools.
     from dotenv import load_dotenv
     load_dotenv(root / ".env", override=False, interpolate=False)  # The user's toggles, as on the robot.
-    model, config = mvp_session(root=root)
+    model, config = for_model(*mvp_session(root=root), args.model)
+    CHUNK = chunk_size(runtime(root))
     print(f"Branch under test: {root}")
     scenarios = [s for s in load_scenarios(args.scenarios) if not args.only or s["name"] in args.only]
     if args.only and len(scenarios) != len(set(args.only)):
@@ -554,11 +637,13 @@ def main(argv=None, connect=None, confirm=input):
             return 2
         from google import genai
         connect = genai.Client(api_key=key, http_options={"api_version": "v1alpha"}).aio.live.connect
+        if args.real_tools:
+            prepare_real_tools(key, model)
     if not args.yes and confirm("Send this to Gemini? [y/N] ").strip().lower() not in ("y", "yes"):
         print("Nothing was sent.")
         return 1
     results.update(asyncio.run(run_all(plan, model, config, args.repeat, args.real_tools, connect)))
-    report = summarize(results)
+    report = summarize(results, model)
     args.report.parent.mkdir(parents=True, exist_ok=True)
     args.report.write_text(report, encoding="utf-8")
     args.report.with_suffix(".json").write_text(json.dumps(results, indent=2), encoding="utf-8")
