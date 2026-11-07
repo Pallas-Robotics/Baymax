@@ -135,12 +135,13 @@
   replacement is `gemini-3.8-live`. `BAYMAX_LIVE_MODELS` (documented in `.env.example`)
   lists the Live models in order: by default 2.5, then `gemini-3.8-live`. When this API key
   can't use a model (Google refuses to set up a fresh connection, close 1007/1008, or closes
-  one before Gemini finished a turn saying the model is not found, no longer available or out
-  of quota: "1011 You exceeded your current quota"), Ember connects with the next one at once,
-  logs it once and keeps it until it restarts, without the old model's resume handle. When
-  every model has failed in a row it waits as after any lost connection (0.3 s, doubling
-  up to 4.8 s) and tries again: no fast spin. Network drops, Google's resets and
-  "1011 internal error" never switch. For Gemini 3 the config leaves out `thinking_config`
+  one before Gemini finished a turn saying the model is not found or no longer available),
+  Ember connects with the next one at once, logs it once and keeps it until it restarts,
+  without the old model's resume handle. A quota close ("1011 You exceeded your current
+  quota") never moves it: a per-minute or concurrent-session limit says the same and passes
+  in seconds, so Ember backs off and retries the same model. When every model has failed in
+  a row it waits as after any lost connection (0.3 s, doubling up to 4.8 s) and tries again:
+  no fast spin. Network drops, Google's resets and "1011 internal error" never switch. For Gemini 3 the config leaves out `thinking_config`
   and declares Ember's functions `BLOCKING`, as 2.5 runs them; 2.5's config is unchanged.
   `evals/live_eval.py --model gemini-3.8-live` tests a model with the same settings (without
   `--model` the eval uses the list's first model). On 2026-11-06 Ember's keys had no 3.8

@@ -14,15 +14,18 @@ next one at once when this API key can't use it:
   about its resume handle instead), or
 - the connection ended before Gemini finished a turn on it, with Google saying the model
   is gone ("is not found for API version", "not supported for bidiGenerateContent", "no
-  longer available") or out of quota for this key (close 1011 "You exceeded your current
-  quota").
+  longer available").
 
-The new model is kept until Ember restarts. The old one's resume handle is dropped:
-a handle belongs to the model that issued it. When every model has failed like that
-in a row, run() waits as after any lost connection (0.3 s, doubling up to 4.8 s; no
-fast spin) and tries the next one again, so Ember comes back with whichever
-model returns. Any other error (a dropped network, Google's routine resets, "1011
-internal error") never changes the model.
+The new model is kept until Ember restarts. The old one's resume handle is dropped: a
+handle belongs to the model that issued it. When every model has failed like that in a
+row, run() waits as after any lost connection (0.3 s, doubling up to 4.8 s; no fast
+spin) and tries the next one again, so Ember comes back with whichever model returns.
+Any other error (a dropped network, Google's routine resets, "1011 internal error")
+never changes the model. Nor does a quota close ("You exceeded your current quota"),
+whatever its code: a per-minute or concurrent-session limit says the same and clears in
+seconds, so run() backs off and retries the same model. A key with no quota at all for
+the first model therefore stays on it: keep 2.5 first until the key's project has 3.8
+quota.
 
 `adapt` gives a model Ember's config with the settings that model needs, for run() and
 evals/live_eval.py --model alike. Gemini 3 Live models think by themselves (Google: omit
@@ -42,10 +45,12 @@ from . import session
 
 FALLBACK = "gemini-3.8-live"  # Google's replacement for the 2.5 native-audio preview
 _NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")  # a model name as gemini_preflight accepts one
-# Google's words (in any close code) for a model that is gone, or out of quota for this key.
-# They open its messages: a close frame carries only 123 bytes of reason, so the rest is cut.
-_GONE = ("is not found for api version", "not supported for bidigeneratecontent",
-         "no longer available", "exceeded your current quota")
+# Google's words (in any close code) for a model that is gone. They open its messages: a
+# close frame carries only 123 bytes of reason, so the rest is cut.
+_GONE = ("is not found for api version", "not supported for bidigeneratecontent", "no longer available")
+# Never a reason to move on, whatever the code: a per-minute or concurrent-session limit says
+# it too, and passes in seconds.
+_QUOTA = "exceeded your current quota"
 
 
 def configured(model, environ=os.environ):
@@ -99,6 +104,8 @@ def unavailable(error, set_up=True):
     if close is None:
         return None
     code, reason = close
+    if _QUOTA in reason.lower():
+        return None
     if any(words in reason.lower() for words in _GONE) or (not set_up and code in (1007, 1008)):
         return f"{code} {reason.split('. ')[0][:160]}"
     return None

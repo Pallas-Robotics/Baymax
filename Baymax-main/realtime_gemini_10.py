@@ -2732,7 +2732,7 @@ async def run():
                     output_stream.stop()
                     output_stream.close()
         except Exception as e:
-            # This API key can't use the model (gone, or out of quota): the next one, at once.
+            # This API key can't use the model (not found or retired): the next one, at once.
             if _live_models.move_on(e, set_up=set_up, served=_turn_done_at >= started):
                 continue
             reason = "; ".join(repr(error) for error in _leaves(e))

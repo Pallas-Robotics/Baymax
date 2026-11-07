@@ -117,8 +117,8 @@ class SessionTests(unittest.TestCase):
 
 # ── Which Gemini Live model (live_models.py) ──
 OLD, NEW = "gemini-2.5-flash-native-audio-preview-12-2025", "gemini-3.8-live"
-# Google's close reasons for a model it doesn't serve, and for a key out of quota for one,
-# cut to the 123 bytes a websocket close frame can carry.
+# Google's close reasons for a model it doesn't serve, and for a key out of quota (or over a
+# rate or session limit) for one, cut to the 123 bytes a websocket close frame can carry.
 NOT_FOUND = (f"models/{OLD} is not found for API version v1alpha, or is not supported for "
              "bidiGenerateContent. Call ListModels to see the list of available models and their supported methods.")[:123]
 QUOTA = ("You exceeded your current quota, please check your plan and billing details. For more information "
@@ -188,17 +188,17 @@ class LiveModelTests(unittest.TestCase):
             self.assertEqual(live_models.generation(name), version, name)
 
     def test_errors_that_mean_this_key_cannot_use_the_model(self):
-        gone = (api_error(1008, NOT_FOUND), closed(1008, NOT_FOUND), api_error(1011, QUOTA), closed(1011, QUOTA),
+        gone = (api_error(1008, NOT_FOUND), closed(1008, NOT_FOUND), api_error(1011, NOT_FOUND),
                 api_error(1008, f"models/{OLD} is no longer available. Use a newer model."),
                 api_error(404, {"error": {"code": 404, "status": "NOT_FOUND",
                                           "message": f"models/{OLD} is not found for API version v1beta."}}),
-                ExceptionGroup("session", [ConnectionResetError(), api_error(1011, QUOTA)]))
+                ExceptionGroup("session", [ConnectionResetError(), api_error(1008, NOT_FOUND)]))
         for error in gone:
             for set_up in (False, True):  # before setup, or before Gemini finished a turn
                 with self.subTest(error=error, set_up=set_up):
                     self.assertTrue(live_models.unavailable(error, set_up))
-        self.assertEqual(live_models.unavailable(api_error(1011, QUOTA)),
-                         "1011 You exceeded your current quota, please check your plan and billing details")
+        self.assertEqual(live_models.unavailable(api_error(1011, f"models/{OLD} is no longer available. Use a newer model.")),
+                         f"1011 models/{OLD} is no longer available")
         # Google refusing the setup itself (1007/1008) is about this model and config; the
         # same codes later in a connection are not.
         for error in (api_error(1008, "Operation is not implemented, or supported, or enabled."),
@@ -212,6 +212,18 @@ class LiveModelTests(unittest.TestCase):
             for set_up in (False, True):
                 with self.subTest(error=error, set_up=set_up):
                     self.assertIsNone(live_models.unavailable(error, set_up))
+
+    def test_a_quota_close_is_never_taken_for_a_model_this_key_cannot_use(self):
+        # A per-minute or concurrent-session limit says the same as a key with no quota, and passes:
+        # one such close used to keep Ember on the next model, untested, until it restarted.
+        for error in (api_error(1011, QUOTA), closed(1011, QUOTA), api_error(1008, QUOTA), closed(1007, QUOTA),
+                      ExceptionGroup("session", [ConnectionResetError(), api_error(1011, QUOTA)])):
+            for set_up in (False, True):
+                with self.subTest(error=error, set_up=set_up):
+                    self.assertIsNone(live_models.unavailable(error, set_up))
+        choice = live_models.ModelChoice([OLD, NEW])
+        self.assertFalse(choice.move_on(api_error(1011, QUOTA), set_up=False, served=False))
+        self.assertEqual(choice.current, OLD)
 
     def test_a_model_this_key_cannot_use_is_replaced_at_once_and_kept(self):
         choice = live_models.ModelChoice([OLD, NEW])
@@ -230,7 +242,7 @@ class LiveModelTests(unittest.TestCase):
 
     def test_when_no_model_can_be_used_each_round_waits_and_starts_again(self):
         choice = live_models.ModelChoice([OLD, NEW])
-        rounds = [[choice.move_on(api_error(1011, QUOTA), set_up=True, served=False) for _ in range(2)]
+        rounds = [[choice.move_on(api_error(1008, NOT_FOUND), set_up=True, served=False) for _ in range(2)]
                   for _ in range(3)]
         # The next model at once; when both have failed, run()'s usual pause, then the next round.
         self.assertEqual(rounds, [[True, False]] * 3)
@@ -239,12 +251,12 @@ class LiveModelTests(unittest.TestCase):
 
     def test_a_model_that_finished_a_turn_is_kept_and_a_new_count_starts(self):
         choice = live_models.ModelChoice([OLD, NEW])
-        quota = api_error(1011, QUOTA)
-        self.assertFalse(choice.move_on(quota, set_up=True, served=True))  # it worked: reconnect with it
+        gone = api_error(1008, NOT_FOUND)
+        self.assertFalse(choice.move_on(gone, set_up=True, served=True))  # it worked: reconnect with it
         self.assertEqual(choice.current, OLD)
-        self.assertTrue(choice.move_on(quota, set_up=True, served=False))
-        self.assertFalse(choice.move_on(quota, set_up=True, served=True))  # NEW worked too
-        self.assertTrue(choice.move_on(quota, set_up=True, served=False))  # so OLD is next, at once
+        self.assertTrue(choice.move_on(gone, set_up=True, served=False))
+        self.assertFalse(choice.move_on(gone, set_up=True, served=True))  # NEW worked too
+        self.assertTrue(choice.move_on(gone, set_up=True, served=False))  # so OLD is next, at once
         self.assertEqual(choice.current, OLD)
         self.assertEqual(self.printed.call_count, 2)  # one line per switch after a model worked
 
@@ -312,20 +324,22 @@ class LiveModelSdkTests(unittest.TestCase):
         self.assertEqual(setups[0]["model"], f"models/{OLD}")
         self.assertTrue(live_models.unavailable(error, set_up=False))
 
-    def test_a_quota_close_after_setup_is_recognised_in_receive_and_send(self):
-        raised = []
+    def test_a_gone_model_after_setup_is_recognised_in_receive_and_send_and_a_quota_close_is_not(self):
+        for code, reason, gone in ((1008, NOT_FOUND, True), (1011, QUOTA, False)):
+            raised = []
 
-        async def receive_then_send(live):
-            for step in (lambda: anext(live.receive()),
-                         lambda: live.send_realtime_input(audio=types.Blob(data=b"\0\0", mime_type="audio/pcm;rate=48000"))):
-                try:
-                    await step()
-                except Exception as error:
-                    raised.append(error)
-        self.connect(self.set_up_then_close(1011, QUOTA), then=receive_then_send)
-        self.assertEqual([type(e) for e in raised], [errors.APIError, ConnectionClosedError])
-        for error in raised:
-            self.assertTrue(live_models.unavailable(error, set_up=True))
+            async def receive_then_send(live):
+                for step in (lambda: anext(live.receive()),
+                             lambda: live.send_realtime_input(audio=types.Blob(data=b"\0\0", mime_type="audio/pcm;rate=48000"))):
+                    try:
+                        await step()
+                    except Exception as error:
+                        raised.append(error)
+            self.connect(self.set_up_then_close(code, reason), then=receive_then_send)
+            self.assertEqual([type(e) for e in raised], [errors.APIError, ConnectionClosedError])
+            for error in raised:
+                with self.subTest(reason=reason, error=error):
+                    self.assertEqual(bool(live_models.unavailable(error, set_up=True)), gone)
 
     def test_an_internal_error_after_setup_is_not_about_the_model(self):
         raised = []

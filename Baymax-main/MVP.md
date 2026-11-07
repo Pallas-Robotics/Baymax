@@ -111,8 +111,9 @@ No extra capture streams are added to the runtime.
 Ember talks to `gemini-2.5-flash-native-audio-preview-12-2025`. Google shuts it down as
 early as 2026-11-17 (the exact date is announced later); its replacement is
 `gemini-3.8-live`. Ember tries the Live models in `BAYMAX_LIVE_MODELS` in order (default:
-2.5, then 3.8) and moves to the next when the key can't use one (gone, or out of quota),
-until it restarts. The key's Google project needs Live quota for `gemini-3.8-live`
+2.5, then 3.8) and moves to the next when the key can't use one (not found or retired),
+until it restarts. A quota close only retries the same model: a rate or session limit says
+the same and passes in seconds. The key's Google project needs Live quota for `gemini-3.8-live`
 (check https://aistudio.google.com/rate-limit for the project that owns the key): on
 2026-11-06 Ember's keys had none ("1011 You exceeded your current quota"), so 3.8 has not
 run with Ember yet and 2.5 stays first. Once the project has 3.8 quota and

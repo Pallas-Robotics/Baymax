@@ -342,13 +342,18 @@ runtime's `MODEL`). Google's deprecations page lists it for shutdown as early as
   model is not found or not supported for Live, or rejects a setting; refusing a resumed
   one can be about its resume handle, so that one just reconnects fresh), or the connection
   ends before Gemini finished a turn on it with Google saying the model is gone ("is not
-  found for API version", "not supported for bidiGenerateContent", "no longer available")
-  or out of quota for this key (close 1011 "You exceeded your current quota"). A close
-  frame carries at most 123 bytes of reason, so these words are matched where Google's
-  messages begin. One `[SESSION] ... can't be used with this API key (...); switching to
-  ...` line is logged and shown in the Monitor. The new model is kept until Ember restarts.
-  The old model's resume handle is dropped (a handle belongs to the model that issued it),
-  so the conversation starts fresh.
+  found for API version", "not supported for bidiGenerateContent", "no longer available").
+  A close frame carries at most 123 bytes of reason, so these words are matched where
+  Google's messages begin. One `[SESSION] ... can't be used with this API key (...);
+  switching to ...` line is logged and shown in the Monitor. The new model is kept until
+  Ember restarts. The old model's resume handle is dropped (a handle belongs to the model
+  that issued it), so the conversation starts fresh.
+- **Quota closes don't move.** "1011 You exceeded your current quota" is also what a
+  per-minute or concurrent-session limit says, and those pass in seconds: whatever its close
+  code, `run()` backs off and retries the same model, as before the list. One such close on
+  2.5 used to keep Ember on the untested 3.8 until it restarted. A key with no quota at all
+  for the first model therefore stays on it, so keep 2.5 first until the project has 3.8
+  quota.
 - **No model works.** Once every model has failed like that in a row, `run()` waits as after
   any lost connection (0.3 s, doubling up to 4.8 s) and tries the next model again, so Ember
   comes back with whichever model returns. No fast spin.
@@ -380,9 +385,10 @@ runtime's `MODEL`). Google's deprecations page lists it for shutdown as early as
 Tests: `tests/test_session.py` (the list; the real SDK's errors from a local websocket closed
 as Google closes it; switching, keeping and each round; the setup message sent for each
 model), `ReconnectTests` in `tests/test_v10_runtime.py` (through the real `run()`: a model
-refused at setup, a quota close before the first turn, every model failing, ordinary errors,
-a model that answered), `tests/test_gemini_preflight.py`, `tests/test_live_eval.py`, and the
-several-parts and no-parts messages in `tests/test_address_gate.py`. Live pending: 3.8 itself.
+refused at setup, a model gone before the first turn, a quota close retrying the same model,
+every model failing, ordinary errors, a model that answered), `tests/test_gemini_preflight.py`,
+`tests/test_live_eval.py`, and the several-parts and no-parts messages in
+`tests/test_address_gate.py`. Live pending: 3.8 itself.
 
 ### Local waiting acknowledgement (MVP)
 

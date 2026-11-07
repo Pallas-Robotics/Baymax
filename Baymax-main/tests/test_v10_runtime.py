@@ -951,7 +951,7 @@ class ReconnectTests(unittest.TestCase):
         self.assertEqual(config["tools"][0]["function_declarations"][0]["behavior"], "BLOCKING")
         ns["sd"]._terminate.assert_not_called()
 
-    def test_a_quota_close_before_the_first_turn_moves_on_without_the_old_models_handle(self):
+    def test_a_model_gone_before_the_first_turn_moves_on_without_the_old_models_handle(self):
         from features.conversational_ability import session as resumption
         resumption.forget()
         self.addCleanup(resumption.forget)
@@ -959,7 +959,7 @@ class ReconnectTests(unittest.TestCase):
         async def receive(index, session, ns):
             if index == 0:  # 2.5 sets the connection up, sends a resume handle, then closes
                 resumption.remember(SimpleNamespace(resumable=True, new_handle="issued by 2.5"))
-                raise errors.APIError(1011, QUOTA)
+                raise errors.APIError(1008, NOT_FOUND)
             raise ConnectionResetError()
         with patch.dict(os.environ, {"BAYMAX_SESSION_RESUMPTION": "1", "BAYMAX_CONTEXT_COMPRESSION": "0"}):
             sessions, ns = self.run_models(2, receive, _build_config=lambda: resumption.extend_config({}))
@@ -969,7 +969,7 @@ class ReconnectTests(unittest.TestCase):
 
     def test_when_no_model_can_be_used_ember_backs_off_as_after_any_loss(self):
         async def receive(index, session, ns):
-            raise errors.APIError(1011, QUOTA)
+            raise errors.APIError(1008, NOT_FOUND)
         self.run_models(6, receive)
         self.assertEqual(self.models, [OLD, NEW] * 3)
         self.assertEqual(self.pauses, [0.3, 0.6, 1.2])  # one growing pause per round: no fast spin
@@ -987,13 +987,24 @@ class ReconnectTests(unittest.TestCase):
             if index == 0:
                 ns["_turn_done_at"] = time.monotonic()  # as receive_audio does at turn_complete
             if index < 2:
-                raise errors.APIError(1011, QUOTA)
+                raise errors.APIError(1008, NOT_FOUND)
             raise ConnectionResetError()
         self.run_models(3, receive)
-        # The quota close on a connection that worked reconnects with 2.5; it moves on once
-        # a connection fails before any turn.
+        # The close on a connection that worked reconnects with 2.5; it moves on once a
+        # connection fails before any turn.
         self.assertEqual(self.models, [OLD, OLD, NEW])
         self.assertEqual(self.pauses, [0.3, 0.6])
+
+    def test_a_quota_close_retries_the_same_model(self):
+        # "You exceeded your current quota" is also what a per-minute or concurrent-session
+        # limit says, which clears in seconds: one such close kept Ember on the untested 3.8
+        # until it restarted.
+        async def receive(index, session, ns):
+            ns["_turn_done_at"] = time.monotonic()      # each later connection answers, then drops
+            raise ConnectionResetError()
+        self.run_models(4, receive, setup_errors={0: errors.APIError(1011, QUOTA)})
+        self.assertEqual(self.models, [OLD] * 4)        # was [OLD, NEW, NEW, NEW]
+        self.assertEqual(self.pauses, [0.3, 0.6, 1.2, 2.4])
 
 
 class RealTimeThreadTests(unittest.TestCase):
