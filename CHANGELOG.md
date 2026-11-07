@@ -177,7 +177,7 @@
   now waits for `available_to_speak()` and stays pending until then.
 
 - Speaker stream knobs for a board A/B of reply latency, documented in
-  `.env.example`: `BAYMAX_OUTPUT_BLOCKSIZE` (frames per speaker callback, default
+  `.env.example` and the conversational_ability README: `BAYMAX_OUTPUT_BLOCKSIZE` (frames per speaker callback, default
   1024; 0 lets PortAudio choose) and `BAYMAX_OUTPUT_LATENCY` (`low`, `high` or
   seconds; unset keeps sounddevice's default, `high`). Read once at start; bad
   values warn and fall back. Unset, the stream is opened exactly as before; when
@@ -194,10 +194,12 @@
   resized and JPEG-encoded on a worker thread instead of the event loop that sends
   the mic and plays replies.
 
-- 10 ms less mic delay: v10 captures 960-sample (20 ms) mic blocks instead of 1024.
-  The WebRTC audio cleanup works in whole 10 ms frames (480 samples), so 1024-sample
-  blocks kept a permanent 10 ms carry; 960 are two whole frames, cleaned and sent at
-  once. The carry now starts empty and appears only for a block that isn't whole
+- Expected 10 ms less mic delay: v10 captures 960-sample (20 ms) mic blocks instead of
+  1024. The WebRTC audio cleanup works in whole 10 ms frames (480 samples), so
+  1024-sample blocks kept a permanent 10 ms carry; 960 are two whole frames, cleaned and
+  sent at once. Not measured yet: the saving needs the host to deliver 960-frame
+  periods, and where the device keeps 1024 (some PipeWire/ALSA setups) PortAudio's
+  buffer adapter holds a carry of its own. The Orange Pi 5 Max A/B will tell. The carry now starts empty and appears only for a block that isn't whole
   frames (v8's 1024 still works as before), and the stale-audio count uses the real
   block length. `evals/live_eval.py` sends speech in the runtime's own block size.
 

@@ -94,14 +94,29 @@ Audible transitions and device buffering still need live verification.
 It processes whole 10 ms frames (480 samples at 48 kHz). v10 captures 960-sample
 (20 ms) mic blocks, two whole frames, so each block is cleaned and sent with no added
 delay. It used 1024-sample blocks, which kept 10 ms of every block for the next
-callback. A block that isn't whole frames (v8 still uses 1024) starts a 10 ms output
-carry once and keeps leftovers, so no tail is zero-padded or discarded on every
+callback. The 10 ms saving is expected, not yet measured: it assumes the host delivers
+960-frame periods. If the device keeps its own period (1024 frames on some PipeWire or
+ALSA setups), PortAudio's buffer adapter holds a carry of its own; the Orange Pi 5 Max
+A/B will show which. A block that isn't whole frames (v8 still uses 1024) starts a 10 ms
+output carry once and keeps leftovers, so no tail is zero-padded or discarded on every
 callback. Dropped stale audio (`BAYMAX_MAX_MIC_LAG_MS`) is counted in the block
 length actually cleaned. Reference storage
 is bounded to 250 ms and missing reference is silence. Capture/output stream
 callback ADC/DAC timestamps provide the AEC delay hint, falling back to stream
 latencies when callback timestamps are unavailable. The capture thread alone owns native DSP;
 the output callback only appends to the reference buffer.
+
+**Speaker stream knobs (measurement only).** `start_output_stream()` opens the speaker
+with 1024-frame callbacks and sounddevice's default output latency (`high`), as before.
+For a board A/B of the speaker's share of reply latency, two settings are read once at
+start: `BAYMAX_OUTPUT_BLOCKSIZE` (frames per speaker callback, 0-16384, default 1024; 0
+lets PortAudio choose) and `BAYMAX_OUTPUT_LATENCY` (`low`, `high` or 0-2 seconds; unset
+passes no latency, so sounddevice's `high` applies). Bad values warn and use the
+default. When either is set, `[AUDIO] Speaker stream: ...` logs the stream's reported
+latency at each connection. Lower values can underrun (crackle) on a busy board. Both
+are documented in `.env.example`; neither changes a default, opens a stream or sends
+anything anywhere. Tests: `SpeakerStreamTests` in `tests/test_v10_runtime.py`. Pending:
+the Orange Pi 5 Max A/B itself.
 
 Dependency: `pywebrtc-audio==0.2.0` (Apache-2.0), included in the isolated
 `requirements-pc.txt` environment. Native processing is imported only when
