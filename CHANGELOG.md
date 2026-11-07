@@ -1,5 +1,18 @@
 # MVP (unreleased)
 
+- Recalled memories no longer hold up or cut off Ember's replies. The receive loop
+  used to wait up to 150 ms for the memory lookup at the first reply audio and then
+  send the `[MEMORY CONTEXT]` note while Gemini was generating, which per the Live
+  API reference "will interrupt any current model generation". The lookup still
+  starts on the person's first words, on a worker thread, but nothing waits for
+  it: the note goes out at the next quiet moment between turns (Gemini owes no
+  reply and isn't producing one, nothing is queued for the speaker, no speech for
+  1 s, none of Ember's own messages awaiting its answer), with
+  `turn_complete=False`, and informs the person's next turn. Memories already in
+  the connection's prompt or given on it are skipped; a recall is dropped when the
+  person starts a new turn before it could be given. Offline tests on the real
+  receive loop; the two receive-loop tests fail on the previous code.
+
 - Google Search grounding is off by default; `BAYMAX_GOOGLE_SEARCH=1` turns it on.
   With the built-in `google_search` tool next to Ember's function tools, the
   native-audio model closed the session with "1011 internal error" whenever it

@@ -11,7 +11,8 @@ Optimised for low latency:
 Added features:
 - Gemini built-in input/output audio transcription (no local ASR model needed).
 - Memory retrieval: on each user turn, retrieves semantically similar memories
-  from ChromaDB and injects them as context via send_client_content.
+  from ChromaDB and gives them to Gemini as context via send_client_content at a
+  quiet moment after the reply (never during one, which would interrupt it).
 - During uptime (every MEMORY_SAVE_USER_TURNS user turns, or after a quiet spell)
   and on Ctrl+C: Gemini Flash summarises the conversation since the last save and
   the summaries are embedded into ChromaDB.
@@ -255,6 +256,11 @@ MEMORY_TOP_K = 3                 # how many memories to retrieve per turn
 MEMORY_MAX_DISTANCE = 1.0        # cosine distance threshold (0=identical, 2=opposite)
 MEMORY_WORD_WINDOW = 30          # use last N words of user speech for retrieval query
 MEMORY_PROMPT_COUNT = 50         # newest memories copied into the system instruction
+# Memories recalled for what the person says reach Gemini between turns, never
+# during a reply (between_turns): the recall for their latest turn waits here.
+_user_turn = None                # a new object at the start of each of the person's turns
+_recalled = None                 # (turn, memories recalled for it) not given to Gemini yet
+_memories_given = set()          # memory texts this connection's Gemini already has
 
 # ─── Memory saving during uptime ─────────────────────────────────────────────
 # The conversation since the last save is summarised (SUMMARY_MODEL) and stored
@@ -459,8 +465,12 @@ _BASE_CONFIG = audio_config(_BASE_CONFIG)
 
 
 def _build_config() -> dict:
-    """Build session config, injecting all stored memories into the system instruction."""
+    """Build session config, injecting all stored memories into the system instruction.
+    Called once per connection: the memories it copies are the ones that connection's
+    Gemini has from the start, so recalled memories skip them (_memories_given)."""
+    global _memories_given
     system_instruction = _BASE_SYSTEM_INSTRUCTION
+    _memories_given = set()
 
     if _memory_embedder is not None:
         try:
@@ -468,6 +478,7 @@ def _build_config() -> dict:
             # Gemini Flash from earlier conversations.
             docs = _newest_memories()
             if docs:
+                _memories_given = set(docs)
                 mem_block = "\n".join(f"- {d}" for d in docs)
                 system_instruction = (
                     "What you know about this user from previous conversations "
@@ -673,11 +684,13 @@ def _download_memory_model():
     _memory_embedder = _load_memory_embedder()
 
 
-def _retrieve_memories(query_text: str) -> str:
+def _retrieve_memories(query_text: str) -> list:
+    """Stored memories close to what the person said ({"document", "distance"}).
+    Runs on a worker thread: it embeds the query and reads Chroma."""
     if _memory_embedder is None:
-        return ""
+        return []
     if not query_text.strip():
-        return ""
+        return []
 
     try:
         results = _memory_embedder.search(
@@ -686,30 +699,38 @@ def _retrieve_memories(query_text: str) -> str:
         )
     except Exception as e:
         print(f"[MEMORY] Search error: {e}")
-        return ""
-
-    if not results:
-        return ""
+        return []
 
     # Filter by distance threshold
-    relevant = [r for r in results if r["distance"] <= MEMORY_MAX_DISTANCE]
-    if not relevant:
-        return ""
+    return [r for r in results or [] if r["distance"] <= MEMORY_MAX_DISTANCE]
 
-    # Build context string
-    memory_lines = []
-    for r in relevant:
-        memory_lines.append(f"- {r['document']} (relevance: {1 - r['distance']:.2f})")
 
-    context = (
+def _memory_context(memories) -> str:
+    """The [MEMORY CONTEXT] note for recalled memories."""
+    return (
         "[MEMORY CONTEXT] Here are things you remember about this user "
         "from previous conversations:\n"
-        + "\n".join(memory_lines)
+        + "\n".join(f"- {m['document']} (relevance: {1 - m['distance']:.2f})" for m in memories)
     )
-    print(f"[MEMORY] Retrieved {len(relevant)} memories for context")
-    for line in memory_lines:
-        print(f"  {line}")
-    return context
+
+
+def _recall_memories(turn):
+    """The person started a new turn: look up memories for it on a worker thread.
+    Never awaited: the receive loop must not wait for it. The result waits in
+    _recalled for between_turns(), unless the person has started another turn."""
+    with _recent_user_words_lock:
+        query = " ".join(_recent_user_words[-MEMORY_WORD_WINDOW:])
+    if not query.strip():
+        return
+    lookup = asyncio.get_running_loop().run_in_executor(None, _retrieve_memories, query)
+
+    def recalled(done):
+        global _recalled
+        if done.cancelled() or done.exception() is not None or not done.result():
+            return
+        if turn is _user_turn:  # still their latest turn
+            _recalled = (turn, done.result())
+    lookup.add_done_callback(recalled)
 
 
 def _newest_memories(limit=MEMORY_PROMPT_COUNT):
@@ -790,8 +811,10 @@ def _flush_playback():
 def _abandon_reply():
     """A lost connection ends the reply it was streaming. Without this the rest of
     the queued audio plays after the reconnect, with the mic muted, out of nowhere.
-    Ember's own messages (a fall check-in, a family message) are sent again instead."""
-    global _gemini_speaking
+    Ember's own messages (a fall check-in, a family message) are sent again instead.
+    The next connection owes nobody a reply: it never heard them."""
+    global _gemini_speaking, _reply_owed_since
+    _reply_owed_since = None
     with _playback_lock:
         audio_cut_off = bool(_playback_buffer)
     _flush_playback()
@@ -1684,6 +1707,62 @@ async def fall_alert_monitor(session):
             print(f"[FALL] Failed to inject alert: {e}; asking again shortly")
             await asyncio.sleep(2)
 
+# ─── Between turns ───────────────────────────────────────────────────────────
+# Anything sent to Gemini as client content "will interrupt any current model
+# generation", and with turn_complete=False "the server awaits additional messages
+# before starting generation" (Live API reference). Gemini starts a reply while the
+# person may still be talking, so notes that can wait (recalled memories) are sent
+# only at a quiet moment between turns.
+BETWEEN_TURNS_POLL_S = 0.2
+BETWEEN_TURNS_QUIET_S = 1.0   # nobody heard on the mic or in the transcript for this long
+REPLY_OWED_MAX_S = 15.0       # stop waiting for a reply after this (e.g. it was only noise)
+_reply_owed_since = None      # time.monotonic() Gemini last heard something it should answer
+
+
+def _between_turns(now):
+    """A quiet moment between turns, when a note can't interrupt or hold up a reply:
+    Gemini owes no reply (to the person, a tool result or one of Ember's own messages),
+    isn't producing one, none is queued for the speaker, and nobody has spoken for
+    BETWEEN_TURNS_QUIET_S."""
+    with _gemini_speaking_lock:
+        speaking = _gemini_speaking
+    with _playback_lock:
+        buffered = len(_playback_buffer) > 0
+    with _initiation_ts_lock:
+        heard = max(_last_loud_mic_ts, _last_user_speech_ts)
+    owed = _reply_owed_since is not None and now - _reply_owed_since < REPLY_OWED_MAX_S
+    return not (speaking or buffered or owed or now - heard < BETWEEN_TURNS_QUIET_S
+                or _address_gate.prompt_pending())
+
+
+async def between_turns(session):
+    """Gives Gemini the memories recalled for the person's latest turn once its reply
+    has been played and they are quiet: they inform the person's next turn. Memories
+    this connection's Gemini already has (in its instructions, or given before) are
+    skipped. A recall whose turn the person has moved on from is dropped."""
+    global _recalled
+    while True:
+        await asyncio.sleep(BETWEEN_TURNS_POLL_S)
+        if _recalled is None or not _between_turns(time.monotonic()):
+            continue
+        (turn, memories), _recalled = _recalled, None
+        new = [m for m in memories if m["document"] not in _memories_given]
+        if turn is not _user_turn or not new:
+            continue
+        try:
+            await session.send_client_content(
+                turns={"role": "user", "parts": [{"text": _memory_context(new)}]},
+                turn_complete=False,
+            )
+        except Exception as e:
+            print(f"[MEMORY] Could not give recalled memories: {e}")
+            continue
+        _memories_given.update(m["document"] for m in new)
+        print(f"[MEMORY] Gave Gemini {len(new)} recalled memories for the next turn", flush=True)
+        for m in new:
+            print(f"  - {m['document']} (relevance: {1 - m['distance']:.2f})")
+
+
 # ─── Conversation initiation ─────────────────────────────────────────────────
 def _safe_to_initiate(now: float) -> bool:
     """Gating: safe to open a conversation only when the robot is not already
@@ -1853,15 +1932,15 @@ class _TurnTranscript:
 async def receive_audio(session):
     """Receives audio from Gemini, upsamples 24kHz -> 48kHz, appends to buffer.
     Also captures input_transcription and output_transcription side-channel data.
-    On each completed user turn, retrieves relevant memories and injects them."""
+    The first words of each user turn start a memory lookup on a worker thread;
+    between_turns() gives what it finds to Gemini after the reply, so nothing here
+    waits for it or sends anything while Gemini is replying."""
     global _last_mic_send_ts, _last_robot_speech_ts, _last_user_speech_ts, _gemini_speaking
+    global _user_turn, _recalled, _reply_owed_since
     _is_new_turn = True
     _reply_audio_started = False
+    _user_turn_open = False   # the person's current turn has started its memory lookup
 
-    _memory_injected_this_turn = False
-    _current_turn_fragments = []
-    # Future for background memory retrieval started during transcription
-    _retrieval_future: asyncio.Future = None
     user_said = _TurnTranscript("user")
     gemini_said = _TurnTranscript("gemini")
 
@@ -1876,6 +1955,7 @@ async def receive_audio(session):
                     from features.conversational_ability.session import on_server_message
                     on_server_message(response)
                 if response.tool_call:
+                    _reply_owed_since = time.monotonic()  # Gemini answers once it has the result
                     _address_gate.tool_call()
                     await public_toolkit.handle_tool_call(session, response.tool_call)
                 server_content = response.server_content
@@ -1894,9 +1974,8 @@ async def receive_audio(session):
                         _gemini_speaking = False
                     _is_new_turn = True
                     _reply_audio_started = False
-                    _memory_injected_this_turn = False
-                    _current_turn_fragments.clear()
-                    _retrieval_future = None
+                    _user_turn_open = False
+                    _reply_owed_since = time.monotonic()  # talked over: Gemini answers them now
 
                 # ── Input transcription (what the USER said) ──
                 if server_content.input_transcription:
@@ -1914,24 +1993,21 @@ async def receive_audio(session):
                         # Feed the idle timer: the user was just heard.
                         with _initiation_ts_lock:
                             _last_user_speech_ts = time.monotonic()
+                        _reply_owed_since = time.monotonic()
 
                         # Accumulate words for memory retrieval
-                        _current_turn_fragments.append(text.strip())
                         with _recent_user_words_lock:
                             _recent_user_words.extend(text.strip().split())
                             if len(_recent_user_words) > MEMORY_WORD_WINDOW:
                                 _recent_user_words[:] = _recent_user_words[-MEMORY_WORD_WINDOW:]
 
-                        # Start retrieval in background on first fragment so the
-                        # result is ready before model_turn fires.
-                        if not _memory_injected_this_turn and _retrieval_future is None and _memory_embedder is not None:
-                            with _recent_user_words_lock:
-                                query = " ".join(_recent_user_words[-MEMORY_WORD_WINDOW:])
-                            if query.strip():
-                                loop = asyncio.get_running_loop()
-                                _retrieval_future = loop.run_in_executor(
-                                    None, _retrieve_memories, query
-                                )
+                        if not _user_turn_open:
+                            # The first words of a new turn: memories recalled for an
+                            # earlier one and not given yet are stale.
+                            _user_turn_open = True
+                            _user_turn, _recalled = object(), None
+                            if _memory_embedder is not None:
+                                _recall_memories(_user_turn)
 
                 if server_content.interrupted:
                     continue  # Audio/text on this cancellation message belongs to the cancelled reply.
@@ -1953,29 +2029,6 @@ async def receive_audio(session):
 
                 model_turn = server_content.model_turn
                 if model_turn:
-                    # Inject memory before processing any audio from this turn.
-                    # Retrieval was started during transcription, so it should
-                    # already be done — await with a short timeout as a safety net.
-                    if not _memory_injected_this_turn and _retrieval_future is not None:
-                        _memory_injected_this_turn = True
-                        try:
-                            memory_context = await asyncio.wait_for(
-                                asyncio.ensure_future(_retrieval_future), timeout=0.15
-                            )
-                            if memory_context:
-                                await session.send_client_content(
-                                    turns={
-                                        "role": "user",
-                                        "parts": [{"text": memory_context}],
-                                    },
-                                    turn_complete=False,
-                                )
-                        except asyncio.TimeoutError:
-                            print("[MEMORY] Retrieval timed out — skipping this turn")
-                        except Exception as e:
-                            print(f"[MEMORY] Failed to inject context: {e}")
-                        _retrieval_future = None
-
                     for part in model_turn.parts:
                         if part.text:
                             print(f"[GEMINI] {part.text}", flush=True)
@@ -2037,9 +2090,8 @@ async def receive_audio(session):
                         _gemini_speaking = False
                     _is_new_turn = True
                     _reply_audio_started = False
-                    _memory_injected_this_turn = False
-                    _current_turn_fragments.clear()
-                    _retrieval_future = None
+                    _user_turn_open = False
+                    _reply_owed_since = None
 
         except asyncio.CancelledError:
             # The send side saw the disconnect first: still post what was said so far.
@@ -2437,6 +2489,7 @@ async def run():
                         tg.create_task(send_audio_realtime(live_session))
                         tg.create_task(send_video_realtime(live_session))
                         tg.create_task(receive_audio(live_session))
+                        tg.create_task(between_turns(live_session))
                         tg.create_task(fall_alert_monitor(live_session))
                         if RANDOM_INITIATION_ENABLED:
                             tg.create_task(initiation_monitor(live_session))

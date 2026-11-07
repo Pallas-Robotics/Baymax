@@ -404,7 +404,7 @@ class ReconnectTests(unittest.TestCase):
             "start_output_stream": Mock(), "sd": Mock(), "get_default_device_id": lambda: (0, 0),
             "listen_audio": forever, "send_audio_realtime": forever, "send_video_realtime": forever,
             "receive_audio": lambda session: receive(len(sessions) - 1, session, namespace),
-            "fall_alert_monitor": forever, "monitor_queues": forever,
+            "fall_alert_monitor": forever, "monitor_queues": forever, "between_turns": forever,
             "fall_worker": SimpleNamespace(alert_monitor=forever), "_shutdown_event": None,
         }
         with patch("test_public_core_integration.CORE", V10):
