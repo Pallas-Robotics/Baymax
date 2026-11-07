@@ -2,6 +2,55 @@
 
 Responsive turn-taking and local microphone processing, independent of memory or face recognition.
 Integrated with desktop v8 and robot v10.
+
+## Language adaptation
+
+The shared [persona](../persona.py) instructs Gemini to reply in the person's
+language, follow switches on the next reply, and match mixed-language speech.
+English internal system messages should retain the conversation's language.
+This uses the existing Gemini Live audio/text input and reply stream: no local
+language classifier, extra capture stream, model change or separate provider
+request is added. The existing remote-processing data flow is unchanged.
+
+It is enabled through the normal MVP persona, with no separate language toggle.
+An approved deployment/runtime restart picks up the prompt change. This guides
+reply generation; it does not fix transcription or verify pronunciation.
+The [Pi results](../../../docs/features/OPI4_LANGUAGE_RESULTS.md) record 80/81
+automated runs passing and a Polish switching failure. See the
+[multilingual test guide](../../evals/languages/README.md) for simulations and
+`tests/test_language_eval.py` for offline configuration/report checks.
+
+## Conversation timing (OPI4 v10 monitor)
+
+The Monitor shows the last 20 turns (six visible) with estimated local speech
+start/end, first/last Gemini transcript arrival, first reply text/audio arrival,
+and the first nonzero reply sample scheduled for playback. Durations separate
+speech-end to transcript, transcript to reply audio, and reply audio to playback.
+The status section shows local speech activity before a transcript exists,
+then "waiting for Gemini transcript" after detected speech ends. It refreshes
+with the existing 200 ms telemetry / 250 ms UI polling. Stale detector data is
+marked unavailable. Speaker callback underruns are counted separately to help
+diagnose stuttering; the counter does not detect every possible audible glitch.
+Speech/transcript timing updates inside the user's chat bubble; reply arrival,
+speaker playback and response delays update inside Ember's bubble. While waiting,
+the user's bubble shows elapsed waiting time. Full timing history is collapsed
+below the conversation. Each toolkit invocation has one centered bubble that
+updates from running to finished with start/end timestamps and elapsed duration;
+separate repeated invocations retain their own bubbles.
+The local detector observes existing cleaned audio (70% speech probability,
+at least -45 dBFS, 60 ms onset and 400 ms silence); it does not gate audio or
+change Gemini settings. Noise, echoes and pauses can split/miss detections.
+Speech times are omitted if multiple local segments could match a transcript.
+Gemini's internal recognition time and actual acoustic output are not measured.
+Playback uses callback DAC timing; a missing timestamp falls back to the output
+latency estimate. Interruption clears unplayed timing marks.
+No new recordings, dependencies, streams or external requests are added. Timing
+metadata is local and bounded; durations use a monotonic clock mapped to wall
+time. Offline tests: `test_conversation_timing.py`, `test_runtime_monitor.py`,
+`test_v10_runtime.py`. Live confirmation requires restarting v10 and speaking.
+From the repository root, `node test/monitor-chat.cjs` checks inline timing
+updates and one stable toolkit bubble per invocation without opening devices.
+
 The existing camera/audio streams and 48 kHz rates stay in the runtime. This
 module opens no devices and makes no external requests.
 

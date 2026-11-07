@@ -9,6 +9,7 @@ import threading
 import time
 from types import SimpleNamespace
 import unittest
+import runtime_monitor as monitor
 from unittest.mock import AsyncMock, Mock, patch
 
 from google import genai
@@ -100,7 +101,7 @@ class V10RuntimeTests(unittest.TestCase):
 
     def test_queued_replies_have_a_gap_but_chunks_and_idle_replies_do_not(self):
         namespace = {"_playback_buffer": b"", "_playback_lock": threading.Lock(),
-                     "RECEIVE_SAMPLE_RATE": 48000, "OUTPUT_CHANNELS": 1}
+                     "RECEIVE_SAMPLE_RATE": 48000, "OUTPUT_CHANNELS": 1, "monitor": monitor}
         append = load_function("_append_playback", namespace)
         flush = load_function("_flush_playback", namespace)
         first, second = b"\x01\x00" * 4, b"\x02\x00" * 4
@@ -118,7 +119,7 @@ class V10RuntimeTests(unittest.TestCase):
         enhancer = SimpleNamespace(full_duplex=True, rendered=Mock(), mix_output=lambda chunk: b"\x07\x00" * (len(chunk) // 2))
         namespace = {"_playback_buffer": b"", "_playback_lock": threading.Lock(), "_waiting_cue": None,
                      "_audio_enhancer": enhancer, "np": __import__("numpy"), "OUTPUT_CHANNELS": 1,
-                     "voice_volume": SimpleNamespace(apply=lambda chunk: chunk)}
+                     "voice_volume": SimpleNamespace(apply=lambda chunk: chunk), "monitor": monitor, "RECEIVE_SAMPLE_RATE": 48000}
         with patch("test_public_core_integration.CORE", V10):
             callback = load_function("_output_callback", namespace)
         out = __import__("numpy").empty((4, 1), dtype="int16")
@@ -163,7 +164,7 @@ class V10RuntimeTests(unittest.TestCase):
         with patch("test_public_core_integration.CORE", V10), \
                 patch("features.conversational_ability.session.on_server_message") as seen:
             receive = load_function("receive_audio", {"asyncio": asyncio, "time": time,
-                "_TurnTranscript": lambda *a: SimpleNamespace(flush=lambda: None)})
+                "_TurnTranscript": lambda *a: SimpleNamespace(flush=lambda: None), "monitor": monitor})
             with self.assertRaises(asyncio.CancelledError):
                 asyncio.run(receive(Session()))
         self.assertEqual(seen.call_args.args[0].session_resumption_update, update)
@@ -215,7 +216,7 @@ class ReconnectTests(unittest.TestCase):
         with patch("test_public_core_integration.CORE", V10):
             return load_function("receive_audio", {"asyncio": asyncio, "time": time,
                 "RECEIVE_FAILURES_BEFORE_RECONNECT": 3, "connection_lost": connection_lost,
-                "monitor": SimpleNamespace(emit=Mock()),
+                "monitor": SimpleNamespace(emit=Mock(), timing=Mock()),
                 "_TurnTranscript": lambda speaker: (transcripts or {}).get(speaker, SimpleNamespace(flush=lambda: None))})
 
     @staticmethod
@@ -335,7 +336,8 @@ class ReconnectTests(unittest.TestCase):
 
     def abandon_namespace(self, gate, audio=b"old reply", speaking=True):
         namespace = {"_playback_lock": threading.Lock(), "_playback_buffer": audio, "_cut_off_prompts": [],
-                     "_gemini_speaking_lock": threading.Lock(), "_gemini_speaking": speaking, "_address_gate": gate}
+                     "_gemini_speaking_lock": threading.Lock(), "_gemini_speaking": speaking, "_address_gate": gate,
+                     "monitor": SimpleNamespace(timing=Mock())}
         with patch("test_public_core_integration.CORE", V10):
             load_function("_flush_playback", namespace)
             load_function("_abandon_reply", namespace)

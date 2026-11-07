@@ -1,0 +1,504 @@
+{
+  "source": "https://ai.google.dev/gemini-api/docs/live-api/capabilities#supported-languages",
+  "checked_date": "2026-11-06",
+  "scope": "Current provider Live API catalog; not a guarantee for the pinned Ember model.",
+  "languages": [
+    {
+      "name": "Afrikaans",
+      "code": "af",
+      "aliases": []
+    },
+    {
+      "name": "Akan",
+      "code": "ak",
+      "aliases": []
+    },
+    {
+      "name": "Albanian",
+      "code": "sq",
+      "aliases": []
+    },
+    {
+      "name": "Amharic",
+      "code": "am",
+      "aliases": []
+    },
+    {
+      "name": "Arabic",
+      "code": "ar",
+      "aliases": []
+    },
+    {
+      "name": "Armenian",
+      "code": "hy",
+      "aliases": []
+    },
+    {
+      "name": "Assamese",
+      "code": "as",
+      "aliases": []
+    },
+    {
+      "name": "Azerbaijani",
+      "code": "az",
+      "aliases": []
+    },
+    {
+      "name": "Basque",
+      "code": "eu",
+      "aliases": []
+    },
+    {
+      "name": "Belarusian",
+      "code": "be",
+      "aliases": []
+    },
+    {
+      "name": "Bengali",
+      "code": "bn",
+      "aliases": []
+    },
+    {
+      "name": "Bosnian",
+      "code": "bs",
+      "aliases": []
+    },
+    {
+      "name": "Bulgarian",
+      "code": "bg",
+      "aliases": []
+    },
+    {
+      "name": "Burmese",
+      "code": "my",
+      "aliases": []
+    },
+    {
+      "name": "Catalan",
+      "code": "ca",
+      "aliases": []
+    },
+    {
+      "name": "Cebuano",
+      "code": "ceb",
+      "aliases": []
+    },
+    {
+      "name": "Chinese (Simplified)",
+      "code": "zh-Hans",
+      "aliases": []
+    },
+    {
+      "name": "Chinese (Traditional)",
+      "code": "zh-Hant",
+      "aliases": []
+    },
+    {
+      "name": "Croatian",
+      "code": "hr",
+      "aliases": []
+    },
+    {
+      "name": "Czech",
+      "code": "cs",
+      "aliases": []
+    },
+    {
+      "name": "Danish",
+      "code": "da",
+      "aliases": []
+    },
+    {
+      "name": "Dutch",
+      "code": "nl",
+      "aliases": []
+    },
+    {
+      "name": "English",
+      "code": "en",
+      "aliases": []
+    },
+    {
+      "name": "Estonian",
+      "code": "et",
+      "aliases": []
+    },
+    {
+      "name": "Faroese",
+      "code": "fo",
+      "aliases": []
+    },
+    {
+      "name": "Filipino",
+      "code": "fil",
+      "aliases": []
+    },
+    {
+      "name": "Finnish",
+      "code": "fi",
+      "aliases": []
+    },
+    {
+      "name": "French",
+      "code": "fr",
+      "aliases": []
+    },
+    {
+      "name": "Galician",
+      "code": "gl",
+      "aliases": []
+    },
+    {
+      "name": "Georgian",
+      "code": "ka",
+      "aliases": []
+    },
+    {
+      "name": "German",
+      "code": "de",
+      "aliases": []
+    },
+    {
+      "name": "Greek",
+      "code": "el",
+      "aliases": []
+    },
+    {
+      "name": "Gujarati",
+      "code": "gu",
+      "aliases": []
+    },
+    {
+      "name": "Hausa",
+      "code": "ha",
+      "aliases": []
+    },
+    {
+      "name": "Hebrew",
+      "code": "he",
+      "aliases": []
+    },
+    {
+      "name": "Hindi",
+      "code": "hi",
+      "aliases": []
+    },
+    {
+      "name": "Hungarian",
+      "code": "hu",
+      "aliases": []
+    },
+    {
+      "name": "Icelandic",
+      "code": "is",
+      "aliases": []
+    },
+    {
+      "name": "Indonesian",
+      "code": "id",
+      "aliases": []
+    },
+    {
+      "name": "Irish",
+      "code": "ga",
+      "aliases": []
+    },
+    {
+      "name": "Italian",
+      "code": "it",
+      "aliases": []
+    },
+    {
+      "name": "Japanese",
+      "code": "ja",
+      "aliases": []
+    },
+    {
+      "name": "Kannada",
+      "code": "kn",
+      "aliases": []
+    },
+    {
+      "name": "Kazakh",
+      "code": "kk",
+      "aliases": []
+    },
+    {
+      "name": "Khmer",
+      "code": "km",
+      "aliases": []
+    },
+    {
+      "name": "Kinyarwanda",
+      "code": "rw",
+      "aliases": []
+    },
+    {
+      "name": "Korean",
+      "code": "ko",
+      "aliases": []
+    },
+    {
+      "name": "Kurdish",
+      "code": "ku",
+      "aliases": []
+    },
+    {
+      "name": "Kyrgyz",
+      "code": "ky",
+      "aliases": []
+    },
+    {
+      "name": "Lao",
+      "code": "lo",
+      "aliases": []
+    },
+    {
+      "name": "Latvian",
+      "code": "lv",
+      "aliases": []
+    },
+    {
+      "name": "Lithuanian",
+      "code": "lt",
+      "aliases": []
+    },
+    {
+      "name": "Macedonian",
+      "code": "mk",
+      "aliases": []
+    },
+    {
+      "name": "Malay",
+      "code": "ms",
+      "aliases": []
+    },
+    {
+      "name": "Malayalam",
+      "code": "ml",
+      "aliases": []
+    },
+    {
+      "name": "Maltese",
+      "code": "mt",
+      "aliases": []
+    },
+    {
+      "name": "Maori",
+      "code": "mi",
+      "aliases": []
+    },
+    {
+      "name": "Marathi",
+      "code": "mr",
+      "aliases": []
+    },
+    {
+      "name": "Mongolian",
+      "code": "mn",
+      "aliases": []
+    },
+    {
+      "name": "Nepali",
+      "code": "ne",
+      "aliases": []
+    },
+    {
+      "name": "Norwegian",
+      "code": "no",
+      "aliases": [
+        "nb"
+      ]
+    },
+    {
+      "name": "Odia",
+      "code": "or",
+      "aliases": []
+    },
+    {
+      "name": "Oromo",
+      "code": "om",
+      "aliases": []
+    },
+    {
+      "name": "Pashto",
+      "code": "ps",
+      "aliases": []
+    },
+    {
+      "name": "Persian",
+      "code": "fa",
+      "aliases": []
+    },
+    {
+      "name": "Polish",
+      "code": "pl",
+      "aliases": []
+    },
+    {
+      "name": "Portuguese (Brazil)",
+      "code": "pt-BR",
+      "aliases": []
+    },
+    {
+      "name": "Portuguese (Portugal)",
+      "code": "pt-PT",
+      "aliases": []
+    },
+    {
+      "name": "Punjabi",
+      "code": "pa",
+      "aliases": []
+    },
+    {
+      "name": "Quechua",
+      "code": "qu",
+      "aliases": []
+    },
+    {
+      "name": "Romanian",
+      "code": "ro",
+      "aliases": []
+    },
+    {
+      "name": "Romansh",
+      "code": "rm",
+      "aliases": []
+    },
+    {
+      "name": "Russian",
+      "code": "ru",
+      "aliases": []
+    },
+    {
+      "name": "Serbian",
+      "code": "sr",
+      "aliases": []
+    },
+    {
+      "name": "Sindhi",
+      "code": "sd",
+      "aliases": []
+    },
+    {
+      "name": "Sinhala",
+      "code": "si",
+      "aliases": []
+    },
+    {
+      "name": "Slovak",
+      "code": "sk",
+      "aliases": []
+    },
+    {
+      "name": "Slovenian",
+      "code": "sl",
+      "aliases": []
+    },
+    {
+      "name": "Somali",
+      "code": "so",
+      "aliases": []
+    },
+    {
+      "name": "Southern Sotho",
+      "code": "st",
+      "aliases": []
+    },
+    {
+      "name": "Spanish",
+      "code": "es",
+      "aliases": []
+    },
+    {
+      "name": "Swahili",
+      "code": "sw",
+      "aliases": []
+    },
+    {
+      "name": "Swedish",
+      "code": "sv",
+      "aliases": []
+    },
+    {
+      "name": "Tajik",
+      "code": "tg",
+      "aliases": []
+    },
+    {
+      "name": "Tamil",
+      "code": "ta",
+      "aliases": []
+    },
+    {
+      "name": "Telugu",
+      "code": "te",
+      "aliases": []
+    },
+    {
+      "name": "Thai",
+      "code": "th",
+      "aliases": []
+    },
+    {
+      "name": "Tswana",
+      "code": "tn",
+      "aliases": []
+    },
+    {
+      "name": "Turkish",
+      "code": "tr",
+      "aliases": []
+    },
+    {
+      "name": "Turkmen",
+      "code": "tk",
+      "aliases": []
+    },
+    {
+      "name": "Ukrainian",
+      "code": "uk",
+      "aliases": []
+    },
+    {
+      "name": "Urdu",
+      "code": "ur",
+      "aliases": []
+    },
+    {
+      "name": "Uzbek",
+      "code": "uz",
+      "aliases": []
+    },
+    {
+      "name": "Vietnamese",
+      "code": "vi",
+      "aliases": []
+    },
+    {
+      "name": "Welsh",
+      "code": "cy",
+      "aliases": []
+    },
+    {
+      "name": "Western Frisian",
+      "code": "fy",
+      "aliases": []
+    },
+    {
+      "name": "Wolof",
+      "code": "wo",
+      "aliases": []
+    },
+    {
+      "name": "Yoruba",
+      "code": "yo",
+      "aliases": []
+    },
+    {
+      "name": "Zulu",
+      "code": "zu",
+      "aliases": []
+    }
+  ]
+}

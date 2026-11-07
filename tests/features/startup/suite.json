@@ -1,0 +1,22 @@
+{
+  "name": "startup",
+  "sources": [
+    "Baymax-main/run_*.py",
+    "Baymax-main/gemini_preflight.py",
+    "Baymax-main/deploy/**",
+    "devops/mvp/**",
+    "devops/clickables/**"
+  ],
+  "python": [
+    {
+      "directory": "Baymax-main/tests",
+      "patterns": [
+        "test_bootstrap.py",
+        "test_ember_wifi_setup.py",
+        "test_gemini_preflight.py",
+        "test_mvp.py",
+        "test_updater.py"
+      ]
+    }
+  ]
+}

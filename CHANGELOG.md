@@ -1,7 +1,48 @@
 # MVP (unreleased)
 
+- Integrate the tested language-adaptation instruction into the shared Ember
+  persona: follow the person's language, switches and mixed-language speech,
+  while keeping internal English messages in the conversation's language.
+  Preserve the rest of the persona/model settings and the measured limitations.
+
+- Record real Orange Pi language simulations: 80/81 automated response runs
+  passed across 240 turns; retain the Polish switching failure and synthetic
+  speech/ASR failures explicitly. Add automatic pass counts and reject/recheck
+  punctuation-only transcripts. Report the test-only prompt patch and measured
+  CPU/RAM/temperature/NPU evidence; add A733 viplite load sampling support.
+
+- Add multilingual simulation scenarios and a sourced 99-entry language candidate
+  catalog. Reuse the real-config Gemini evaluator for native turns, follow-ups,
+  language switching and Hindi-English mixing; optionally save synthetic reply
+  WAVs for review. Compile per-model/config statuses and only list audio languages
+  validated by repeated live runs, checks and exact-evidence human review. Add
+  offline regression coverage; API keys/raw audio stay local and no universal
+  language-support claim is made.
+
+- Add a shared, read-only Linux feature performance sampler for CPU, runtime/
+  descendant RSS, system RAM, exposed NPU/thermal sensors and existing speech
+  latency. Compare baseline/active/combined workloads, summarize mean/p95/peak
+  and gate explicit budgets/added p95 latency. Include sampler regression checks
+  in feature selections and the existing release gate; require performance
+  evidence for future feature PRs. Missing telemetry is reported, never zero.
+
+- Document OPi4 V1 with an organized feature/source/validation log and an optional
+  Graphify map/viewer. Keep board-specific evidence and pending live checks explicit.
+  Add `devops/EDITING_PROTOCOL.md`, a concise repository README and feature-owned
+  suite definitions under root `tests/`. `tests/run.py` supports full, feature and
+  changed-path validation; shared or unknown changes select all suites. Existing
+  CI/robot checks also include overall syntax, ownership and chat UI checks.
+
+- Add local speech detection and per-turn latency to the chat debugger. User
+  bubbles show speech/transcript timing and live reply waits; Ember bubbles show
+  reply arrival, scheduled speaker playback and response delays. Keep toolkit
+  start/end in one updating centered bubble and collapse the timing history.
+  Track output underruns, preserve interruption/reconnect cleanup, and support
+  a device override for speech-end sensitivity. Diagnostics use existing audio
+  streams, keep bounded local metadata, and omit ambiguous speech matches.
+
 - **Ember for Orange Pi: one repository for the Orange Pi 4 Pro and the Orange Pi 5
-  Max.** Made from JoeKojima/Baymax PR #29 (`opi4-demo`), PR #22 (`codex/opi4-flash`),
+  Max.** Made from JoeKojima/Baymax PR #29 (`opi4-demo`), PR #22 (the SD-image builder),
   the Orange Pi 5 Max branches `orangepi5-npu` + `memory-incremental-saves`,
   `orangepi-features` (opi4-demo with Svanik's PRs #23-#28 and #30 and the voice
   volume control: the entries below from "Let the person change how loud" to

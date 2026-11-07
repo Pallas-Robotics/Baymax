@@ -133,12 +133,14 @@ class VoiceVolumeWiringTests(unittest.TestCase):
     def test_the_speaker_scales_embers_voice_before_mixing_and_the_echo_reference(self):
         calls = []
         enhancer = Mock(full_duplex=True)
+        enhancer.output_latency_ms = 0
         enhancer.mix_output.side_effect = lambda chunk: calls.append(("mix", chunk)) or chunk + b""
         enhancer.rendered.side_effect = lambda chunk, info: calls.append(("rendered", chunk))
         loud = Mock()
         loud.apply.side_effect = lambda chunk: calls.append(("voice", chunk)) or b"\x01\x00" * (len(chunk) // 2)
         namespace = {"_playback_buffer": pcm(5, 5), "_playback_lock": threading.Lock(), "_waiting_cue": None,
-                     "_audio_enhancer": enhancer, "np": np, "OUTPUT_CHANNELS": 1, "voice_volume": loud}
+                     "_audio_enhancer": enhancer, "np": np, "OUTPUT_CHANNELS": 1, "voice_volume": loud,
+                     "monitor": Mock(), "RECEIVE_SAMPLE_RATE": 48000}
         with patch("test_public_core_integration.CORE", V10):
             callback = load_function("_output_callback", namespace)
         out = np.empty((4, 1), dtype="int16")

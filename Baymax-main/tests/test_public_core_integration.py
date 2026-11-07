@@ -6,7 +6,7 @@ import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 from features.toolkits import experimental
 
@@ -54,6 +54,7 @@ class CoreIntegrationTests(unittest.TestCase):
         handler = AsyncMock()
         receive = load_function("receive_audio", {"asyncio": asyncio, "time": time,
             "_TurnTranscript": lambda *a: SimpleNamespace(flush=lambda: None),
+            "monitor": SimpleNamespace(timing=Mock()),
             "public_toolkit": SimpleNamespace(handle_tool_call=handler),
             "_address_gate": SimpleNamespace(tool_call=lambda: None)})
         session = Session()
