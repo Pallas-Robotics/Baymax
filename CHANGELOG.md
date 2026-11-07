@@ -133,23 +133,25 @@
 - Gemini Live model fallback. Google shuts Ember's model,
   `gemini-2.5-flash-native-audio-preview-12-2025`, down as early as 2026-11-17; its
   replacement is `gemini-3.8-live`. `BAYMAX_LIVE_MODELS` (documented in `.env.example`)
-  lists the Live models in order: by default 2.5, then `gemini-3.8-live`. When this API key
-  can't use a model (Google refuses to set up a fresh connection, close 1007/1008, or closes
-  one before Gemini finished a turn saying the model is not found or no longer available),
-  Ember connects with the next one at once, logs it once and keeps it until it restarts,
-  without the old model's resume handle. A quota close ("1011 You exceeded your current
-  quota") never moves it: a per-minute or concurrent-session limit says the same and passes
-  in seconds, so Ember backs off and retries the same model. When every model has failed in
-  a row it waits as after any lost connection (0.3 s, doubling up to 4.8 s) and tries again:
-  no fast spin. Network drops, Google's resets and "1011 internal error" never switch. For Gemini 3 the config leaves out `thinking_config`
-  and declares Ember's functions `BLOCKING`, as 2.5 runs them; 2.5's config is unchanged.
-  `evals/live_eval.py --model gemini-3.8-live` tests a model with the same settings (without
-  `--model` the eval uses the list's first model). On Gemini 3 Ember sends no notes without
-  `turn_complete` (recalled memories, the family's profile update) until that eval's
-  memory-note scenario passes: the server waits for more input after one, and whether 3.x
-  still answers the person's next words is untested. On 2026-11-06 Ember's keys had no 3.8
-  quota ("1011 You exceeded your current quota") while 2.5 worked, so 2.5 stays first and
-  3.8 is untested live: MVP.md "Gemini model" says when and how to put it first.
+  lists the Live models in order: by default 2.5, then `gemini-3.8-live`. When this API
+  key can't use a model (Google refuses to set up a fresh connection, close 1007/1008,
+  or closes one before Gemini finished a turn saying the model is not found or no longer
+  available), Ember connects with the next one at once, logs it once and keeps it until
+  it restarts, without the old model's resume handle. A quota close ("1011 You exceeded
+  your current quota") never moves it: a per-minute or concurrent-session limit says the
+  same and passes in seconds, so Ember backs off and retries the same model. When every
+  model has failed in a row it waits as after any lost connection (0.3 s, doubling up to
+  4.8 s) and tries again: no fast spin. Network drops, Google's resets and "1011
+  internal error" never switch. For Gemini 3 the config leaves out `thinking_config` and
+  declares Ember's functions `BLOCKING`, as 2.5 runs them; 2.5's config is unchanged.
+  `evals/live_eval.py --model gemini-3.8-live` tests a model with the same settings
+  (without `--model` the eval uses the list's first model). On Gemini 3 Ember sends no
+  notes without `turn_complete` (recalled memories, the family's profile update) until
+  that eval's memory-note scenario passes: the server waits for more input after one,
+  and whether 3.x still answers the person's next words is untested. On 2026-11-06
+  Ember's keys had no 3.8 quota ("1011 You exceeded your current quota") while 2.5
+  worked, so 2.5 stays first and 3.8 is untested live: MVP.md "Gemini model" says when
+  and how to put it first.
 
 - The startup key check (`run_pc.py`) accepts the first model of `BAYMAX_LIVE_MODELS`
   that Google lists for the key. It required `MODEL` itself, so once 2.5 is retired it
@@ -176,32 +178,32 @@
   polled every 3 s, even while Gemini was replying, which can cut the reply off. It
   now waits for `available_to_speak()` and stays pending until then.
 
-- Speaker stream knobs for a board A/B of reply latency, documented in
-  `.env.example` and the conversational_ability README: `BAYMAX_OUTPUT_BLOCKSIZE` (frames per speaker callback, default
-  1024; 0 lets PortAudio choose) and `BAYMAX_OUTPUT_LATENCY` (`low`, `high` or
-  seconds; unset keeps sounddevice's default, `high`). Read once at start; bad
-  values warn and fall back. Unset, the stream is opened exactly as before; when
-  set, the stream's reported latency is logged at each connection.
+- Speaker stream knobs for a board A/B of reply latency, documented in `.env.example`
+  and the conversational_ability README: `BAYMAX_OUTPUT_BLOCKSIZE` (frames per speaker
+  callback, default 1024; 0 lets PortAudio choose) and `BAYMAX_OUTPUT_LATENCY` (`low`,
+  `high` or seconds; unset keeps sounddevice's default, `high`). Read once at start; bad
+  values warn and fall back. Unset, the stream is opened exactly as before; when set,
+  the stream's reported latency is logged at each connection.
 
-- Less work on the real-time threads. PortAudio's capture callback printed a
-  flushed `[MIC LEVEL]` line every 50 blocks, and a `[MIC STATUS]` line for every
-  input status (an overflow on every block while the event loop lags), each of which
-  can stall the capture when the log is slow; it now only stores the level and counts
-  the statuses, and the existing 3 s `[QUEUES]` monitor prints the level and, when
-  there were any, the latest status with how many came since its last report. The
-  `[PROFILE]` summaries print about every 10 s instead of every ~1 s
-  (each still covers the last 50 samples). The camera frame Gemini gets every 3 s is
-  resized and JPEG-encoded on a worker thread instead of the event loop that sends
-  the mic and plays replies.
+- Less work on the real-time threads. PortAudio's capture callback printed a flushed
+  `[MIC LEVEL]` line every 50 blocks, and a `[MIC STATUS]` line for every input status
+  (an overflow on every block while the event loop lags), each of which can stall the
+  capture when the log is slow; it now only stores the level and counts the statuses,
+  and the existing 3 s `[QUEUES]` monitor prints the level and, when there were any, the
+  latest status with how many came since its last report. The `[PROFILE]` summaries
+  print about every 10 s instead of every ~1 s (each still covers the last 50 samples).
+  The camera frame Gemini gets every 3 s is resized and JPEG-encoded on a worker thread
+  instead of the event loop that sends the mic and plays replies.
 
 - Expected 10 ms less mic delay: v10 captures 960-sample (20 ms) mic blocks instead of
   1024. The WebRTC audio cleanup works in whole 10 ms frames (480 samples), so
   1024-sample blocks kept a permanent 10 ms carry; 960 are two whole frames, cleaned and
   sent at once. Not measured yet: the saving needs the host to deliver 960-frame
   periods, and where the device keeps 1024 (some PipeWire/ALSA setups) PortAudio's
-  buffer adapter holds a carry of its own. The Orange Pi 5 Max A/B will tell. The carry now starts empty and appears only for a block that isn't whole
-  frames (v8's 1024 still works as before), and the stale-audio count uses the real
-  block length. `evals/live_eval.py` sends speech in the runtime's own block size.
+  buffer adapter holds a carry of its own. The Orange Pi 5 Max A/B will tell. The carry
+  now starts empty and appears only for a block that isn't whole frames (v8's 1024 still
+  works as before), and the stale-audio count uses the real block length.
+  `evals/live_eval.py` sends speech in the runtime's own block size.
 
 - Faster, quieter reconnects. Every session end used to wait 2 s, then reset
   PortAudio with a blocking 5 s `time.sleep` on the event loop and choose the audio
