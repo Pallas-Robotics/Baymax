@@ -227,6 +227,15 @@ class ProactiveTests(unittest.TestCase):
         greeter._run()
         self.assertTrue(greeter.state.startswith("Unavailable"))
 
+    def test_the_face_model_is_fetched_before_its_process_starts(self):
+        # The vision process stops a child that has not loaded in 60 s; a slow first
+        # download must not count against that.
+        order = []
+        with patch.object(proactive, "ensure_model", side_effect=lambda: order.append("download")), \
+                patch("features.vision_process.Remote", side_effect=lambda factory: order.append("start")):
+            proactive.remote_face()
+        self.assertEqual(order, ["download", "start"])
+
     def test_face_checks_slow_to_once_a_second_while_nobody_is_in_view(self):
         faces = iter([None, None, object()])
         greeter = Proactive(landmarks_factory=lambda: SimpleNamespace(detect=lambda frame: next(faces)),

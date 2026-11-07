@@ -797,6 +797,56 @@ class PoseProcessRestartTests(unittest.TestCase):
         self.assertEqual(opened, [])
         self.assertEqual(latest[:-1], ["frame2", "frame3", "frame4", "frame5", "frame6"])
 
+    HANGING = textwrap.dedent('''
+        import time
+
+        class Pose:
+            """Like ChildPose: the NPU child answers its first frame and never its second (as
+            if librknnrt were stuck in the driver); the CPU child (allow_npu=False) answers."""
+            def __init__(self, model_path, allow_npu=True):
+                self.device = "NPU" if allow_npu else "CPU"
+                self.frames = 0
+
+            def detect(self, frame):
+                self.frames += 1
+                if self.device == "NPU" and self.frames == 2:
+                    time.sleep(3600)
+                return None
+    ''')
+
+    def test_a_hung_pose_process_is_stopped_and_restarted_once_on_the_cpu(self):
+        # Real vision processes: before the watchdog, the camera thread (and so video to
+        # Gemini, face presence and fall detection) waited on a hung child for good.
+        from functools import partial
+        from features.vision_process import Remote
+        import test_toolkit_vision_process as vision_tests
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        Path(directory.name, "fake_hanging_pose.py").write_text(self.HANGING)
+        sys.path.insert(0, directory.name)
+        self.addCleanup(sys.path.remove, directory.name)
+        self.addCleanup(sys.modules.pop, "fake_hanging_pose", None)
+        import fake_hanging_pose
+        path = os.pathsep.join(filter(None, (directory.name, os.environ.get("PYTHONPATH"))))
+        with patch.dict(os.environ, {"PYTHONPATH": path}):
+            vision_tests.quick_watchdog(self, timeout=0.5)
+            npu = Remote(partial(fake_hanging_pose.Pose, "pose_landmarker_lite.task", allow_npu=True))
+            self.addCleanup(npu.close)
+            cpu = Remote(partial(fake_hanging_pose.Pose, "pose_landmarker_lite.task", allow_npu=False))
+            self.addCleanup(cpu.close)
+        for pose in (npu, cpu):    # these run first: never leave a hung child behind
+            self.addCleanup(lambda child=pose.child: child.poll() is None and child.kill())
+        outcome, took = vision_tests.finishes(self, lambda: self.run_thread([npu, cpu]))
+        ns, latest, faces, opened, logged = outcome["value"]
+        self.assertEqual(opened, [False, True])     # NPU allowed first, then forced to the CPU
+        self.assertIn("Pose process failed (vision process hung: no reply in 0.5 s, so it was stopped); "
+                      "restarting it on the CPU.", logged)
+        self.assertEqual(latest, ["frame2", "frame3", "frame4", "frame5", "frame6", None])
+        self.assertEqual([c.kwargs["device"] for c in ns["fall_worker"].share.call_args_list],
+                         ["NPU", "CPU", "CPU", "CPU"])
+        self.assertIsNotNone(npu.child.wait(timeout=2))      # stopped, not left hanging
+        self.assertLess(took, 5)
+
 
 class PoseModelDownloadTests(unittest.TestCase):
     """_ensure_pose_model writes through a link (the 4 Pro image links each release's

@@ -145,8 +145,9 @@ def _open_pose(force_cpu=False):
     """Pose in its own process (features/vision_process.py): in Ember's process it held the
     GIL and starved the mic and Gemini I/O. The RK3588 NPU (checked full model) when ready
     and camera.pose_model is lite/full, else MediaPipe with camera.pose_model; heavy and
-    force_cpu always use MediaPipe on the CPU. None if the process could not start (the
-    camera thread then tries once on the CPU, or keeps video only)."""
+    force_cpu always use MediaPipe on the CPU. None if the process could not start, or
+    hung for 60 s while loading (the camera thread then tries once on the CPU, or keeps
+    video only)."""
     from functools import partial
     from features.vision_process import Remote
     from features.pose.backend import ChildPose
@@ -1139,8 +1140,9 @@ def _fall_detection_thread():
     process (_open_pose: the RK3588 NPU or MediaPipe on the CPU), draws visual
     overlays and shares frames with the Gemini video sender and the MJPEG stream,
     and runs fall detection.  The pose landmarks are also used for face presence
-    (conversation initiation). If the pose process cannot start or later fails, it is
-    started again once, on the CPU; video continues either way."""
+    (conversation initiation). If the pose process cannot start, later fails or hangs
+    (no reply to a frame in 5 s: features/vision_process.py stops it), it is started
+    again once, on the CPU; video continues either way."""
     global _latest_frame, _annotated_frame, _annotated_inputs
 
     pose_model_ready = False
@@ -1243,7 +1245,7 @@ def _fall_detection_thread():
                 pose_t0 = time.monotonic()
                 try:
                     landmarks = landmarker.detect(frame)
-                except RuntimeError as error:  # vision process died/hung up or its model raised
+                except RuntimeError as error:  # vision process died, hung (and was stopped) or its model raised
                     landmarker.close()
                     landmarker = None
                     if not pose_restarts:

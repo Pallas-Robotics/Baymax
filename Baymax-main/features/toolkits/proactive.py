@@ -161,8 +161,10 @@ class FaceLandmarks:
 
 
 def remote_face():
-    """FaceLandmarks in its own process, so inference cannot stall the mic or Gemini I/O."""
+    """FaceLandmarks in its own process, so inference cannot stall the mic or Gemini I/O.
+    The model is fetched here first: the child gets a limited time to start (vision_process)."""
     from features.vision_process import Remote
+    ensure_model()
     return Remote(FaceLandmarks)
 
 

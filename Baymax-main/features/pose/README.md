@@ -19,7 +19,7 @@ it makes itself; the camera thread calls `detect(frame)` and gets the landmarks 
 as plain tuples. `allow_npu` is false for `camera.pose_model = "heavy"` (the NPU was
 only checked against the full model) and when the thread starts a child again on the
 CPU, once, after one could not start (a crash while setting up the NPU happens before
-the child's first reply) or died. On the NPU the checked `pose_landmarker_full` models run whatever .task the
+the child's first reply), died or hung. On the NPU the checked `pose_landmarker_full` models run whatever .task the
 runtime uses for MediaPipe (lite by default).
 Output is `None` or 33 landmarks with MediaPipe's `x, y, z, visibility, presence`
 (same conventions as `NormalizedLandmark`), so `FallDetector`, face presence, the
@@ -30,6 +30,22 @@ shown in the fall toolkit status as `Running on NPU (core pose)`. The port (NPU 
 ONNX) takes the detection, presence and tracking confidences from the MediaPipe
 options (`default_mediapipe_options`: 0.5 each), so it and its MediaPipe fallback use
 the same thresholds.
+
+A child that hangs without exiting (e.g. librknnrt stuck in the NPU driver) is killed
+by `Remote`'s watchdog once a frame has had no reply for 5 s (`Remote.timeout`), or the
+start (imports and model load; the NPU's setup and warm-up measured 0.6-1.7 s) for 60 s
+(`Remote.start_timeout`); the call then raises `RuntimeError("vision process hung: no
+reply in 5 s, so it was stopped")` like a child that died, so the thread restarts pose
+once on the CPU as above. Before, the camera thread waited for good, and with it video
+to Gemini, face presence and fall detection. The watchdog is one thread per child that
+looks twice a second (a hang is stopped 5-5.5 s after the frame was sent); a frame only
+stores its deadline, so there is no timer thread or lock per frame. On a Mac (640x480
+frames, an instant model, 2000 round trips, medians of 5 runs) the parent's CPU per
+round trip was 238 µs with the watchdog and 219 µs without it (within run-to-run
+noise: 242 and 250 µs in another set), but 441 µs with a `threading.Timer` per frame
+(opi4-demo's design). Models are downloaded before a child starts, so a slow download
+never counts against the 60 s. A child stuck inside a kernel call dies only when the
+driver returns, and the call waits until then.
 
 | `BAYMAX_POSE_BACKEND` | Behaviour |
 |---|---|
@@ -227,6 +243,14 @@ model weights are committed.
 - A parity test against real MediaPipe runs when converted ONNX models, onnxruntime,
   mediapipe, the .task and the sample image are present, and is skipped otherwise.
 
+`tests/test_toolkit_vision_process.py`: a fake child that never answers a frame is killed
+and the call raises within the limit; one that never finishes loading is stopped after
+the start limit (not a frame's), and no process is left; a load slower than a frame's
+limit is kept; one watchdog thread per child, no thread or timer per frame.
+`tests/test_v10_runtime.py`: the camera thread with real vision processes, an NPU child
+that hangs on its second frame is stopped and pose restarts once on the CPU while video
+continues.
+
 `tests/test_toolkit_fall_detection.py` covers the `NPU (core pose)` status.
 
 ## Limits
@@ -261,7 +285,8 @@ librknnrt and toolkits 2.3.2), with Ember stopped (VALIDATION.md, "On the Orange
   on clips before relying on the NPU for fall detection.
 
 Pending: Ember itself running end to end with the NPU (live camera thread, Monitor
-`Running on NPU (core pose)`, a mid-run fallback, a conversation alongside), the
+`Running on NPU (core pose)`, a mid-run fallback, a conversation alongside), a real hung
+NPU call stopped by the watchdog (only fake children were tested), the
 camera loop with the Orange Pi's 1-frame camera buffer (loop FPS and frame age),
 thermals over a long run, and fall accuracy at home (real rooms, older adults, two
 people in view).

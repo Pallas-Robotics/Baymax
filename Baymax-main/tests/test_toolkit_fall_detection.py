@@ -266,6 +266,16 @@ class FallModelAndSettingsTests(unittest.TestCase):
             fetch.assert_called_once()
             self.assertEqual(path.read_bytes(), data)
 
+    def test_the_own_model_is_fetched_before_its_pose_process_starts(self):
+        # The vision process stops a child that has not loaded in 60 s; a slow first
+        # download (~9.4 MB) must not count against that.
+        order = []
+        with patch.object(fall, "ensure_model", side_effect=lambda path: order.append("download") or Path("m.task")), \
+                patch("features.vision_process.Remote", side_effect=lambda factory: order.append(factory.args)):
+            fall.remote_pose()
+            fall.remote_pose("given.task")                      # a given model is not fetched
+        self.assertEqual(order, ["download", (Path("m.task"),), ("given.task",)])
+
     def test_bad_model_is_not_saved_or_accepted(self):
         with tempfile.TemporaryDirectory() as directory:
             path=Path(directory)/"pose.task"

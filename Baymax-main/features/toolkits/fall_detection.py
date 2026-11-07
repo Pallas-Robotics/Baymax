@@ -73,9 +73,11 @@ class CpuPose:
 
 
 def remote_pose(model_path=None):
-    """CpuPose in its own process, so inference cannot stall the mic or Gemini I/O."""
+    """CpuPose in its own process, so inference cannot stall the mic or Gemini I/O. The
+    model is fetched here first: the child gets a limited time to start (vision_process)."""
     from functools import partial
     from features.vision_process import Remote
+    model_path = model_path or ensure_model(ROOT / ".models/pose_landmarker_full.task")
     return Remote(partial(CpuPose, model_path))
 
 
