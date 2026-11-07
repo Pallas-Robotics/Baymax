@@ -13,6 +13,28 @@
   tests pass; the live `language-*` runs of `evals/live_eval.py` and a Hindi
   check on the robot are pending.
 
+- Orange Pi 5 Max core layout. Everything below applies only while Ember is
+  pinned to the fast cores (cpu4-7; `BAYMAX_CPU_PINNING=auto` on an RK3588), so
+  the Orange Pi 4 Pro (not pinned by default), x86 PCs, macOS and Windows run as
+  before. Every thread of Ember's own process stays on the A76s (they share one
+  GIL). Python's GIL switch interval drops from 5 ms to 1 ms
+  (`BAYMAX_GIL_SWITCH_MS`; 5 restores it): the mic callback lets go of the GIL
+  inside every WebRTC frame and must win it back, and on the board it took about
+  2.5 ms at the median but 9.3-10.2 ms at p99, as long with pose on the NPU as on
+  the CPU. Thread pools that only spun or idled there are single-threaded:
+  OpenCV's in Ember and the vision processes, and `OPENBLAS_NUM_THREADS=1`,
+  `OPENCV_FOR_THREADS_NUM=1`, `TOKENIZERS_PARALLELISM=false` for Ember and what
+  it starts, unless already set (ONNX Runtime keeps its two threads for memory
+  lookups). The pose process (NPU or MediaPipe) places itself on the fast cores
+  at nice 5 before its model starts, since the NPU path's CPU work would miss the
+  100 ms frame budget on an A55; the opt-in eye-contact (face) process goes to
+  the slow cores at nice 10. `BAYMAX_VISION_CPUS=fast|slow` moves both, to
+  measure. Nice values only go up; no real-time scheduling, and the audio cleanup
+  and memory stay in Ember's process. The effect on the mic callback's tail is
+  expected, not measured yet: the full-system A/B on the board is pending.
+  `features/pose/benchmark.py`, which pins itself like Ember, now also runs with
+  these settings. Offline tests pass.
+
 - Address gate: a name said just before Gemini ends a turn without replying is
   no longer forgotten. On ember-002 "Amber, please response." was followed by an
   empty turn, and the reply "I'm here." in the next turn was dropped. Speech

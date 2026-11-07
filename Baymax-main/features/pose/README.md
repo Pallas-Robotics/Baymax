@@ -13,9 +13,13 @@ When the camera thread starts, `realtime_gemini_10.py` (`_open_pose`) starts a c
 process with `Remote(partial(ChildPose, <camera.pose_model .task>, allow_npu=...))`
 (`features/vision_process.py`): in Ember's own process pose held Python's GIL and
 delayed the microphone and Gemini I/O, and a crash in the NPU runtime now ends only
-that child. Inside it `ChildPose` calls `create_pose_backend(model_path=...)` once,
-then `detect(frame_bgr, timestamp_ms)` per frame with strictly increasing timestamps
-it makes itself; the camera thread calls `detect(frame)` and gets the landmarks back
+that child. Where Ember runs on the RK3588's fast cores, the child places itself there
+at nice 5, with OpenCV's thread pool off, before the backend starts any thread
+(`pc_hardware.place_vision_child`; ORANGE_PI_SETUP.md, Fast cores): on an A55 the NPU
+path's own CPU work would take 3.6-5x as long. Inside it `ChildPose` calls
+`create_pose_backend(model_path=...)` once, then `detect(frame_bgr, timestamp_ms)` per
+frame with strictly increasing timestamps it makes itself; the camera thread calls
+`detect(frame)` and gets the landmarks back
 as plain tuples. `allow_npu` is false for `camera.pose_model = "heavy"` (the NPU was
 only checked against the full model) and when the thread starts a child again on the
 CPU, once, after one could not start (a crash while setting up the NPU happens before
@@ -228,6 +232,9 @@ model weights are committed.
   mediapipe, the .task and the sample image are present, and is skipped otherwise.
 
 `tests/test_toolkit_fall_detection.py` covers the `NPU (core pose)` status.
+`tests/test_toolkit_vision_process.py` checks that a real child places itself (as pose or
+as face landmarks) before it builds its model, and `tests/test_pc_hardware.py` where each
+goes and that nothing moves while Ember is not pinned.
 
 ## Limits
 

@@ -8,6 +8,9 @@ cores. Only frames go in and plain landmark tuples come back over its pipes.
 The core camera thread's pose child runs features.pose.backend.ChildPose: on an
 Orange Pi 5 (RK3588) that passed the NPU check it drives the NPU (RKNN) from here,
 else MediaPipe on the CPU. A crash in the NPU runtime ends this child, not Ember.
+Where Ember runs on the RK3588's fast cores, the child places itself before it builds
+its model (pc_hardware.place_vision_child): pose stays on the fast cores at nice 5,
+face landmarks go to the slow cores at nice 10.
 
     model = Remote(FaceLandmarks)      # any picklable factory with .detect(frame)
     landmarks = model.detect(frame)    # list[Point] or None, as the local model
@@ -86,6 +89,21 @@ class Remote:
         self.close()
 
 
+def _place(factory):
+    """This child's cores and priority, set before the model starts any thread (they inherit
+    both): pc_hardware.place_vision_child, which changes nothing unless Ember runs on the fast
+    cores. A model class with vision_role = "face" (FaceLandmarks) is placed as face
+    landmarks, anything else as pose. Placement only saves time: an error never stops the model."""
+    role = "face" if getattr(getattr(factory, "func", factory), "vision_role", None) == "face" else "pose"
+    try:
+        import pc_hardware
+        if pc_hardware.place_vision_child(role):
+            import cv2
+            cv2.setNumThreads(1)  # one colour conversion or crop a frame: no OpenCV pool spinning beside it
+    except Exception as error:
+        print(f"[VISION] Core placement skipped ({type(error).__name__}: {error})", flush=True)
+
+
 def main():
     requests = sys.stdin.buffer
     # Replies get their own copy of the pipe; descriptor 1 then points at stderr, so
@@ -103,7 +121,9 @@ def main():
         replies.flush()
 
     try:
-        model = pickle.load(requests)()
+        factory = pickle.load(requests)
+        _place(factory)  # first: the model's threads inherit the cores and the nice value
+        model = factory()
     except Exception as error:
         reply("error", f"{type(error).__name__}: {error}")
         return
