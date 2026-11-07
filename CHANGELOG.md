@@ -184,9 +184,12 @@
   set, the stream's reported latency is logged at each connection.
 
 - Less work on the real-time threads. PortAudio's capture callback printed a
-  flushed `[MIC LEVEL]` line every 50 blocks, which can stall the capture when the
-  log is slow; it now only stores the level, and the existing 3 s `[QUEUES]` monitor
-  prints it. The `[PROFILE]` summaries print about every 10 s instead of every ~1 s
+  flushed `[MIC LEVEL]` line every 50 blocks, and a `[MIC STATUS]` line for every
+  input status (an overflow on every block while the event loop lags), each of which
+  can stall the capture when the log is slow; it now only stores the level and counts
+  the statuses, and the existing 3 s `[QUEUES]` monitor prints the level and, when
+  there were any, the latest status with how many came since its last report. The
+  `[PROFILE]` summaries print about every 10 s instead of every ~1 s
   (each still covers the last 50 samples). The camera frame Gemini gets every 3 s is
   resized and JPEG-encoded on a worker thread instead of the event loop that sends
   the mic and plays replies.

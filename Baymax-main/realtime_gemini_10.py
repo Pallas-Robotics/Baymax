@@ -635,6 +635,9 @@ _last_robot_speech_ts = time.monotonic()  # last time the robot produced audio
 _last_user_speech_ts = 0.0                # last time the user was heard (transcription)
 _last_loud_mic_ts = 0.0                   # last mic frame above the speech RMS floor
 _mic_level = None                         # (rms, peak) of the latest mic block; monitor_queues prints it
+_mic_statuses = 0                         # PortAudio input statuses so far (e.g. input overflow)
+_mic_status = ""                          # the latest one; monitor_queues prints them
+_mic_statuses_shown = 0                   # how many of them monitor_queues has reported
 _initiation_ts_lock = threading.Lock()
 
 # ─── Audio recording for voice biomarker analysis ───────────────────────────
@@ -1049,6 +1052,7 @@ def start_output_stream() -> sd.OutputStream:
 
 # ─── Queue monitor ────────────────────────────────────────────────────────────
 async def monitor_queues(interval: float = 3.0):
+    global _mic_statuses_shown
     while True:
         await asyncio.sleep(interval)
         with _playback_lock:
@@ -1065,6 +1069,10 @@ async def monitor_queues(interval: float = 3.0):
         level = _mic_level
         if level is not None:
             print(f"[MIC LEVEL] rms={level[0]:.0f}  peak={level[1]}  (max=32767)", flush=True)
+        statuses = _mic_statuses
+        if statuses != _mic_statuses_shown:
+            print(f"[MIC STATUS] {_mic_status} ({statuses - _mic_statuses_shown} since the last report)", flush=True)
+            _mic_statuses_shown = statuses
 
 # ─── Audio Writer Thread (records user speech to WAV) ────────────────────────
 def _audio_writer_thread():
@@ -1678,9 +1686,11 @@ async def listen_audio():
     #           flush=True)
 
     def audio_callback(indata, frames, time_info, status):
-        global _last_loud_mic_ts, _mic_level
+        global _last_loud_mic_ts, _mic_level, _mic_status, _mic_statuses
         if status:
-            print(f"[MIC STATUS] {status}", flush=True)
+            # monitor_queues reports it, like the level: a flushed print here, on PortAudio's
+            # capture thread, can stall the capture when the log is slow.
+            _mic_status, _mic_statuses = str(status), _mic_statuses + 1
 
         # Downmix stereo to mono for Gemini if hardware requires 2 channels
         if INPUT_CHANNELS > 1:

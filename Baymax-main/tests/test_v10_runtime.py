@@ -1035,7 +1035,7 @@ class RealTimeThreadTests(unittest.TestCase):
               "_initiation_ts_lock": threading.Lock(), "_last_loud_mic_ts": 0.0,
               "sd": SimpleNamespace(InputStream=Stream), "SEND_SAMPLE_RATE": 48000, "CHUNK_SIZE": 960,
               "_playback_lock": threading.Lock(), "_playback_buffer": b"", "_transcript_lock": threading.Lock(),
-              "_transcript": [], "_transcript_saved": 0}
+              "_transcript": [], "_transcript_saved": 0, "_mic_statuses": 0, "_mic_statuses_shown": 0}
         with patch("test_public_core_integration.CORE", V10):
             for name in ("listen_audio", "monitor_queues"):
                 load_function(name, ns)
@@ -1059,6 +1059,60 @@ class RealTimeThreadTests(unittest.TestCase):
                 self.assertRaises(asyncio.CancelledError):
             asyncio.run(ns["monitor_queues"](interval=3.0))
         self.assertIn("[MIC LEVEL] rms=1500  peak=1500  (max=32767)", [c.args[0] for c in printed.call_args_list])
+
+    def test_mic_statuses_are_counted_on_the_capture_thread_and_printed_by_the_queue_monitor(self):
+        import numpy as np
+        import queue
+        samples = np.full((960, 1), 10, dtype=np.int16)
+        overflow = type("Flags", (), {"__bool__": lambda self: True, "__str__": lambda self: "input overflow"})()
+
+        class Stream:
+            latency = .02
+
+            def __init__(self, **kwargs):
+                self.callback = kwargs["callback"]
+
+            def __enter__(self):
+                for _ in range(3):
+                    self.callback(samples, 960, None, overflow)  # e.g. the event loop fell behind
+                self.callback(samples, 960, None, None)
+
+            def __exit__(self, *args):
+                pass
+        ns = {"asyncio": asyncio, "np": np, "queue": queue, "time": time, "_audio_enhancer": None,
+              "_waiting_cue": None, "INPUT_CHANNELS": 1, "_audio_record_queue": queue.Queue(),
+              "audio_queue_mic": asyncio.Queue(), "INTERRUPT_RMS_THRESHOLD": 1000,
+              "_initiation_ts_lock": threading.Lock(), "_last_loud_mic_ts": 0.0, "_mic_level": None,
+              "_mic_statuses": 0, "_mic_status": "", "_mic_statuses_shown": 0,
+              "sd": SimpleNamespace(InputStream=Stream), "SEND_SAMPLE_RATE": 48000, "CHUNK_SIZE": 960,
+              "_playback_lock": threading.Lock(), "_playback_buffer": b"", "_transcript_lock": threading.Lock(),
+              "_transcript": [], "_transcript_saved": 0}
+        with patch("test_public_core_integration.CORE", V10):
+            for name in ("listen_audio", "monitor_queues"):
+                load_function(name, ns)
+
+        async def capture():
+            try:
+                await asyncio.wait_for(ns["listen_audio"](), .02)
+            except TimeoutError:
+                pass
+        with patch("builtins.print") as printed:
+            asyncio.run(capture())
+        self.assertEqual(printed.call_count, 0)       # was a flushed [MIC STATUS] line per status
+
+        async def ticks(count):
+            seen = []
+
+            async def tick(seconds):
+                seen.append(seconds)
+                if len(seen) > count:
+                    raise asyncio.CancelledError()
+            with patch("asyncio.sleep", tick), self.assertRaises(asyncio.CancelledError):
+                await ns["monitor_queues"](interval=3.0)
+        with patch("builtins.print") as printed:
+            asyncio.run(ticks(2))                     # two reports: the second has nothing new
+        statuses = [c.args[0] for c in printed.call_args_list if "[MIC STATUS]" in c.args[0]]
+        self.assertEqual(statuses, ["[MIC STATUS] input overflow (3 since the last report)"])
 
     def test_profile_summaries_print_about_every_ten_seconds(self):
         import collections
