@@ -116,11 +116,13 @@ class FallWorker:
         """shared_pose=True: the core already runs pose on every frame and passes its
         landmarks to share(), so this worker loads no second model. builtin=True: the
         core's own fall detection is on and sends the possible-fall check-in, so this
-        worker still detects and reports (Monitor) but queues no second check-in."""
+        worker still detects and reports (Monitor) but queues no second check-in. Only
+        with shared_pose: on its own model the core has no landmarks to check, so this
+        worker still checks in."""
         if self.thread and self.thread.is_alive():
             return
         self.shared = bool(shared_pose)
-        self.builtin = bool(builtin)
+        self.builtin = bool(builtin) and self.shared    # the core sees no pose otherwise
         self.running_state = self._running_label()
         self.is_enabled = enabled()
         if not self.is_enabled:

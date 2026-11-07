@@ -213,6 +213,14 @@ class FallWorkerTests(unittest.TestCase):
         self.assertIsNotNone(self.worker.pop_alert())
         self.record.assert_any_call("Possible fall detected locally; awaiting a check-in. No external alert sent.")
 
+    def test_with_its_own_model_the_toolkit_checks_in_even_with_builtin_on(self):
+        # The core's fall detection only sees the core's pose; without shared_pose nobody else checks in.
+        self.worker.start(builtin=True, angle_threshold=45)
+        self.worker.submit(np.zeros((2, 2, 3), dtype=np.uint8))
+        self.wait_for(lambda: self.worker.status()["last_result"] is not None)
+        self.assertIsNotNone(self.worker.pop_alert())
+        self.record.assert_any_call("Possible fall detected locally; awaiting a check-in. No external alert sent.")
+
     def test_unshared_worker_ignores_core_landmarks(self):
         self.worker.start(angle_threshold=45)
         self.worker.share([SimpleNamespace()], 1.0)
