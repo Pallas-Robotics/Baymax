@@ -7,6 +7,7 @@ import unittest
 from unittest.mock import Mock, patch
 
 import requests
+from features.conversational_ability import live_models
 from gemini_preflight import PreflightError, configured_models, validate_key
 import run_pc
 
@@ -77,6 +78,33 @@ class GeminiPreflightTests(unittest.TestCase):
             validate_key(KEY, RUNTIME, factory)
         self.assertNotIn(KEY, str(error.exception))
 
+    # ── v10's Live models (BAYMAX_LIVE_MODELS): one this key can use is enough ──
+    def listed(self, *codes):
+        """validate_key with the Live models a and b in MODEL's place; Google answers
+        each request with the next code (200 lists the model)."""
+        responses = [SimpleNamespace(status_code=code, json=lambda: {"name": "models/m"}) for code in codes]
+        factory, session = self.session(responses)
+        asked = []
+        result = validate_key(KEY, RUNTIME, factory, live_models=lambda model: asked.append(model) or ("a", "b"))
+        self.assertEqual(asked, [configured_models(RUNTIME)[0]])  # given the runtime's MODEL
+        return result, [call.args[0].rsplit("/", 1)[1] for call in session.get.call_args_list]
+
+    def test_a_live_model_google_does_not_list_for_the_key_is_passed_over(self):
+        summary = configured_models(RUNTIME)[1]
+        self.assertEqual(self.listed(404, 200, 200), (("b", summary), ["a", "b", summary]))
+        # The first one listed is enough: no request (and no wait) for the rest.
+        self.assertEqual(self.listed(200, 200), (("a", summary), ["a", summary]))
+
+    def test_startup_stops_when_the_key_can_use_no_live_model(self):
+        with self.assertRaises(PreflightError) as error:
+            self.listed(404, 404)
+        self.assertIn("(a, b)", str(error.exception))
+        self.assertIn("BAYMAX_LIVE_MODELS", str(error.exception))
+        for code, text in ((401, "rejected"), (403, "denied"), (429, "quota"), (503, "unavailable")):
+            with self.subTest(code=code), self.assertRaises(PreflightError) as error:
+                self.listed(code)  # anything but "not found" stops startup at once, as before
+            self.assertIn(text, str(error.exception))
+
     def test_second_model_failure_also_stops_startup(self):
         factory, session = self.session([SimpleNamespace(status_code=200, json=lambda: {"name": "models/live"}),
                                         SimpleNamespace(status_code=403)])
@@ -112,6 +140,10 @@ class GeminiPreflightTests(unittest.TestCase):
             validate.assert_not_called()
             runtime.assert_not_called()
             self.assertNotIn(KEY, output)
+
+    def test_startup_checks_the_live_models_v10_will_try(self):
+        _, _, validate, _, _ = self.startup()
+        self.assertIs(validate.call_args.kwargs["live_models"], live_models.configured)
 
     def test_success_loads_runtime_only_after_validation(self):
         result, output, _, _, order = self.startup()

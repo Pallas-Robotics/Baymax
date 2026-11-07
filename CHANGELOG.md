@@ -17,6 +17,12 @@
   quota ("1011 You exceeded your current quota") while 2.5 worked, so 2.5 stays first and
   3.8 is untested live: MVP.md "Gemini model" says when and how to put it first.
 
+- The startup key check (`run_pc.py`) accepts the first model of `BAYMAX_LIVE_MODELS`
+  that Google lists for the key. It required `MODEL` itself, so once 2.5 is retired it
+  would have stopped Ember from starting at all. A model that isn't listed ("not found")
+  is passed over for the next, asked about only then; any other error, or no model listed,
+  still stops startup with the same messages.
+
 - The receive loop no longer drops the end of a turn when a message's model turn has no
   parts: looping over `None` raised, and the rest of that message (its `turn_complete`:
   the speaking state, the address gate's turn end) was lost, followed by a 0.5 s pause.

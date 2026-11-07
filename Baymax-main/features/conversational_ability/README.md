@@ -324,6 +324,9 @@ runtime's `MODEL`). Google's deprecations page lists it for shutdown as early as
 - **Never** for a dropped network, Google's routine resets, "1011 internal error", or any
   error once Gemini has finished a turn on the connection: those reconnect with the same
   model, as before.
+- **Startup.** `run_pc.py`'s key check (`gemini_preflight.py`) accepts the first model of the
+  list that Google lists for the key, so a retired `MODEL` doesn't stop startup while the
+  next is available. It can't check Live quota: that is only known when connecting.
 - **Settings per model** (`adapt`, also used by `evals/live_eval.py --model`). Gemini 2.5
   gets the config unchanged. Gemini 3 and later: no `thinking_config` (Google: omit it,
   thinking is built in), and every function Ember declares without a behavior is sent as
