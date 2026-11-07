@@ -1,5 +1,15 @@
 # MVP (unreleased)
 
+- Google Search grounding is off by default; `BAYMAX_GOOGLE_SEARCH=1` turns it on.
+  With the built-in `google_search` tool next to Ember's function tools, the
+  native-audio model closed the session with "1011 internal error" whenever it
+  tried to call one: in `evals/live_eval.py` with the real MVP config (27 runs per
+  setting, 2026-11-06) reminder 0/3, radio 0/3 and weather 1/3 passed with search
+  on (7 errors); with it off 26 of 27 runs passed, no errors, and the first reply
+  audio came as fast (median 1.78-1.79 s). On the robot each error is a dropped
+  connection and a deaf reconnect. A private `.env` copied from the old
+  `.env.example` still has `BAYMAX_GOOGLE_SEARCH=1`: remove that line.
+
 - Address gate: a name said just before Gemini ends a turn without replying is
   no longer forgotten. On ember-002 "Amber, please response." was followed by an
   empty turn, and the reply "I'm here." in the next turn was dropped. Speech

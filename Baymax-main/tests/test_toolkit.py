@@ -95,6 +95,24 @@ class ToolkitTests(unittest.TestCase):
         self.assertEqual(result["system_instruction"], "base")
         self.assertNotIn("tools", result)
 
+    def test_google_search_is_off_unless_turned_on(self):
+        # Next to Ember's function tools, google_search made the native-audio model close
+        # the session (1011) whenever it called one: a dropped, deaf reconnect each time.
+        import os
+        from runtime_monitor import _search_status
+        base = {"system_instruction": "base", "tools": []}
+        for value in (None, "0", "", "yes"):
+            env = {key: v for key, v in os.environ.items() if key != "BAYMAX_GOOGLE_SEARCH"}
+            if value is not None:
+                env["BAYMAX_GOOGLE_SEARCH"] = value
+            with self.subTest(value=value), patch.dict('os.environ', {**env, "BAYMAX_TOOLKIT_ENABLED": "1"}, clear=True):
+                result = gemini_tools.extend_config(base)
+                self.assertFalse(gemini_tools.search_enabled())
+                self.assertEqual(_search_status(), "Disabled")
+            self.assertFalse(any("google_search" in t for t in result["tools"]))
+            self.assertNotIn("[GOOGLE SEARCH]", result["system_instruction"])
+            self.assertIn("get_weather", {d["name"] for t in result["tools"] for d in t.get("function_declarations", [])})
+
     def test_google_search_grounding_is_added_once_and_can_be_disabled(self):
         base = {"system_instruction": "base", "tools": []}
         with patch.dict('os.environ', {"BAYMAX_TOOLKIT_ENABLED": "1", "BAYMAX_GOOGLE_SEARCH": "1"}):

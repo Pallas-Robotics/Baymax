@@ -13,7 +13,18 @@ monitor. Robot v10 supports the same public tools through its adapter. See
 
 ## Conversational web discovery
 
-The existing Gemini Google Search tool can be used without an explicit search
+**Off by default; `BAYMAX_GOOGLE_SEARCH=1` turns it on.** With the built-in
+`google_search` tool next to Ember's function tools, the native-audio model
+(`gemini-2.5-flash-native-audio-preview-12-2025`) closed the session with "1011
+internal error" whenever it tried to call a function tool. Measured on 2026-11-06
+with `evals/live_eval.py` and Ember's real MVP config, 27 runs per setting: with
+search on, reminder 0/3, radio 0/3 and weather 1/3 passed (7 errors); with it off,
+26 of 27 runs passed with no errors, and the median time to the first reply audio
+was about the same (1.78-1.79 s). On the robot each such error is a dropped
+connection and a reconnect during which Ember can't hear. Turn it on again only to
+check whether a newer model has fixed this.
+
+When turned on, the existing Gemini Google Search tool can be used without an explicit search
 request when a public topic in an engaged conversation merits a relevant lookup.
 Ember is guided to share one sourced finding, connect it to the person's interest,
 and contribute a reaction or invite their view. It avoids research during venting
@@ -21,10 +32,10 @@ or ongoing storytelling, repeated searches, and invented sources or familiarity.
 Queries should contain public topic terms, not personal disclosures or transcripts;
 Google receives the query through Gemini's existing built-in search integration.
 No new provider, dependency, background worker or recording is added.
-`BAYMAX_GOOGLE_SEARCH=0` or `BAYMAX_TOOLKIT_ENABLED=0` disables this search tool.
-Offline coverage is in `tests/test_toolkit.py` (registration, idempotence and
-disabled behavior); relevant results, latency and natural spoken follow-ups still
-require live evaluation.
+Only `BAYMAX_GOOGLE_SEARCH=1` adds this search tool; `BAYMAX_TOOLKIT_ENABLED=0` removes
+it either way. Offline coverage is in `tests/test_toolkit.py` (off by default,
+registration, idempotence and disabled behavior); relevant results, latency and
+natural spoken follow-ups still require live evaluation.
 
 ## Location and weather
 
