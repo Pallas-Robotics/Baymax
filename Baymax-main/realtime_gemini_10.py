@@ -46,6 +46,10 @@ import queue
 import wave
 import requests as http_requests
 import cv2
+# Pinned to the RK3588's fast cores (pc_hardware.use_performance_cpus): no OpenCV thread pool.
+# Its three workers spun at 1.2-1.6% of a core each around the camera's 0.3 ms colour conversion.
+if os.getenv("BAYMAX_FAST_CPUS"):
+    cv2.setNumThreads(1)
 import sounddevice as sd
 import numpy as np
 # NOISE SUPPRESSION DISABLED (v10) — only the denoiser below used scipy.

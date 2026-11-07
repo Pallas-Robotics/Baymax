@@ -91,12 +91,67 @@ def pin_threads(cpus, tasks="/proc/self/task"):
             done.add(tid)
 
 
+# Recorded by use_performance_cpus for what Ember loads and starts later: the cores it runs
+# on (realtime_gemini_10.py turns off OpenCV's thread pool when it is set).
+FAST_CPUS_ENV = "BAYMAX_FAST_CPUS"
+# Library thread pools that only spun or idled next to Ember on the fast cores (Orange Pi 5
+# Max, full-system test): OpenCV's three workers at 1.2-1.6% of a core each around the
+# camera's 0.3 ms colour conversion, six idle OpenBLAS workers (numpy's and scipy's), and the
+# pool tokenizers starts at the first memory lookup. Each library reads its setting when it
+# loads, here and in child processes; a value already set (.env, the shell) wins. ONNX
+# Runtime keeps its two threads (semantic_embedder.THREADS): a lookup that is still running
+# when the reply starts holds back its first audio.
+LIBRARY_THREADS = {"OPENBLAS_NUM_THREADS": "1", "OPENCV_FOR_THREADS_NUM": "1",
+                   "TOKENIZERS_PARALLELISM": "false"}
+
+
+def _cpu_text(cpus):
+    return ",".join(str(cpu) for cpu in sorted(cpus))
+
+
+def gil_switch_ms():
+    """BAYMAX_GIL_SWITCH_MS: how many ms a thread may keep Python's GIL while another thread
+    waits for it, with Ember on the fast cores. 1 (default); 0 leaves Python's own (5 ms);
+    otherwise 0.1-100."""
+    text = os.getenv("BAYMAX_GIL_SWITCH_MS", "").strip()
+    if not text:
+        return 1.0
+    try:
+        value = float(text)
+    except ValueError:
+        value = -1.0
+    if value == 0 or 0.1 <= value <= 100:     # also rejects nan and inf
+        return value
+    print("[CPU] Invalid BAYMAX_GIL_SWITCH_MS; using 1 ms.", flush=True)
+    return 1.0
+
+
+def _fast_core_settings(fast):
+    """Only with Ember kept on the fast cores (the RK3588 by default): single-threaded
+    library pools, and a 1 ms GIL switch interval instead of Python's 5 ms. The mic callback
+    lets go of the GIL inside each WebRTC frame (2-3 times a block) and has to win it back
+    each time, waiting up to a whole interval: on the Orange Pi 5 Max it took about 2.5 ms at
+    the median but 9.3-10.2 ms at p99, just as long with pose on the NPU as on the CPU, so
+    the waits come from the GIL, not from busy cores. Returns the interval in ms (0: Python's
+    own was kept)."""
+    os.environ.setdefault(FAST_CPUS_ENV, _cpu_text(fast))
+    for name, value in LIBRARY_THREADS.items():
+        os.environ.setdefault(name, value)
+    switch_ms = gil_switch_ms()
+    if switch_ms:
+        sys.setswitchinterval(switch_ms / 1000)
+    return switch_ms
+
+
 def use_performance_cpus():
     """Keep Ember on the fast cores of an ARM big.LITTLE board: MediaPipe runs pose on one
     thread, about 5x slower on an A55 than an A76 (measured on the RK3588). Moves every
     thread that already exists and the caller; threads started later, and child processes
-    (the pose and face vision processes), inherit it. run_mvp.py and run_pc.py call it
-    first thing; a second call changes nothing and prints nothing.
+    (the pose and face vision processes), inherit it. Every thread of Ember's own process
+    stays there: they share one GIL, and whatever one did on an A55 while holding it would
+    keep the audio threads waiting 3.6-5x as long. Once pinned it applies
+    _fast_core_settings. run_mvp.py and run_pc.py call it first thing; a second call
+    changes nothing and prints nothing.
 
     BAYMAX_CPU_PINNING: auto (default) pins only on an RK3588 (Orange Pi 5 / 5 Max, where
     it was measured: 4 fast cores); on pins on any ARM big.LITTLE board, e.g. to try the
@@ -117,9 +172,11 @@ def use_performance_cpus():
         print(f"[CPU] Could not keep Ember on the fast cores ({error}); using all.", flush=True)
         return None
     pin_threads(cpus)
+    switch_ms = _fast_core_settings(cpus)
     if not already:
-        print(f"[CPU] Running on the fast cores {','.join(map(str, sorted(cpus)))} "
-              "(BAYMAX_CPU_PINNING=off to use all).", flush=True)
+        print(f"[CPU] Running on the fast cores {_cpu_text(cpus)}, GIL switch interval "
+              f"{switch_ms or sys.getswitchinterval() * 1000:g} ms (BAYMAX_CPU_PINNING=off to use all).",
+              flush=True)
     return cpus
 
 
