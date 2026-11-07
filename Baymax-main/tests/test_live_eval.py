@@ -87,6 +87,11 @@ class ConfigTests(unittest.TestCase):
         source = live_eval.CORE.read_text(encoding="utf-8")
         self.assertIn(f'MODEL = "{model}"', source)
         self.assertIn(persona.PERSONA, config["system_instruction"])
+        # Replies follow the person's language: the instruction reaches Gemini, and no
+        # fixed speech language overrides the native-audio model's own detection.
+        self.assertIn("[LANGUAGE]\nAlways reply in the language the person is speaking to you.",
+                      config["system_instruction"])
+        self.assertNotIn("language_code", config.get("speech_config", {}))
         self.assertEqual(config["response_modalities"], ["AUDIO"])
         self.assertEqual(config["realtime_input_config"]["activity_handling"], "NO_INTERRUPTION")
         self.assertIn("get_weather", live_eval.declared_tools(config))
