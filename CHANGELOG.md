@@ -1,17 +1,26 @@
 # MVP (unreleased)
 
-- Ember answers in the language the person speaks (James's `[LANGUAGE]` in
-  `features/persona.py`): Hindi gets Hindi, Spanish gets Spanish, a switch is
-  followed on the next reply, a Hindi-English mix gets the same mix, and Ember's
-  own English notes (`[FALL ALERT]`, reminders, check-ins) are answered in the
-  conversation's language. The native-audio model picks the language itself; no
-  `language_code` or transcription language is set (a test keeps it that way).
-  The offline pause words stay English, so Ember says "Hey Ember" and "stop" in
-  English; "Ember disengage" also counts when Gemini writes it in Devanagari
-  (the name also in Urdu script); memory lines are written in English for the
-  English-only embedder. Still English: the startup hello before anyone speaks
-  and the eye cues. Offline tests pass; the live `language-*` runs of
-  `evals/live_eval.py` and a Hindi check on the robot are pending.
+- Ember answers in the language the person speaks: Hindi gets Hindi, Spanish gets
+  Spanish, a switch is followed on the next reply, a Hindi-English mix gets the same
+  mix, and Ember's own English notes (`[FALL ALERT]`, reminders, check-ins) are
+  answered in the conversation's language. It is one `[LANGUAGE]` section in
+  `features/persona.py`: James's text (1779a2c), which Nate's PR #1 also carries and
+  his Orange Pi simulations tested (below), plus follow-ups tested live since: judge
+  the language by the words, not the accent or the transcript's script (English with
+  an Indian accent is English, Hindi in Urdu script is Hindi), never say a tag or start
+  a reply with one, and say the pause words "Hey Ember" and "stop" in English, which
+  the offline listener knows. The native-audio model picks the language itself; no
+  `language_code` or transcription language is set (a test keeps it that way). "Ember
+  disengage" also counts when Gemini writes it in Devanagari (the name also in Urdu
+  script); memory lines are written in English for the English-only embedder. Still
+  English: the startup hello before anyone speaks and the eye cues. Live
+  `evals/live_eval.py` runs (Gemini 2.5, 3 each, 2026-11-07): Hindi, the Hindi-English
+  weather question, the English pause words in Hindi and the Hindi name 3/3; Spanish,
+  Indian-accented English, the English-Hindi-Spanish switch and the Spanish reminder
+  2/3 (a reply over the word limit, English heard and answered in Malayalam script, a
+  Devanagari word in a Spanish reply, no reply); the Hindi fall check-in 0/3, two of
+  them right in Hindi but failed on the transcript's `[FALL ALERT]` tag (see the next
+  entry). A Hindi check on the robot is pending.
 
 - `evals/live_eval.py` checks what Ember says, not the transcript's tags: Gemini 2.5
   often writes the tag of the message it answers before its reply ("[FALL ALERT] ..."),
@@ -133,9 +142,11 @@
 - Robot updates: `check_release.py` no longer runs the repository's bookkeeping
   checks (`tests/overall/test_validation.py`: every test file listed in one
   `suite.json`, the suites `tests/run.py --changed` picks) on a robot. The Orange Pi
-  5 Max updater and the 4 Pro image run that gate before taking a release and roll
-  back when it fails, so one correct test file missing from a `suite.json` stopped
-  every robot updating (the 5 Max never retries that commit). CI, where GitHub sets
+  5 Max updater runs that gate before taking a release and rolls back when it fails
+  (the 4 Pro image runs it only for a release that reinstalls packages: a code-only
+  update reuses the installed environment, which `bootstrap.py` then accepts without
+  the gate), so one correct test file missing from a `suite.json` stopped robots
+  updating (the 5 Max never retries that commit). CI, where GitHub sets
   `GITHUB_ACTIONS=true`, and `tests/run.py` still run them; the source, chat UI and
   performance-sampler checks stay in the robots' gate. Offline: with an unlisted
   test file the gate now passes as a robot (core 571, toolkit 241) and fails in CI.
@@ -202,16 +213,16 @@
   speaker on PipeWire's default device: PortAudio reported 42.7 ms before and 10.7 ms
   after, and the audio cleanup measured about 96 ms and about 42 ms of output latency,
   with no output underflows (the timing monitor's counter, read every 2 s) in three
-  3.5-minute runs, one with MediaPipe pose on the CPU, and the mic and speaker callbacks'
-  timing unchanged. Two settings, documented in `.env.example` and the
+  3.5-minute runs, one with MediaPipe pose on the CPU, and the mic and speaker
+  callbacks' timing unchanged. Two settings, documented in `.env.example` and the
   conversational_ability README, change it: `BAYMAX_OUTPUT_BLOCKSIZE` (frames per
-  speaker callback, 64-4096) and `BAYMAX_OUTPUT_LATENCY` (`low`, `high` or seconds up to
-  0.5); a value in `.env` or the shell wins. Read once at start; a bad or out-of-range
-  value prints one line and falls back to 1024 / sounddevice's default (a longer block
-  than the echo reference's 250 ms, or more than 0.5 s of latency, would break echo
-  cancellation and the mute during replies). Elsewhere (the Orange Pi 4 Pro unless
-  pinned, x86, macOS, Windows) the stream is opened as before; when it isn't the
-  1024/default one, its reported latency is logged at each connection.
+  speaker callback, 64-4096) and `BAYMAX_OUTPUT_LATENCY` (`low`, `high` or seconds up
+  to 0.5); a value in `.env` or the shell wins. Read once at start; a bad or
+  out-of-range value prints one line and falls back to 1024 / sounddevice's default (a
+  longer block than the echo reference's 250 ms, or more than 0.5 s of latency, would
+  break echo cancellation and the mute during replies). Elsewhere (the Orange Pi 4 Pro
+  unless pinned, x86, macOS, Windows) the stream is opened as before; when it isn't
+  the 1024/default one, its reported latency is logged at each connection.
 
 - Less work on the real-time threads. PortAudio's capture callback printed a flushed
   `[MIC LEVEL]` line every 50 blocks, and a `[MIC STATUS]` line for every input status
@@ -316,11 +327,6 @@
   of "disengage" has not been seen live, so a transcript wholly in Urdu script does
   not disengage. Offline tests pass; live Hindi on the robot is pending.
 
-- Integrate the tested language-adaptation instruction into the shared Ember
-  persona: follow the person's language, switches and mixed-language speech,
-  while keeping internal English messages in the conversation's language.
-  Preserve the rest of the persona/model settings and the measured limitations.
-
 - Record real Orange Pi language simulations: 80/81 automated response runs
   passed across 240 turns; retain the Polish switching failure and synthetic
   speech/ASR failures explicitly. Add automatic pass counts and reject/recheck
@@ -346,8 +352,10 @@
   Graphify map/viewer. Keep board-specific evidence and pending live checks explicit.
   Add `devops/EDITING_PROTOCOL.md`, a concise repository README and feature-owned
   suite definitions under root `tests/`. `tests/run.py` supports full, feature and
-  changed-path validation; shared or unknown changes select all suites. Existing
-  CI/robot checks also include overall syntax, ownership and chat UI checks.
+  changed-path validation; shared or unknown changes select all suites. CI and the
+  robots' gate (`check_release.py`) also run the overall source-syntax and chat UI
+  checks; the ownership and suite-selection checks run in CI and `tests/run.py` only
+  (see "Robot updates" above).
 
 - Add local speech detection and per-turn latency to the chat debugger. User
   bubbles show speech/transcript timing and live reply waits; Ember bubbles show
@@ -389,7 +397,8 @@
     and restarted the same way (see "Pose: a pose process that hangs" above).
   - Fast-core pinning: `BAYMAX_CPU_PINNING=auto` (default) pins only on an RK3588,
     where it was measured; `on` pins on any ARM big.LITTLE board (to try the 4 Pro's
-    two A76s, which would also carry the pose/face processes); `off` never pins.
+    two A76s, which would then carry Ember and the pose process, with faces on the
+    A55s: see "Orange Pi 5 Max core layout" above); `off` never pins.
   - Kept from the 5 Max work: the live view drawn only while watched (replaces
     opi4-demo's viewer counter, with its tests), the 1-frame V4L2 buffer on ARM, the
     fall toolkit's shared pose, the per-platform MVP updater, memory saved during
@@ -690,10 +699,12 @@
   Live greeting variation remains pending.
 
 - Allow occasional topic-driven discovery through the existing Google Search
-  session tool: share one relevant sourced finding with a personal reaction or
-  invitation to discuss, without waiting for an explicit search request. Keep
-  private disclosures out of queries, respect storytelling and venting, and never
-  invent sources or previous familiarity. Live quality and latency remain pending.
+  session tool (when it is on: `BAYMAX_GOOGLE_SEARCH=1`, see "Google Search
+  grounding is off by default" above): share one relevant sourced finding with a
+  personal reaction or invitation to discuss, without waiting for an explicit
+  search request. Keep private disclosures out of queries, respect storytelling
+  and venting, and never invent sources or previous familiarity. Live quality
+  and latency remain pending.
 
 - Strengthen conversation guidance against praise-and-question loops: contribute
   a grounded thought, avoid invented categories and redundant confirmation,
@@ -928,8 +939,9 @@
     Pi 5 Max with 500 memories: a lookup takes 34 ms of CPU and is ready in 19 ms on two
     fast cores (about 140 ms on a slow core); in the full-system test Ember went from
     42.7% to 42.8% of one core (NPU pose) and from 91.8% to 92.0% (CPU pose), with one
-    lookup per user turn and none timed out; RAM about 170-230 MB more (the torch-based
-    setup measured 410-500 MB on a Mac). Not yet run in a live conversation.
+    lookup per user turn and none timed out (the reply then waited up to 150 ms for it;
+    see "Recalled memories no longer hold up" above); RAM about 170-230 MB more (the
+    torch-based setup measured 410-500 MB on a Mac). Not yet run in a live conversation.
   - `requirements-orange-pi.txt` also installs rknn-toolkit-lite2 2.3.2 (aarch64,
     Python <= 3.12), the NPU's Python side, which was a manual step: the same version
     as the converter's default, which the accuracy check records. It is imported only
@@ -1115,8 +1127,8 @@
   and gave up when it failed. TVmaze search is title-only and currently
   returns 502 for some queries ("mystery thriller", "crime drama", even "the
   crown"; "the office" works). `public_shows` now says title lookup only, and
-  the prompt says to recommend from Gemini's own knowledge or Google Search
-  and keep helping when a source fails.
+  the prompt says to recommend from Gemini's own knowledge (or Google Search,
+  when it is on) and keep helping when a source fails.
 
 - Discovery tools (trivia, TVmaze shows, PoetryDB, radio station lookup,
   TheMealDB recipes, Wikipedia, Open Library) are on by default via
@@ -1200,9 +1212,11 @@
 - Google Search grounding: the toolkit adds Gemini's built-in `google_search`
   tool plus a short prompt (use it for uncertain/current facts and book
   critique, cite sources briefly, results are data). Gemini runs the search;
-  only the query goes to Google. `BAYMAX_GOOGLE_SEARCH=0` (or disabling the
-  toolkit) removes it; the dashboard capability reports it. Offline config
-  tests pass; live check pending on the robot (no Gemini key on the dev PC).
+  only the query goes to Google. Off by default now: `BAYMAX_GOOGLE_SEARCH=1`
+  adds it (see "Google Search grounding is off by default" above for why), and
+  disabling the toolkit removes it; the dashboard capability reports it. Offline
+  config tests pass; live check pending on the robot (no Gemini key on the dev
+  PC).
 
 - Audiobook book mode: while a LibriVox book plays the mic is withheld from
   Gemini (it answered the narrator as the person) and fed to an offline Vosk
