@@ -464,7 +464,7 @@ if ONLY_WHEN_ADDRESSED:
 # Optional strict transcript gate. Off by default: its name/20 s rule drops
 # direct questions after an ordinary pause. Gemini still judges conversational intent.
 from features.conversational_ability.addressing import AddressGate
-from features.conversational_ability.session import connection_lost, handle_received_at
+from features.conversational_ability.session import connection_lost, handle_received_at, not_tried
 _address_gate = AddressGate(enabled=bool(ONLY_WHEN_ADDRESSED) and os.getenv("BAYMAX_ADDRESS_GATE", "0") == "1")
 
 _BASE_CONFIG = {
@@ -2746,6 +2746,10 @@ async def run():
                     output_stream.stop()
                     output_stream.close()
         except Exception as e:
+            if not set_up and isinstance(e, OSError):
+                # DNS, network unreachable, refused, open timeout: this attempt never reached
+                # Gemini, so the next one offers the same resume handle (session.py).
+                not_tried()
             # This API key can't use the model (not found or retired): the next one, at once.
             if _live_models.move_on(e, set_up=set_up, served=_turn_done_at >= started):
                 continue

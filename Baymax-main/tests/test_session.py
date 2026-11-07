@@ -83,6 +83,15 @@ class SessionTests(unittest.TestCase):
         session.remember(update("h2"), clock=lambda: self.now)  # A live session sends new ones.
         self.assertEqual(self.build()["session_resumption"], {"handle": "h2"})
 
+    def test_an_attempt_that_never_reached_gemini_does_not_use_up_the_handle(self):
+        session.remember(update("h1"), clock=lambda: self.now)
+        self.assertEqual(self.build()["session_resumption"], {"handle": "h1"})
+        session.not_tried()  # e.g. DNS failed before setup: Gemini never saw the handle
+        session.not_tried()  # a second call banks no extra try
+        self.assertEqual(self.build()["session_resumption"], {"handle": "h1"})
+        # That attempt reached Gemini and no new handle came: the next one starts fresh, as before.
+        self.assertEqual(self.build()["session_resumption"], {})
+
     def test_expired_handles_are_not_used(self):
         session.remember(update("old"), clock=lambda: self.now)
         self.now += 2 * 3600

@@ -10,7 +10,10 @@ about 10 minutes, and each turn re-reads the whole growing history. So:
   to `remember`, and the next connection's config resumes that same
   conversation instead of starting fresh. A handle that fails to resume (no
   update arrives after using it) or is older than Google's 2 h validity is
-  dropped, so a bad handle can never block reconnecting.
+  dropped, so a bad handle can never block reconnecting. An attempt that never
+  reached Gemini (`not_tried`: DNS, network unreachable, refused, open timeout)
+  doesn't count, so a Wi-Fi drop still going on at the first retry keeps the
+  conversation.
 
 BAYMAX_SESSION_RESUMPTION=0 / BAYMAX_CONTEXT_COMPRESSION=0 disable each part.
 Nothing new is sent anywhere: both are settings of the existing Gemini session.
@@ -95,6 +98,16 @@ def extend_config(config, clock=time.monotonic):
                 print("[SESSION] Resuming the previous conversation.", flush=True)
         result["session_resumption"] = {"handle": handle} if handle else {}
     return result
+
+
+def not_tried():
+    """The connection the last config was built for never reached Gemini: run() calls this
+    when connect() failed with an OSError before setup (DNS, network unreachable, refused,
+    the open timeout), so the resume handle that config offered is offered again. Gemini's
+    own refusals (APIError, ConnectionClosed) still use up the offer, so a bad handle is
+    still dropped."""
+    with _lock:
+        _state["offered"] = max(0, _state["offered"] - 1)
 
 
 def on_server_message(response):

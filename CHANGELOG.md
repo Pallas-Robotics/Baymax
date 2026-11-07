@@ -219,9 +219,14 @@
   once Gemini has sent that connection a handle of its own: the one that set it up is
   not offered twice, so moving with it would start the conversation over. A move from
   a connection shorter than 60 s backs off like a quick loss, so GoAways soon after
-  every setup can't make Ember reconnect in a loop. The abandon/resend of Ember's own
-  messages, `MIC_SEND_TIMEOUT_S`, the socket abort and the stop path are unchanged.
-  Offline tests through the real `run()`; live check pending.
+  every setup can't make Ember reconnect in a loop. A retry that never reached Gemini
+  (DNS, network unreachable, refused, the websocket's open timeout: an `OSError` before
+  setup) no longer uses up the conversation's resume handle (`session.not_tried`): with
+  the first retry 0.3 s after a drop instead of 7 s, a Wi-Fi drop of a few seconds
+  otherwise started the conversation over. Gemini's own refusals still drop the handle.
+  The abandon/resend of Ember's own messages, `MIC_SEND_TIMEOUT_S`, the socket abort and
+  the stop path are unchanged. Offline tests through the real `run()`; live check
+  pending.
 
 - Recalled memories no longer hold up or cut off Ember's replies. The receive loop
   used to wait up to 150 ms for the memory lookup at the first reply audio and then

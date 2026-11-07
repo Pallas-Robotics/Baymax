@@ -298,7 +298,10 @@ passes `BAYMAX_CONTEXT_TRIGGER_TOKENS`, default 32000) and `session_resumption`.
 The receive loop hands every resume handle and GoAway warning to
 `on_server_message`; the next connection's config resumes that conversation. A
 handle that fails once (no new handle arrives after using it) or is older than
-110 minutes is dropped, so a bad handle cannot block reconnecting.
+110 minutes is dropped, so a bad handle cannot block reconnecting. An attempt that
+never reached Gemini (DNS, network unreachable, connection refused, the websocket's
+open timeout: an `OSError` before setup) is not a try (`session.not_tried`), so a
+Wi-Fi drop still going on at the first retry, 0.3 s later, keeps the conversation.
 `BAYMAX_CONTEXT_COMPRESSION=0` / `BAYMAX_SESSION_RESUMPTION=0` disable each.
 No new data leaves the robot: both are settings of the existing Gemini session.
 Any disconnect ends the session so `run()` reconnects. A failed mic send ends it at
@@ -356,8 +359,9 @@ Tests: `tests/test_session.py` (fake handles; full config validated by the SDK) 
 `ReconnectTests` in `tests/test_v10_runtime.py` (the real send and receive loops on
 the real SDK session over a local websocket, closed with each close code or left
 unread; a cut-off fall check-in through the real `run()`, also when its resend fails;
-the fast path, the backoff, the full reset off the event loop and the GoAway handover
-through the real `run()`), and the resend rules in `tests/test_address_gate.py`. Live
+the fast path, the backoff, the full reset off the event loop, the GoAway handover and
+a retry that never reached Gemini keeping the resume handle through the real `run()`),
+and the resend rules in `tests/test_address_gate.py`. Live
 pending: the reconnect time and Google's GoAway timing on the robot.
 
 ### Gemini Live model and fallback (`live_models.py`)

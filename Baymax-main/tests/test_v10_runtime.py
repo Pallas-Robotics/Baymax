@@ -3,6 +3,7 @@ import asyncio
 import copy
 import os
 from pathlib import Path
+import socket
 import sys
 import tempfile
 import textwrap
@@ -23,7 +24,7 @@ import numpy as np
 
 from features.conversational_ability import live_models
 from features.conversational_ability.addressing import AddressGate
-from features.conversational_ability.session import connection_lost
+from features.conversational_ability.session import connection_lost, not_tried
 from features.conversational_ability.timing import ConversationTiming
 import test_waiting_cue
 from test_public_core_integration import load_function
@@ -570,7 +571,7 @@ class ReconnectTests(unittest.TestCase):
             "receive_audio": lambda session: receive(session.index, session, namespace),
             "fall_alert_monitor": forever, "monitor_queues": forever, "between_turns": forever,
             "fall_worker": SimpleNamespace(alert_monitor=forever), "_shutdown_event": None,
-            "connection_lost": connection_lost, "RECONNECT_DELAY_S": 0.3, "QUICK_SESSION_S": 60.0,
+            "connection_lost": connection_lost, "not_tried": not_tried, "RECONNECT_DELAY_S": 0.3, "QUICK_SESSION_S": 60.0,
             "RECONNECT_MAX_DELAY_S": 4.8, "_go_away_at": None, "_connected_at": 0.0,
             "live_models": live_models,
         }
@@ -750,6 +751,38 @@ class ReconnectTests(unittest.TestCase):
         sessions, ns = self.run_connections(8, receive)
         self.assertEqual(self.pauses, [0.3, 0.6, 1.2, 2.4, 4.8, 4.8, 4.8, 4.8])  # was ... 4.8, 2, 5, 2, 5
         ns["sd"]._terminate.assert_not_called()
+
+    def resumed_after(self, setup_error):
+        """The real run() and session resumption: connection 0 gets resume handle h1, then
+        drops; the next attempt fails while being set up with `setup_error`; the one after
+        reaches Gemini. Returns the resume setting of each connection that reached it."""
+        from features.conversational_ability import session as resumption
+        resumption.forget()
+        self.addCleanup(resumption.forget)
+
+        async def receive(index, session, ns):
+            if index == 0:
+                resumption.remember(SimpleNamespace(resumable=True, new_handle="h1"))
+                raise errors.APIError(1006, {"message": "Abnormal closure."})
+            raise ConnectionResetError()
+        with patch.dict(os.environ, {"BAYMAX_SESSION_RESUMPTION": "1", "BAYMAX_CONTEXT_COMPRESSION": "0"}):
+            sessions, ns = self.run_connections(3, receive, setup_errors={1: setup_error},
+                                                _build_config=lambda: resumption.extend_config({}))
+        return [s.config["session_resumption"] for s in sessions]
+
+    def test_an_attempt_that_never_reached_gemini_keeps_the_resume_handle(self):
+        # A Wi-Fi drop of a few seconds: the first retry, 0.3 s after it, fails before any setup
+        # message is sent. That counted as the handle's one try, so the connection that did
+        # reach Gemini started the conversation over.
+        for error in (socket.gaierror(-3, "Temporary failure in name resolution"),
+                      OSError(101, "Network is unreachable"), ConnectionRefusedError(111, "Connection refused"),
+                      TimeoutError("timed out during opening handshake")):
+            with self.subTest(error=error):
+                self.assertEqual(self.resumed_after(error), [{}, {"handle": "h1"}])   # was [{}, {}]
+
+    def test_a_refusal_from_gemini_still_uses_up_the_resume_handle(self):
+        # Gemini closed the setup that offered the handle: a bad handle must not block reconnecting.
+        self.assertEqual(self.resumed_after(errors.APIError(1008, {"message": "bye"})), [{}, {}])
 
     def plan(self):
         ns = {"connection_lost": connection_lost, "RECONNECT_DELAY_S": 0.3, "QUICK_SESSION_S": 60.0,
