@@ -82,16 +82,21 @@ class EngageTests(unittest.TestCase):
         self.assertEqual(self.told, [engage.ENGAGED_NOTE])
 
     def test_transcript_variants_and_non_matches(self):
-        for text in ("Ember disengage", "amber, dis-engage", "OK EMBER... DISENGAGE please", "ember disengaged"):
+        for text in ("Ember disengage", "amber, dis-engage", "OK EMBER... DISENGAGE please", "ember disengaged",
+                     # Hindi conversations: Gemini may write either word in Devanagari.
+                     "एम्बर, डिसएंगेज।", "Ember डिसएंगेज", "अंबर, डिस-एंगेज", "एंबर डिसेंगेज", "एम्बर disengage"):
             ember = Engagement(listener_factory=FakeListener, audio_ready=lambda: True)
             ember.observe("user", {"id": 1, "text": text})
             self.assertTrue(ember.disengaged, text)
-        for text in ("disengage", "Ember, engage", "remember to disengage the brake", "Ember, how are you?"):
+        for text in ("disengage", "Ember, engage", "remember to disengage the brake", "Ember, how are you?",
+                     "डिसएंगेज", "एम्बर, कैसी हो?", "अंबरीश डिसएंगेज", "एम्बर एंगेज"):
             ember = Engagement(listener_factory=FakeListener, audio_ready=lambda: True)
             ember.observe("user", {"id": 1, "text": text})
             self.assertFalse(ember.disengaged, text)
         self.say("Okay, I'll be quiet. Ember disengage.", speaker="ember")  # Ember's own words never count.
         self.assertFalse(self.ember.disengaged)
+        self.say("मैं बगीचे की बात कर रही थी। " * 200 + "एम्बर, डिसएंगेज")  # Said at the end of a long message.
+        self.assertTrue(self.ember.disengaged)
 
     def test_later_fragments_of_the_same_utterance_do_not_disengage_again(self):
         self.say("Ember disengage")
