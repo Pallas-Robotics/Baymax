@@ -369,10 +369,16 @@ runtime's `MODEL`). Google's deprecations page lists it for shutdown as early as
   `BLOCKING`, as 2.5 runs them (3.x defaults to `NON_BLOCKING`). The opt-in eye tool's
   explicit `NON_BLOCKING` is kept.
 - **Not adapted, to check live on 3.8:** proactive audio is always on there, so
-  `only_when_addressed = false` can't turn it off; client content sent without
-  `turn_complete` (recalled memories, the family's profile note) makes the server wait for
-  more input; a turn includes every camera frame by default (Ember sends one every 3 s);
-  voices and tools are untried. One message can carry several parts: the receive loop
+  `only_when_addressed = false` can't turn it off; a turn includes every camera frame by
+  default (Ember sends one every 3 s); voices and tools are untried.
+- **No notes without `turn_complete` on Gemini 3 yet.** Client content sent with
+  `turn_complete=False` (recalled memories from `between_turns()`, the family's profile
+  update) makes the server wait for more input, and whether 3.x still answers the person's
+  next words after one is untested. `live_models.takes_quiet_notes()` is false on Gemini 3
+  and later, so there Ember neither looks up nor sends recalled memories, and a profile
+  update waits for the next session's instructions; the 50 newest memories are still in
+  every connection's prompt. Lift it once `python evals/live_eval.py --model
+  gemini-3.8-live --only memory-note-then-speech` passes. One message can carry several parts: the receive loop
   plays and prints every part in order, and a model turn without parts no longer drops
   the rest of its message (its turn end).
 - **Today (2026-11-06):** Ember's keys get "1011 You exceeded your current quota" on

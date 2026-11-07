@@ -33,6 +33,11 @@ thinking_config) and run functions in the background (NON_BLOCKING) unless told
 otherwise, so every function Ember declares without a behavior is made BLOCKING, as on
 2.5; an explicit behavior (the eye tool's NON_BLOCKING) is kept. Gemini 2.5 gets the
 config unchanged.
+
+`takes_quiet_notes` says whether Ember sends the model in use notes that need no reply
+(client content with turn_complete=False: recalled memories, the family's profile update).
+Not on Gemini 3 until that is checked live: the server waits for more input after such
+content, and whether 3.x then still answers the person's next words is untested.
 """
 import copy
 import os
@@ -51,6 +56,9 @@ _GONE = ("is not found for api version", "not supported for bidigeneratecontent"
 # Never a reason to move on, whatever the code: a per-minute or concurrent-session limit says
 # it too, and passes in seconds.
 _QUOTA = "exceeded your current quota"
+# The model of run()'s latest connection (ModelChoice.adapt), for code that has no ModelChoice
+# of its own, such as the family toolkit. None until run() connects (v8, the eval, tests).
+in_use = None
 
 
 def configured(model, environ=os.environ):
@@ -71,6 +79,16 @@ def generation(model):
     gemini-2.5-flash-native-audio-preview-12-2025 or gemini-live-2.5-flash-preview."""
     match = re.match(r"(?:models/)?gemini-(?:live-)?(\d+)", model)
     return int(match.group(1)) if match else 0
+
+
+def takes_quiet_notes(model=None):
+    """Whether Ember sends `model` (default: the one in use) notes that need no reply: client
+    content with turn_complete=False, such as recalled memories (between_turns) and the
+    family's profile update. Yes on Gemini 2.5, which Ember was built on. Not on Gemini 3 and
+    later until `python evals/live_eval.py --model gemini-3.8-live` shows a reply still comes
+    after one (the memory-note scenario): with turn_complete=False the server waits for more
+    input before it generates, and the person's next reply must not wait with it."""
+    return generation(model if model is not None else in_use or "") < 3
 
 
 def adapt(config, model):
@@ -127,7 +145,10 @@ class ModelChoice:
         return self.models[self.index]
 
     def adapt(self, config):
-        """`config` for the current model, for the connection about to be set up."""
+        """`config` for the current model, for the connection about to be set up, which makes
+        it the model in use (`in_use`)."""
+        global in_use
+        in_use = self.current
         self._resuming = bool((config.get("session_resumption") or {}).get("handle"))
         return adapt(config, self.current)
 

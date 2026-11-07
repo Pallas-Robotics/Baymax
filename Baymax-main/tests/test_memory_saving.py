@@ -504,6 +504,7 @@ class TeardownTests(unittest.TestCase):
               # The reconnect fix's per-session steps (tested in test_v10_runtime.ReconnectTests).
               "_send_cut_off_prompts": forever, "_abandon_reply": Mock(), "_abort_connection": Mock()}
         load_function("run", ns)
+        self.addCleanup(setattr, live_models, "in_use", live_models.in_use)  # run() sets the model in use
         return ns
 
     def test_a_stop_starts_the_clock_and_skips_the_reconnect_pause(self):
@@ -807,6 +808,7 @@ class RecalledMemoryTests(unittest.TestCase):
             "_memories_given": set(), "_reply_owed_since": None,
             "BETWEEN_TURNS_POLL_S": 0.01, "BETWEEN_TURNS_QUIET_S": 0.05, "REPLY_OWED_MAX_S": 15.0,
             "_go_away_at": None, "_turn_done_at": 0.0,  # no GoAway here (see test_v10_runtime)
+            "live_models": live_models,
         }
 
         def append_playback(data, *, new_turn=False, timing_id=None):
@@ -936,6 +938,17 @@ class RecalledMemoryTests(unittest.TestCase):
         self.assertEqual(len(sent), 1)
         self.assertIn("Rex", sent[0]["turns"]["parts"][0]["text"])
         self.assertNotIn("tomatoes", sent[0]["turns"]["parts"][0]["text"])
+
+    def test_on_gemini_3_no_memory_note_goes_until_checked_live(self):
+        # Sent without turn_complete: whether 3.x still answers the person's next words after
+        # one is untested (live_models.takes_quiet_notes), so nothing is looked up or sent there.
+        ns = self.runtime(lambda query: [self.TOMATOES])
+        with patch.object(live_models, "in_use", "gemini-3.8-live"):
+            sent = self.converse(ns, self.reply(ns, "Ember, how is my garden doing?"))
+        self.assertEqual((sent, self.searched), ([], []))
+        with patch.object(live_models, "in_use", "gemini-2.5-flash-native-audio-preview-12-2025"):
+            sent = self.converse(ns, self.reply(ns, "Ember, how is my garden doing?"))
+        self.assertEqual(len(sent), 1)                       # 2.5, as before
 
     def test_a_quiet_moment_needs_no_reply_owed_queued_or_heard(self):
         clock = Clock(100.0)

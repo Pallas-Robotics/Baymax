@@ -522,6 +522,7 @@ class ReconnectTests(unittest.TestCase):
             pass
         sessions, setup_errors = [], setup_errors or {}
         asked = self.models = []
+        self.addCleanup(setattr, live_models, "in_use", live_models.in_use)  # run() sets the model in use
 
         class Session:
             def __init__(self, index, model, config):
@@ -571,6 +572,7 @@ class ReconnectTests(unittest.TestCase):
             "fall_worker": SimpleNamespace(alert_monitor=forever), "_shutdown_event": None,
             "connection_lost": connection_lost, "RECONNECT_DELAY_S": 0.3, "QUICK_SESSION_S": 60.0,
             "RECONNECT_MAX_DELAY_S": 4.8, "_go_away_at": None, "_connected_at": 0.0,
+            "live_models": live_models,
         }
         namespace.update(overrides)
         with patch("test_public_core_integration.CORE", V10):
@@ -805,7 +807,7 @@ class ReconnectTests(unittest.TestCase):
         ns = {"asyncio": asyncio, "time": clock, "_between_turns": lambda at: quiet, "_recalled": None,
               "_go_away_at": go_away_at, "_turn_done_at": turn_done_at, "handle_received_at": lambda: handle_at,
               "_connected_at": connected_at, "BETWEEN_TURNS_POLL_S": 0.001, "GO_AWAY_HANDLE_WAIT_S": 3.0,
-              "_user_turn": None, "_looked_up": None, "_memory_embedder": None}
+              "_user_turn": None, "_looked_up": None, "_memory_embedder": None, "live_models": live_models}
         with patch("test_public_core_integration.CORE", V10):
             for name in ("_SessionHandover", "_handover_due", "between_turns"):
                 load_function(name, ns)

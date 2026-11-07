@@ -144,7 +144,10 @@
   no fast spin. Network drops, Google's resets and "1011 internal error" never switch. For Gemini 3 the config leaves out `thinking_config`
   and declares Ember's functions `BLOCKING`, as 2.5 runs them; 2.5's config is unchanged.
   `evals/live_eval.py --model gemini-3.8-live` tests a model with the same settings (without
-  `--model` the eval uses the list's first model). On 2026-11-06 Ember's keys had no 3.8
+  `--model` the eval uses the list's first model). On Gemini 3 Ember sends no notes without
+  `turn_complete` (recalled memories, the family's profile update) until that eval's
+  memory-note scenario passes: the server waits for more input after one, and whether 3.x
+  still answers the person's next words is untested. On 2026-11-06 Ember's keys had no 3.8
   quota ("1011 You exceeded your current quota") while 2.5 worked, so 2.5 stays first and
   3.8 is untested live: MVP.md "Gemini model" says when and how to put it first.
 

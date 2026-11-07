@@ -151,6 +151,7 @@ class LiveModelTests(unittest.TestCase):
         self.addCleanup(session.forget)
         self.printed = patch("builtins.print").start()
         self.recorded = patch("runtime_monitor.record").start()
+        patch.object(live_models, "in_use", None).start()
         self.addCleanup(patch.stopall)
 
     def test_the_list_is_baymax_live_models_else_model_then_gemini_3_8_live(self):
@@ -206,6 +207,20 @@ class LiveModelTests(unittest.TestCase):
             with self.subTest(error=error):
                 self.assertTrue(live_models.unavailable(error, set_up=False))
                 self.assertIsNone(live_models.unavailable(error, set_up=True))
+
+    def test_notes_without_turn_complete_only_go_to_gemini_2_until_checked_on_3(self):
+        self.assertTrue(live_models.takes_quiet_notes())          # no connection yet (v8, the eval)
+        for model, notes in ((OLD, True), ("gemini-live-2.5-flash-preview", True), (NEW, False),
+                             ("models/gemini-3.8-live", False)):
+            self.assertEqual(live_models.takes_quiet_notes(model), notes, model)
+        choice = live_models.ModelChoice([OLD, NEW])
+        choice.adapt({})                                          # run() connecting with 2.5
+        self.assertEqual(live_models.in_use, OLD)
+        self.assertTrue(live_models.takes_quiet_notes())
+        choice.move_on(api_error(1008, NOT_FOUND), set_up=False, served=False)
+        choice.adapt({})                                          # ... and with 3.8 after it
+        self.assertEqual(live_models.in_use, NEW)
+        self.assertFalse(live_models.takes_quiet_notes())
 
     def test_ordinary_failures_are_never_about_the_model(self):
         for error in ORDINARY:

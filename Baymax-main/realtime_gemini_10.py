@@ -1932,12 +1932,16 @@ async def between_turns(session):
       has been played (_recall_memories), and gives what it finds to Gemini at the next
       quiet moment: they inform the person's next turn. Memories this connection's
       Gemini already has (in its instructions, or given before) are skipped, and a
-      recall whose turn the person has moved on from is dropped."""
+      recall whose turn the person has moved on from is dropped. Not on Gemini 3 and later
+      until checked live (live_models.takes_quiet_notes): the note is sent without
+      turn_complete, and whether 3.x still answers the person's next words after one is
+      untested."""
     global _recalled
     while True:
         await asyncio.sleep(BETWEEN_TURNS_POLL_S)
         now = time.monotonic()
-        lookup_due = _user_turn is not _looked_up and _memory_embedder is not None
+        notes = live_models.takes_quiet_notes()  # not on Gemini 3 until checked live
+        lookup_due = notes and _user_turn is not _looked_up and _memory_embedder is not None
         if (_recalled is None and _go_away_at is None and not lookup_due) or not _between_turns(now):
             continue
         if _go_away_at is not None and _handover_due(now):
@@ -1951,7 +1955,7 @@ async def between_turns(session):
             continue
         (turn, memories), _recalled = _recalled, None
         new = [m for m in memories if m["document"] not in _memories_given]
-        if turn is not _user_turn or not new:
+        if turn is not _user_turn or not new or not notes:
             continue
         try:
             await session.send_client_content(
