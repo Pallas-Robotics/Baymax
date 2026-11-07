@@ -18,8 +18,11 @@ from websockets.asyncio.client import connect as ws_connect
 from websockets.asyncio.server import serve as ws_serve
 from websockets.exceptions import ConnectionClosed, ConnectionClosedError
 
+import numpy as np
+
 from features.conversational_ability.addressing import AddressGate
 from features.conversational_ability.session import connection_lost
+from features.conversational_ability.timing import ConversationTiming
 import test_waiting_cue
 from test_public_core_integration import load_function
 
@@ -100,7 +103,7 @@ class V10RuntimeTests(unittest.TestCase):
         self.assertIn("Jazz FM (live radio) is paused so they can hear you and answer", text)
 
     def test_queued_replies_have_a_gap_but_chunks_and_idle_replies_do_not(self):
-        namespace = {"_playback_buffer": b"", "_playback_lock": threading.Lock(),
+        namespace = {"_playback_buffer": b"", "_playback_lock": threading.Lock(), "_playback_taken": 0,
                      "RECEIVE_SAMPLE_RATE": 48000, "OUTPUT_CHANNELS": 1, "monitor": monitor}
         append = load_function("_append_playback", namespace)
         flush = load_function("_flush_playback", namespace)
@@ -117,8 +120,8 @@ class V10RuntimeTests(unittest.TestCase):
 
     def test_speaker_mixes_extra_sources_such_as_audiobooks(self):
         enhancer = SimpleNamespace(full_duplex=True, rendered=Mock(), mix_output=lambda chunk: b"\x07\x00" * (len(chunk) // 2))
-        namespace = {"_playback_buffer": b"", "_playback_lock": threading.Lock(), "_waiting_cue": None,
-                     "_audio_enhancer": enhancer, "np": __import__("numpy"), "OUTPUT_CHANNELS": 1,
+        namespace = {"_playback_buffer": b"", "_playback_lock": threading.Lock(), "_playback_taken": 0,
+                     "_waiting_cue": None, "_audio_enhancer": enhancer, "np": __import__("numpy"), "OUTPUT_CHANNELS": 1,
                      "voice_volume": SimpleNamespace(apply=lambda chunk: chunk), "monitor": monitor, "RECEIVE_SAMPLE_RATE": 48000}
         with patch("test_public_core_integration.CORE", V10):
             callback = load_function("_output_callback", namespace)
@@ -197,6 +200,130 @@ class V10RuntimeTests(unittest.TestCase):
         source = self.source()
         self.assertIn('RANDOM_INITIATION_ENABLED = os.getenv("BAYMAX_RANDOM_INITIATION", "0") == "1"', source)
         self.assertIn("if RANDOM_INITIATION_ENABLED:\n                            tg.create_task(initiation_monitor(live_session))", source)
+
+
+class ReplyTimingTests(unittest.TestCase):
+    """Conversation timing is diagnostics: it never stops, drops or holds up Ember's audio.
+    v10's real playback queue and speaker callback, without a device."""
+
+    def speaker(self, timing, lock=None):
+        namespace = {"_playback_buffer": b"", "_playback_lock": lock or threading.Lock(), "_playback_taken": 0,
+                     "_waiting_cue": None, "_audio_enhancer": None, "np": np, "OUTPUT_CHANNELS": 1,
+                     "RECEIVE_SAMPLE_RATE": 48000, "voice_volume": SimpleNamespace(apply=lambda chunk: chunk),
+                     "monitor": SimpleNamespace(timing=timing)}
+        with patch("test_public_core_integration.CORE", V10):
+            for name in ("_append_playback", "_output_callback"):
+                load_function(name, namespace)
+        return namespace
+
+    @staticmethod
+    def play(namespace, now=None, frames=1024):
+        """One speaker callback, its DAC 40 ms ahead; a fake clock `now` moves on by the block."""
+        out = np.empty((frames, 1), dtype=np.int16)
+        current = 5 + (now[0] if now else 0)
+        namespace["_output_callback"](out, frames, SimpleNamespace(currentTime=current,
+                                                                   outputBufferDacTime=current + .04), None)
+        if now:
+            now[0] += frames / 48000
+        return out.tobytes()
+
+    def test_a_timing_error_never_stops_the_speaker(self):
+        # sounddevice stops the speaker stream for good once its callback raises.
+        timing = ConversationTiming()
+        timing.played = Mock(side_effect=RuntimeError("timing bug"))
+        namespace = self.speaker(timing)
+        namespace["_playback_buffer"] = b"\x05\x00" * 8
+        with patch("builtins.print"):
+            blocks = [self.play(namespace, frames=4), self.play(namespace, frames=4)]
+        self.assertEqual(blocks, [b"\x05\x00" * 4] * 2)
+        self.assertTrue(timing.failed)
+        timing.played.assert_called_once()  # timing stays off for the rest of the run
+
+    def test_a_timing_error_never_drops_reply_audio(self):
+        timing = ConversationTiming()
+        timing.transcript("user", 1)
+        turn = timing.received_audio()
+        timing.queued = Mock(side_effect=RuntimeError("timing bug"))
+        namespace = self.speaker(timing)
+        with patch("builtins.print"):
+            namespace["_append_playback"](b"\x05\x00" * 4, new_turn=True, timing_id=turn)
+            namespace["_append_playback"](b"\x06\x00" * 4, timing_id=turn)
+        self.assertEqual(namespace["_playback_buffer"], b"\x05\x00" * 4 + b"\x06\x00" * 4)
+        self.assertTrue(timing.failed)
+        timing.queued.assert_called_once()
+
+    def test_reply_timing_never_runs_under_the_lock_the_speaker_waits_for(self):
+        # The speaker needs this lock every 21 ms. Timing work, and timing's own lock (taken
+        # by the monitor thread five times a second), must not hold it.
+        lock = threading.Lock()
+        seen = []
+
+        class Timing(ConversationTiming):
+            def queued(self, *args):
+                seen.append(("queued", lock.locked()))
+                super().queued(*args)
+
+            def played(self, *args):
+                seen.append(("played", lock.locked()))
+                super().played(*args)
+
+        class Numpy:  # notes whether the reply's first sound is searched for under the lock
+            def __getattr__(self, name):
+                if name == "frombuffer":
+                    seen.append(("search", lock.locked()))
+                return getattr(np, name)
+        timing = Timing()
+        timing.transcript("user", 1)
+        turn = timing.received_audio()
+        namespace = self.speaker(timing, lock)
+        namespace["np"] = Numpy()
+        namespace["_append_playback"](b"\x00\x00\x07\x00" * 4, new_turn=True, timing_id=turn)
+        self.play(namespace, frames=8)
+        self.assertEqual({name for name, _ in seen}, {"search", "queued", "played"})
+        self.assertEqual([entry for entry in seen if entry[1]], [])
+        self.assertIn("playback", timing.snapshot()[0])
+
+    def test_a_reply_queued_while_the_speaker_takes_a_block_keeps_its_own_time(self):
+        # played() runs after the speaker released the lock, so the event loop can queue the
+        # next reply in between: its time must not move by the bytes of that block.
+        now = [0.0]
+
+        class Timing(ConversationTiming):
+            slip_in = None
+
+            def played(self, *args):
+                if self.slip_in is not None and not namespace["_playback_lock"].locked():
+                    turn, self.slip_in = self.slip_in, None
+                    namespace["_append_playback"](np.full(1024, 9, np.int16).tobytes(), new_turn=True, timing_id=turn)
+                super().played(*args)
+        timing = Timing(clock=lambda: now[0], wall=lambda: 1000 + now[0])
+        namespace = self.speaker(timing)
+        timing.transcript("user", 1)
+        first = timing.received_audio()
+        timing.complete_reply()
+        timing.transcript("user", 2)
+        timing.slip_in = timing.received_audio()
+        namespace["_append_playback"](np.full(1024, 8, np.int16).tobytes(), new_turn=True, timing_id=first)
+        self.play(namespace, now)  # takes the whole first reply; the second is queued meanwhile
+        self.play(namespace, now)
+        rows = timing.snapshot()
+        self.assertAlmostEqual(rows[0]["playback"], 1000.04)
+        self.assertAlmostEqual(rows[1]["playback"], 1000 + 1024 / 48000 + .04)
+
+    def test_a_reply_is_timed_from_its_first_sound(self):
+        # Every chunk carries the reply's timing id: the first can be digital silence, and
+        # Gemini streams faster than real time, so dozens of chunks queue before one plays.
+        now = [0.0]
+        timing = ConversationTiming(clock=lambda: now[0], wall=lambda: 1000 + now[0])
+        namespace = self.speaker(timing)
+        timing.transcript("user", 1)
+        turn = timing.received_audio()
+        namespace["_append_playback"](bytes(2048), new_turn=True, timing_id=turn)  # 1024 silent samples
+        for _ in range(50):
+            namespace["_append_playback"](np.full(1024, 500, np.int16).tobytes(), timing_id=turn)
+        while namespace["_playback_buffer"]:
+            self.play(namespace, now)
+        self.assertAlmostEqual(timing.snapshot()[0]["playback"], 1000 + 1024 / 48000 + .04)
 
 
 class ReconnectTests(unittest.TestCase):

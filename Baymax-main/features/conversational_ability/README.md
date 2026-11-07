@@ -34,7 +34,11 @@ A pause that ends a local segment inside one Gemini turn extends the turn to its
 last segment, whose end is the turn's speech end.
 Gemini's internal recognition time and actual acoustic output are not measured.
 Playback uses callback DAC timing; a missing timestamp falls back to the output
-latency estimate. Interruption clears unplayed timing marks.
+latency estimate. Interruption clears unplayed timing marks. A reply is timed from
+its first chunk with sound, counted in the speaker's byte stream. Timing never
+touches audio: its work runs outside the lock the speaker callback waits for, and
+an error in it on the mic, speaker or playback-queue path turns timing off for
+the run (one log line) instead of muting the mic or stopping the speaker.
 No new recordings, dependencies, streams or external requests are added. Timing
 metadata is local and bounded. Times are kept on the monotonic clock and become
 wall-clock times when the monitor reads them, so a clock corrected after start

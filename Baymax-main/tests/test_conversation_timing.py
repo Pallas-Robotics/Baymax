@@ -27,7 +27,7 @@ class TimingTests(unittest.TestCase):
         self.timing.received_text()
         self.timing.queued(turn_id, 960, 0)
         self.now = 3.2
-        self.timing.played(1920, .05, 48000)
+        self.timing.played(0, 1920, .05, 48000)
         row = self.timing.snapshot()[0]
         self.assertAlmostEqual(row['speech_start'], 1001)
         self.assertAlmostEqual(row['speech_end'], 1001.1)
@@ -91,13 +91,13 @@ class TimingTests(unittest.TestCase):
         self.timing.transcript('user', 3)
         second = self.timing.received_audio()
         self.timing.queued(second, 200, 2)
-        self.timing.played(100, .05, 48000)
+        self.timing.played(0, 100, .05, 48000)
         rows = self.timing.snapshot()
         self.assertIn('playback', rows[0])
         self.assertNotIn('playback', rows[1])
-        self.timing.played(100, .05, 48000)
+        self.timing.played(100, 100, .05, 48000)
         self.now = 1
-        self.timing.played(100, .05, 48000)
+        self.timing.played(200, 100, .05, 48000)
         self.assertAlmostEqual(self.timing.snapshot()[1]['playback'], 1001.05 + 4 / 96000)
 
     def test_interruption_clears_unplayed_mark_and_ends_reply(self):
@@ -106,7 +106,7 @@ class TimingTests(unittest.TestCase):
         self.timing.queued(turn_id, 100, 0)
         self.timing.clear_playback()
         self.timing.complete_reply(interrupted=True)
-        self.timing.played(200, 0, 48000)
+        self.timing.played(0, 200, 0, 48000)
         row = self.timing.snapshot()[0]
         self.assertTrue(row['interrupted'])
         self.assertNotIn('playback', row)

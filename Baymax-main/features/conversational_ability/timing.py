@@ -23,6 +23,9 @@ class ConversationTiming:
         self.sequence = 0
         self.mic_updated = None
         self.output_underflows = 0
+        # Set by the audio paths (mic cleanup, speaker callback, playback queue) when a
+        # call here raised: they stop calling, and the error never reaches the audio.
+        self.failed = False
 
     def now(self):
         return self.clock()
@@ -143,21 +146,28 @@ class ConversationTiming:
                 self.reply.update(reply_complete=self.now(), interrupted=interrupted)
                 self.reply = None
 
-    def queued(self, turn_id, ahead_bytes, first_sample):
+    def queued(self, turn_id, position, first_sample):
+        """A reply chunk with sound was queued at `position` of the speaker's byte stream
+        (bytes the speaker has taken plus those queued ahead of it). Every chunk of a
+        reply comes here; only the first one with sound marks it."""
         with self.lock:
-            self.marks.append([ahead_bytes + first_sample * 2, turn_id])
+            turn = next((t for t in self.turns if t['id'] == turn_id), None)
+            if turn is None or 'playback' in turn or any(mark[1] == turn_id for mark in self.marks):
+                return
+            self.marks.append([position + first_sample * 2, turn_id])
 
-    def played(self, byte_count, dac_delay, rate):
-        """First nonzero reply sample's scheduled DAC time, not acoustic measurement."""
+    def played(self, start, byte_count, dac_delay, rate):
+        """The speaker took bytes start..start+byte_count of its stream for one block.
+        First nonzero reply sample's scheduled DAC time, not acoustic measurement.
+        Positions count from the stream's start, so a reply queued while this block was
+        taken (this runs after the playback lock is released) still gets its own time."""
         with self.lock:
             now = self.now() + max(0, min(.5, dac_delay))
-            while self.marks and self.marks[0][0] < byte_count:
-                offset, turn_id = self.marks.popleft()
+            while self.marks and self.marks[0][0] < start + byte_count:
+                position, turn_id = self.marks.popleft()
                 turn = next((t for t in self.turns if t['id'] == turn_id), None)
                 if turn is not None:
-                    turn.setdefault('playback', now + offset / (rate * 2))
-            for mark in self.marks:
-                mark[0] -= byte_count
+                    turn.setdefault('playback', now + (position - start) / (rate * 2))
 
     def clear_playback(self):
         with self.lock:

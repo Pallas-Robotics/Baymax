@@ -323,15 +323,22 @@ class InputEnhancer:
                             'input_latency_ms': round(self.input_latency_ms, 1),
                             'output_latency_ms': round(self.output_latency_ms, 1),
                             'full_duplex': True}
-            monitor.timing.microphone(self.metrics['speech_probability'],
-                                      self.metrics['clean']['rms_dbfs'],
-                                      len(samples) / self.rate, self.input_latency_ms / 1000)
-            return result
         except Exception:
             # Preserve microphone capture on DSP failure; restore half-duplex to
             # avoid feeding speaker echo back into Gemini. Expose the failure.
             self.failed = True
             return self._fallback(samples)
+        # Diagnostics, outside the cleanup's try: an error here turns conversation
+        # timing off and never switches Ember to the half-duplex fallback above.
+        try:
+            if not monitor.timing.failed:
+                monitor.timing.microphone(self.metrics['speech_probability'],
+                                          self.metrics['clean']['rms_dbfs'],
+                                          len(samples) / self.rate, self.input_latency_ms / 1000)
+        except Exception:
+            monitor.timing.failed = True
+            print('[AUDIO] Conversation timing turned off after an error; audio continues.', flush=True)
+        return result
 
     def _fallback(self, samples):
         if _active_enhancer is self:

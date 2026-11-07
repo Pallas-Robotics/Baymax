@@ -1,5 +1,15 @@
 # MVP (unreleased)
 
+- Conversation timing can no longer affect audio. An error in it on the capture
+  thread switched Ember to the half-duplex fallback (mic muted during every reply)
+  and one in the speaker callback stopped the speaker until a restart (sounddevice
+  aborts the stream); now it turns timing off for the run with one log line. Timing
+  work moved out of the playback lock the speaker callback waits for; a reply's
+  playback time counts from the speaker's byte position, so one queued while a
+  block is taken keeps its own time; and a reply that opens with digital silence
+  is timed from its first chunk with sound. Nothing changes without an error;
+  offline tests only.
+
 - Conversation timing (monitor and performance sampler) charges each reply to the
   turn it answers. With proactive audio (on by default) Gemini stays silent on side
   talk and hesitations, and its next answer was charged to that older turn (5.8 s
