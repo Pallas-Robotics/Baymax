@@ -106,6 +106,10 @@ class ConfigTests(unittest.TestCase):
             self.assertEqual(live_eval.runtime(folder).name, "realtime_gemini_8.py")
             self.assertEqual(live_eval.runtime(Path(folder) / "missing").name, "realtime_gemini_8.py")
 
+    def test_speech_goes_in_the_runtimes_own_mic_blocks(self):
+        self.assertEqual(live_eval.CHUNK, 960)          # v10: two whole 10 ms frames at 48 kHz
+        self.assertEqual(live_eval.chunk_size(live_eval.ROOT / "realtime_gemini_8.py"), 1024)
+
     def test_v10_config_has_its_device_switched_prompt_and_proactive_audio(self):
         # v10 adds these in top-level `if` blocks from device.toml; they reach Gemini on the robot.
         import device_config

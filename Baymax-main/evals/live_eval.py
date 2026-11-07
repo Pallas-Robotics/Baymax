@@ -42,7 +42,6 @@ FALLBACK_CORE = "realtime_gemini_8.py"   # Older MVP checkouts: run_pc.py runs v
 SCENARIOS = Path(__file__).resolve().parent / "scenarios.json"
 REPORT_DIR = ROOT / ".local-review"
 RATE = 48000                     # SEND_SAMPLE_RATE (v8 and v10)
-CHUNK = 1024                     # CHUNK_SIZE (v8 and v10)
 TRAILING_SILENCE_S = 1.5         # Lets Gemini's activity detection end the turn.
 # A real mic always carries room tone. Gemini's LOW start sensitivity (the MVP's)
 # ignored clean TTS framed by digital silence, but hears it over quiet noise.
@@ -112,6 +111,18 @@ def _imported(node):
     if not isinstance(node, (ast.Import, ast.ImportFrom)):
         return set()
     return {(a.asname or a.name).split(".")[0] for a in node.names}
+
+
+def chunk_size(core=CORE):
+    """The runtime's mic block, CHUNK_SIZE (960 samples in v10, 1024 in v8): speech is
+    sent in blocks of this size, as from the robot's microphone."""
+    for node in ast.parse(core.read_text(encoding="utf-8")).body:
+        if _assigned(node) == {"CHUNK_SIZE"} and isinstance(node.value, ast.Constant):
+            return node.value.value
+    return 1024
+
+
+CHUNK = chunk_size()
 
 
 def core_session(core=CORE):
@@ -509,6 +520,7 @@ async def run_all(plan, model, config, repeat, real_tools, connect, speak=synthe
 
 
 def main(argv=None, connect=None, confirm=input):
+    global CHUNK
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--scenarios", type=Path, default=SCENARIOS)
     parser.add_argument("--only", action="append", help="Scenario name (repeatable)")
@@ -530,6 +542,7 @@ def main(argv=None, connect=None, confirm=input):
     from dotenv import load_dotenv
     load_dotenv(root / ".env", override=False, interpolate=False)  # The user's toggles, as on the robot.
     model, config = mvp_session(root=root)
+    CHUNK = chunk_size(runtime(root))
     print(f"Branch under test: {root}")
     scenarios = [s for s in load_scenarios(args.scenarios) if not args.only or s["name"] in args.only]
     if args.only and len(scenarios) != len(set(args.only)):

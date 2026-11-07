@@ -194,6 +194,17 @@ class V10RuntimeTests(unittest.TestCase):
         import device_config
         self.assertIs(device_config.DEFAULTS["conversation"]["only_when_addressed"], True)
 
+    def test_mic_blocks_are_whole_10ms_frames_for_the_audio_cleanup(self):
+        import ast
+        tree = ast.parse(self.source())
+        values = {target.id: node.value.value for node in tree.body if isinstance(node, ast.Assign)
+                  for target in node.targets if isinstance(target, ast.Name)
+                  and target.id in ("CHUNK_SIZE", "SEND_SAMPLE_RATE")}
+        self.assertEqual(values["CHUNK_SIZE"], 960)    # 1024 kept 10 ms of every block for the next
+        self.assertEqual(values["CHUNK_SIZE"] % (values["SEND_SAMPLE_RATE"] // 100), 0)
+        listen = self.source()[self.source().index("async def listen_audio"):self.source().index("async def send_audio_realtime")]
+        self.assertIn("blocksize=CHUNK_SIZE,", listen)
+
     def test_random_idle_initiation_is_opt_in(self):
         source = self.source()
         self.assertIn('RANDOM_INITIATION_ENABLED = os.getenv("BAYMAX_RANDOM_INITIATION", "0") == "1"', source)

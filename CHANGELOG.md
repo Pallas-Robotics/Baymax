@@ -1,5 +1,12 @@
 # MVP (unreleased)
 
+- 10 ms less mic delay: v10 captures 960-sample (20 ms) mic blocks instead of 1024.
+  The WebRTC audio cleanup works in whole 10 ms frames (480 samples), so 1024-sample
+  blocks kept a permanent 10 ms carry; 960 are two whole frames, cleaned and sent at
+  once. The carry now starts empty and appears only for a block that isn't whole
+  frames (v8's 1024 still works as before), and the stale-audio count uses the real
+  block length. `evals/live_eval.py` sends speech in the runtime's own block size.
+
 - Faster, quieter reconnects. Every session end used to wait 2 s, then reset
   PortAudio with a blocking 5 s `time.sleep` on the event loop and choose the audio
   devices again: at least 7 s with the mic closed, every ~10 minutes when Google resets

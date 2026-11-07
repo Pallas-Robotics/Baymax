@@ -520,7 +520,9 @@ _waiting_cue = create_waiting_cue(_audio_enhancer is not None and _audio_enhance
 monitor.waiting_audio = _waiting_cue
 
 OUTPUT_CHANNELS = 1 # Gemini returns mono
-CHUNK_SIZE = 1024
+# Mic block: 20 ms at 48 kHz, two whole 10 ms frames for the WebRTC audio cleanup
+# (processing.py). 1024 samples left it carrying 10 ms of every block to the next.
+CHUNK_SIZE = 960
 
 # ─── Queues & Buffers ─────────────────────────────────────────────────────────
 audio_queue_mic = asyncio.Queue()

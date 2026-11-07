@@ -101,6 +101,24 @@ class AudioInputTests(unittest.TestCase):
         np.testing.assert_array_equal(np.concatenate([far for _, far in dsp.frames]), rendered[:len(dsp.frames)*480])
         self.assertTrue(enhancer.full_duplex)
 
+    def test_960_sample_blocks_are_cleaned_without_a_10ms_carry(self):
+        # v10's mic blocks are two whole 10 ms frames: nothing waits for the next callback.
+        dsp = FakeDSP()
+        enhancer = InputEnhancer(processor=dsp)
+        enhancer.residual.enabled = False
+        source = np.arange(9600, dtype=np.int16)
+        rendered = source * 2
+        result = []
+        for offset in range(0, len(source), 960):
+            enhancer.rendered(rendered[offset:offset+960].tobytes())
+            result.append(enhancer.process(source[offset:offset+960]))
+        np.testing.assert_array_equal(np.concatenate(result), source)  # 1024 blocks: 10 ms later
+        self.assertEqual(len(enhancer.output) + len(enhancer.pending), 0)
+        self.assertTrue(all(len(near) == len(far) == 480 for near, far in dsp.frames))
+        np.testing.assert_array_equal(np.concatenate([far for _, far in dsp.frames]), rendered)
+        enhancer.reset()                                     # a reconnect starts without a carry too
+        np.testing.assert_array_equal(enhancer.process(source[:960]), source[:960])
+
     def test_brief_80ms_input_is_not_discarded_by_chunking_or_a_local_gate(self):
         enhancer = InputEnhancer(processor=FakeDSP())
         samples = np.zeros(16384, dtype=np.int16)
@@ -308,12 +326,22 @@ class AudioInputTests(unittest.TestCase):
         enhancer = InputEnhancer(processor=FakeDSP())
         with patch('features.conversational_ability.processing.monitor.record') as record:
             self.assertFalse(enhancer.stale(40))
-            self.assertTrue(all(enhancer.stale(5000) for _ in range(94)))  # ~2 s of 1024-sample chunks.
+            self.assertTrue(all(enhancer.stale(5000) for _ in range(100)))  # 2 s of 960-sample chunks.
             record.assert_not_called()
             self.assertFalse(enhancer.stale(30))
         self.assertIn('Dropped 2.0s of stale microphone audio', record.call_args.args[1])
         with patch.dict(os.environ, {'BAYMAX_MAX_MIC_LAG_MS': '0'}):
             self.assertFalse(InputEnhancer(processor=FakeDSP()).stale(60000))  # 0 disables dropping.
+
+    def test_dropped_audio_is_counted_in_the_blocks_actually_cleaned(self):
+        for block, chunks in ((960, 100), (1024, 94)):    # v10, v8: about 2 s either way
+            enhancer = InputEnhancer(processor=FakeDSP())
+            enhancer.process(np.zeros(block, dtype=np.int16))
+            with self.subTest(block=block), \
+                    patch('features.conversational_ability.processing.monitor.record') as record:
+                self.assertTrue(all(enhancer.stale(5000) for _ in range(chunks)))
+                self.assertFalse(enhancer.stale(30))
+                self.assertIn('Dropped 2.0s of stale microphone audio', record.call_args.args[1])
 
     def test_mic_live_and_stalled_reach_the_eyes_but_not_the_waiting_cue(self):
         now = [100.0]

@@ -70,8 +70,13 @@ or dependency. Offline coverage: `test_address_gate.py` and `test_v10_runtime.py
 Audible transitions and device buffering still need live verification.
 
 `processing.py` takes mono int16 mic samples and the already-rendered speaker PCM.
-It processes whole 10 ms frames with retained leftovers and 10 ms output buffering;
-it never zero-pads/discards a tail on every 1024-sample callback. Reference storage
+It processes whole 10 ms frames (480 samples at 48 kHz). v10 captures 960-sample
+(20 ms) mic blocks, two whole frames, so each block is cleaned and sent with no added
+delay. It used 1024-sample blocks, which kept 10 ms of every block for the next
+callback. A block that isn't whole frames (v8 still uses 1024) starts a 10 ms output
+carry once and keeps leftovers, so no tail is zero-padded or discarded on every
+callback. Dropped stale audio (`BAYMAX_MAX_MIC_LAG_MS`) is counted in the block
+length actually cleaned. Reference storage
 is bounded to 250 ms and missing reference is silence. Capture/output stream
 callback ADC/DAC timestamps provide the AEC delay hint, falling back to stream
 latencies when callback timestamps are unavailable. The capture thread alone owns native DSP;
@@ -403,7 +408,7 @@ there is no wake word: people talk to Ember without saying its name.
 
 ### Audio processing
 
-Sixteen offline checks cover continuous 1024-to-480 framing, speaker reference,
+Offline checks cover continuous 960- and 1024-to-480 framing, speaker reference,
 buffer bounds, disabled/failure behavior, short-speech configuration, mic routing
 during playback and untouched raw recordings. Native synthetic steady-noise RMS
 fell from 502 to 255 with approximately 0.5 ms processing per 21 ms input block
