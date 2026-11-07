@@ -2226,7 +2226,8 @@ def _summarise_claimed(context, new, end, deadline):
             "- Relationships and people they mentioned\n\n"
             "Output ONLY the summary lines, one per line.  No numbering, no "
             "bullets, no preamble.  Each line should be a self-contained fact "
-            "or observation.  If there is nothing meaningful to extract, "
+            "or observation.  Write each line in English, whatever language "
+            "the conversation was in.  If there is nothing meaningful to extract, "
             "output exactly: NOTHING_TO_REMEMBER\n\n"
             + earlier +
             "--- TRANSCRIPT START ---\n"
