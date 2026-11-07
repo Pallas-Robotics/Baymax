@@ -297,6 +297,59 @@ the fast path, the backoff, the full reset off the event loop and the GoAway han
 through the real `run()`), and the resend rules in `tests/test_address_gate.py`. Live
 pending: the reconnect time and Google's GoAway timing on the robot.
 
+### Gemini Live model and fallback (`live_models.py`)
+
+Ember was built and tested on `gemini-2.5-flash-native-audio-preview-12-2025` (the
+runtime's `MODEL`). Google's deprecations page lists it for shutdown as early as
+2026-11-17 (the exact date is announced later), replaced by `gemini-3.8-live`.
+
+- **Order.** `BAYMAX_LIVE_MODELS` lists the Live models to use, comma-separated, in order;
+  by default `MODEL`, then `gemini-3.8-live`. A `models/` prefix is dropped; an entry that
+  isn't a model name is skipped with a warning.
+- **Moving on.** `run()` connects with the first model, and at once with the next when this
+  API key can't use it: Google refuses to set up a fresh connection (close 1007 or 1008: the
+  model is not found or not supported for Live, or rejects a setting; refusing a resumed
+  one can be about its resume handle, so that one just reconnects fresh), or the connection
+  ends before Gemini finished a turn on it with Google saying the model is gone ("is not
+  found for API version", "not supported for bidiGenerateContent", "no longer available")
+  or out of quota for this key (close 1011 "You exceeded your current quota"). A close
+  frame carries at most 123 bytes of reason, so these words are matched where Google's
+  messages begin. One `[SESSION] ... can't be used with this API key (...); switching to
+  ...` line is logged and shown in the Monitor. The new model is kept until Ember restarts.
+  The old model's resume handle is dropped (a handle belongs to the model that issued it),
+  so the conversation starts fresh.
+- **No model works.** Once every model has failed like that in a row, `run()` waits as after
+  any lost connection (0.3 s, doubling, then the full audio reset after 5 quick failures) and
+  tries the next model again, so Ember comes back with whichever model returns. No fast spin.
+- **Never** for a dropped network, Google's routine resets, "1011 internal error", or any
+  error once Gemini has finished a turn on the connection: those reconnect with the same
+  model, as before.
+- **Settings per model** (`adapt`, also used by `evals/live_eval.py --model`). Gemini 2.5
+  gets the config unchanged. Gemini 3 and later: no `thinking_config` (Google: omit it,
+  thinking is built in), and every function Ember declares without a behavior is sent as
+  `BLOCKING`, as 2.5 runs them (3.x defaults to `NON_BLOCKING`). The opt-in eye tool's
+  explicit `NON_BLOCKING` is kept.
+- **Not adapted, to check live on 3.8:** proactive audio is always on there, so
+  `only_when_addressed = false` can't turn it off; client content sent without
+  `turn_complete` (recalled memories, the family's profile note) makes the server wait for
+  more input; a turn includes every camera frame by default (Ember sends one every 3 s);
+  voices and tools are untried. One message can carry several parts: the receive loop
+  plays and prints every part in order, and a model turn without parts no longer drops
+  the rest of its message (its turn end).
+- **Today (2026-11-06):** Ember's keys get "1011 You exceeded your current quota" on
+  `gemini-3.8-live` (their projects have no 3.8 quota yet) while 2.5 works, so 3.8 has not
+  run with Ember. Keep 2.5 first. Once the key's project has 3.8 quota and
+  `python evals/live_eval.py --model gemini-3.8-live` passes, put it first:
+  `BAYMAX_LIVE_MODELS=gemini-3.8-live,gemini-2.5-flash-native-audio-preview-12-2025`.
+- **Data flows:** none new. The same session data goes to Google whichever model is used.
+
+Tests: `tests/test_session.py` (the list; the real SDK's errors from a local websocket closed
+as Google closes it; switching, keeping and each round; the setup message sent for each
+model), `ReconnectTests` in `tests/test_v10_runtime.py` (through the real `run()`: a model
+refused at setup, a quota close before the first turn, every model failing, ordinary errors,
+a model that answered), `tests/test_gemini_preflight.py`, `tests/test_live_eval.py`, and the
+several-parts and no-parts messages in `tests/test_address_gate.py`. Live pending: 3.8 itself.
+
 ### Local waiting acknowledgement (MVP)
 
 Off by default (testers found the fixed "hmm" unsettling); set

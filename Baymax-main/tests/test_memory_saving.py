@@ -16,6 +16,7 @@ import unittest
 from unittest.mock import Mock, patch
 import uuid
 
+from features.conversational_ability import live_models
 from test_public_core_integration import CORE, load_function
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -484,7 +485,8 @@ class TeardownTests(unittest.TestCase):
                 return False
         client = SimpleNamespace(aio=SimpleNamespace(live=SimpleNamespace(connect=lambda **kw: Connect())))
         ns = {"asyncio": asyncio, "time": time, "monitor": Mock(), "public_toolkit": SimpleNamespace(prewarm=Mock()),
-              "genai": SimpleNamespace(Client=lambda **kw: client), "API_KEY": "k", "MODEL": "m",
+              "genai": SimpleNamespace(Client=lambda **kw: client), "API_KEY": "k",
+              "_live_models": live_models.ModelChoice(["m"]),  # run()'s Gemini Live model
               "_build_config": dict, "_boot_status": Mock(), "_address_gate": SimpleNamespace(watch=lambda s: s),
               "_memory_embedder": None, "MEMORY_RETRIEVAL_ENABLED": False, "FALL_DETECTION_ENABLED": False,
               "POSE_TRACKING_ENABLED": True, "IDLE_THRESHOLD_SECONDS": 60.0, "F_MIDPOINT": 30.0,

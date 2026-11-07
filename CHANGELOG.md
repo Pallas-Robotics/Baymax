@@ -1,5 +1,22 @@
 # MVP (unreleased)
 
+- Gemini Live model fallback. Google shuts Ember's model,
+  `gemini-2.5-flash-native-audio-preview-12-2025`, down as early as 2026-11-17; its
+  replacement is `gemini-3.8-live`. `BAYMAX_LIVE_MODELS` (documented in `.env.example`)
+  lists the Live models in order: by default 2.5, then `gemini-3.8-live`. When this API key
+  can't use a model (Google refuses to set up a fresh connection, close 1007/1008, or closes
+  one before Gemini finished a turn saying the model is not found, no longer available or out
+  of quota: "1011 You exceeded your current quota"), Ember connects with the next one at once,
+  logs it once and keeps it until it restarts, without the old model's resume handle. When
+  every model has failed in a row it waits as after any lost connection (0.3 s, doubling,
+  then the audio reset) and tries again: no fast spin. Network drops, Google's resets and
+  "1011 internal error" never switch. For Gemini 3 the config leaves out `thinking_config`
+  and declares Ember's functions `BLOCKING`, as 2.5 runs them; 2.5's config is unchanged.
+  `evals/live_eval.py --model gemini-3.8-live` tests a model with the same settings (without
+  `--model` the eval uses the list's first model). On 2026-11-06 Ember's keys had no 3.8
+  quota ("1011 You exceeded your current quota") while 2.5 worked, so 2.5 stays first and
+  3.8 is untested live: MVP.md "Gemini model" says when and how to put it first.
+
 - The receive loop no longer drops the end of a turn when a message's model turn has no
   parts: looping over `None` raised, and the rest of that message (its `turn_complete`:
   the speaking state, the address gate's turn end) was lost, followed by a 0.5 s pause.

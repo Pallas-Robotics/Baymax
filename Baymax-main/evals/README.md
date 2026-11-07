@@ -9,6 +9,7 @@ Each scenario runs several times (default 3), because Gemini isn't deterministic
 python evals/live_eval.py --dry-run                     # what would be sent; connects to nothing
 python evals/live_eval.py                               # all scenarios that apply, 3 runs each
 python evals/live_eval.py --only weather --repeat 5
+python evals/live_eval.py --model gemini-3.8-live       # another Live model, adapted as the runtime does
 python evals/live_eval.py --root ../../Baymax-look-closely/Baymax-main   # test another PR's checkout
 ```
 
@@ -22,6 +23,12 @@ python evals/live_eval.py --root ../../Baymax-look-closely/Baymax-main   # test 
   the MVP persona and the toolkit declarations. The environment defaults come from
   `run_pc.py` and `run_mvp.py`, `device.toml` (`EMBER_DEVICE_CONFIG`, defaults when
   absent) and the toggles from your `.env` apply, as they do on the robot.
+- **Model.** The first Live model the runtime connects with: `BAYMAX_LIVE_MODELS`, else its
+  `MODEL`. `--model` tests another one. Either way the config gets the settings that model
+  needs, adapted exactly as the runtime adapts it
+  (`features/conversational_ability/live_models.py`: for Gemini 3, no `thinking_config` and
+  Ember's functions `BLOCKING`). The report names the model. Use `--model gemini-3.8-live`
+  before putting 3.8 first on a robot (MVP.md, Gemini model).
 - **Turns.**
   - `say`: macOS `say` (or `espeak-ng`) text-to-speech, sent as 16-bit 48 kHz PCM in
     real time over quiet room noise (2 s lead-in, 1.5 s after) so Gemini's activity detection starts and ends the turn. With the MVP's LOW start sensitivity, Gemini ignored clean speech framed by digital silence.
@@ -70,7 +77,8 @@ This is a developer tool. Nothing in the runtime imports it.
 `tests/test_live_eval.py` (core, offline) builds the real config, validates
 `scenarios.json`, checks the expectation logic, and drives a fake Live session (spoken
 turn, tool call with a stub, card frames, timeout). It also confirms that a dry run or a
-declined prompt connects to nothing.
+declined prompt connects to nothing, and which model and adapted config `--model`, or the
+model list, sends.
 
 ## Adding a scenario
 Add an entry to `scenarios.json`:

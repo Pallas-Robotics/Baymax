@@ -1,5 +1,6 @@
 """The MVP launcher runs realtime_gemini_10.py: its real hooks, without devices or Gemini."""
 import asyncio
+import copy
 import os
 from pathlib import Path
 import sys
@@ -18,10 +19,12 @@ from websockets.asyncio.client import connect as ws_connect
 from websockets.asyncio.server import serve as ws_serve
 from websockets.exceptions import ConnectionClosed, ConnectionClosedError
 
+from features.conversational_ability import live_models
 from features.conversational_ability.addressing import AddressGate
 from features.conversational_ability.session import connection_lost
 import test_waiting_cue
 from test_public_core_integration import load_function
+from test_session import NEW, NOT_FOUND, OLD, QUOTA  # Gemini's model names and close reasons
 
 ROOT = Path(__file__).resolve().parents[1]
 V10 = ROOT / "realtime_gemini_10.py"
@@ -205,6 +208,15 @@ class V10RuntimeTests(unittest.TestCase):
         listen = self.source()[self.source().index("async def listen_audio"):self.source().index("async def send_audio_realtime")]
         self.assertIn("blocksize=CHUNK_SIZE,", listen)
 
+    def test_the_live_model_list_starts_with_model(self):
+        # The preflight and evals/live_eval.py read MODEL from the source; it stays first by default.
+        source = self.source()
+        self.assertIn(f'MODEL = "{OLD}"\n', source)
+        self.assertIn("_live_models = live_models.ModelChoice(live_models.configured(MODEL))", source)
+        self.assertEqual(live_models.configured(OLD, {}), (OLD, NEW))
+        run = source[source.index("async def run():"):source.index("def _boot_status")]
+        self.assertIn("model=model, config=_live_models.adapt(_build_config())", run)
+
     def test_random_idle_initiation_is_opt_in(self):
         source = self.source()
         self.assertIn('RANDOM_INITIATION_ENABLED = os.getenv("BAYMAX_RANDOM_INITIATION", "0") == "1"', source)
@@ -371,19 +383,22 @@ class ReconnectTests(unittest.TestCase):
 
     FALL_ALERT = {"turns": {"role": "user", "parts": [{"text": "[FALL ALERT] check on them"}]}, "turn_complete": True}
 
-    def run_connections(self, count, receive, failing=(), load=(), **overrides):
+    def run_connections(self, count, receive, failing=(), load=(), setup_errors=None, **overrides):
         """The real run(), with its real cleanup, the real gate and the real watched
         session, for `count` connections. `receive(index, session, namespace)` is each
-        connection's receive loop; every send on a connection in `failing` fails.
+        connection's receive loop; every send on a connection in `failing` fails, and
+        connection i fails while being set up with `setup_errors[i]` (no session).
         `load` names more real runtime functions; `overrides` replace namespace entries.
-        `self.pauses` lists every asyncio.sleep awaited (each returns after 1 ms)."""
+        `self.pauses` lists every asyncio.sleep awaited (each returns after 1 ms);
+        `self.models` the model each connection asked for."""
         class Stop(BaseException):
             pass
-        sessions = []
+        sessions, setup_errors = [], setup_errors or {}
+        asked = self.models = []
 
         class Session:
-            def __init__(self, index, config):
-                self.index, self.config, self.attempted, self.sent = index, config, [], []
+            def __init__(self, index, model, config):
+                self.index, self.model, self.config, self.attempted, self.sent = index, model, config, [], []
                 self._ws = SimpleNamespace(transport=SimpleNamespace(abort=Mock()))
             async def send_client_content(self, **kwargs):
                 self.attempted.append(kwargs)
@@ -392,12 +407,16 @@ class ReconnectTests(unittest.TestCase):
                 self.sent.append(kwargs)
 
         class Connect:
-            def __init__(self, config):
-                self.config = config
+            def __init__(self, model, config):
+                self.model, self.config = model, config
             async def __aenter__(self):
-                if len(sessions) == count:
+                index = len(asked)
+                if index == count:
                     raise Stop()
-                sessions.append(Session(len(sessions), self.config))
+                asked.append(self.model)
+                if index in setup_errors:
+                    raise setup_errors[index]
+                sessions.append(Session(index, self.model, self.config))
                 return sessions[-1]
             async def __aexit__(self, *exc):
                 return False
@@ -412,14 +431,15 @@ class ReconnectTests(unittest.TestCase):
             "_initiation_ts_lock": threading.Lock(), "_last_robot_speech_ts": 0.0,
             "_address_gate": AddressGate(enabled=False), "monitor": Mock(), "public_toolkit": Mock(),
             "genai": SimpleNamespace(Client=lambda **kw: SimpleNamespace(aio=SimpleNamespace(
-                live=SimpleNamespace(connect=lambda **kw: Connect(kw["config"]))))),
-            "API_KEY": "test", "MODEL": "m", "_build_config": dict, "_boot_status": Mock(),
+                live=SimpleNamespace(connect=lambda **kw: Connect(kw["model"], kw["config"]))))),
+            "API_KEY": "test", "_live_models": live_models.ModelChoice(["m"]), "_turn_done_at": 0.0,
+            "_build_config": dict, "_boot_status": Mock(),
             "_memory_embedder": None, "MEMORY_RETRIEVAL_ENABLED": False, "FALL_DETECTION_ENABLED": False,
             "FALL_ANGLE_THRESHOLD": 0, "FALL_STAY_DOWN_SECONDS": 0, "FALL_DETECTION_FPS": 0,
             "POSE_TRACKING_ENABLED": True, "RANDOM_INITIATION_ENABLED": False,
             "start_output_stream": Mock(), "sd": Mock(), "get_default_device_id": lambda: (0, 0),
             "listen_audio": forever, "send_audio_realtime": forever, "send_video_realtime": forever,
-            "receive_audio": lambda session: receive(len(sessions) - 1, session, namespace),
+            "receive_audio": lambda session: receive(session.index, session, namespace),
             "fall_alert_monitor": forever, "monitor_queues": forever, "between_turns": forever,
             "fall_worker": SimpleNamespace(alert_monitor=forever), "_shutdown_event": None,
             "connection_lost": connection_lost, "RECONNECT_DELAY_S": 0.3, "QUICK_SESSION_S": 60.0,
@@ -435,6 +455,8 @@ class ReconnectTests(unittest.TestCase):
 
         async def pause(seconds):
             self.pauses.append(seconds)
+            if len(self.pauses) > 100:
+                raise AssertionError("run() kept pausing without reaching the connections")
             await REAL_SLEEP(0.001)
         with patch("builtins.print"), patch("asyncio.sleep", pause), self.assertRaises(Stop):
             asyncio.run(namespace["run"]())
@@ -722,6 +744,69 @@ class ReconnectTests(unittest.TestCase):
         cleanup = run[run.index("finally:"):]
         self.assertLess(cleanup.index("_abandon_reply()"), cleanup.index("_abort_connection(live_session)"))
         self.assertLess(cleanup.index("_abort_connection(live_session)"), cleanup.index("output_stream.stop()"))
+
+    # ── Gemini Live model: the next one when this API key can't use one (live_models.py) ──
+    def run_models(self, count, receive, **options):
+        """run_connections() with the default model list (2.5, then 3.8) and a config with
+        Ember's thinking budget and a function."""
+        config = {"thinking_config": {"thinking_budget": 0}, "tools": [{"function_declarations": [{"name": "get_weather"}]}]}
+        options.setdefault("_build_config", lambda: copy.deepcopy(config))
+        return self.run_connections(count, receive, _live_models=live_models.ModelChoice([OLD, NEW]), **options)
+
+    def test_a_model_this_key_cannot_use_is_replaced_at_once_and_kept(self):
+        async def receive(index, session, ns):
+            raise ConnectionResetError()  # an ordinary loss on the new model
+        sessions, ns = self.run_models(3, receive, setup_errors={0: errors.APIError(1008, NOT_FOUND)})
+        self.assertEqual(self.models, [OLD, NEW, NEW])  # at once, then kept
+        self.assertEqual(self.pauses, [0.3, 0.6])       # no pause for the switch; losses back off as before
+        config = sessions[0].config                     # adapted to 3.8
+        self.assertNotIn("thinking_config", config)
+        self.assertEqual(config["tools"][0]["function_declarations"][0]["behavior"], "BLOCKING")
+        ns["sd"]._terminate.assert_not_called()
+
+    def test_a_quota_close_before_the_first_turn_moves_on_without_the_old_models_handle(self):
+        from features.conversational_ability import session as resumption
+        resumption.forget()
+        self.addCleanup(resumption.forget)
+
+        async def receive(index, session, ns):
+            if index == 0:  # 2.5 sets the connection up, sends a resume handle, then closes
+                resumption.remember(SimpleNamespace(resumable=True, new_handle="issued by 2.5"))
+                raise errors.APIError(1011, QUOTA)
+            raise ConnectionResetError()
+        with patch.dict(os.environ, {"BAYMAX_SESSION_RESUMPTION": "1", "BAYMAX_CONTEXT_COMPRESSION": "0"}):
+            sessions, ns = self.run_models(2, receive, _build_config=lambda: resumption.extend_config({}))
+        self.assertEqual(self.models, [OLD, NEW])
+        self.assertEqual(sessions[1].config["session_resumption"], {})  # not offered to 3.8
+        self.assertEqual(self.pauses, [0.3])
+
+    def test_when_no_model_can_be_used_ember_backs_off_as_after_any_loss(self):
+        async def receive(index, session, ns):
+            raise errors.APIError(1011, QUOTA)
+        self.run_models(6, receive)
+        self.assertEqual(self.models, [OLD, NEW] * 3)
+        self.assertEqual(self.pauses, [0.3, 0.6, 1.2])  # one growing pause per round: no fast spin
+
+    def test_ordinary_errors_never_change_the_model(self):
+        async def receive(index, session, ns):
+            raise (errors.APIError(1006, "Abnormal closure."), errors.APIError(1008, "bye"))[index - 3]
+        self.run_models(5, receive, setup_errors={0: errors.APIError(1011, "Internal error encountered."),
+                                                  1: ConnectionRefusedError(), 2: TimeoutError()})
+        self.assertEqual(self.models, [OLD] * 5)
+        self.assertEqual(self.pauses, [0.3, 0.6, 1.2, 2.4, 4.8])
+
+    def test_a_model_that_finished_a_turn_is_kept_when_its_connection_ends(self):
+        async def receive(index, session, ns):
+            if index == 0:
+                ns["_turn_done_at"] = time.monotonic()  # as receive_audio does at turn_complete
+            if index < 2:
+                raise errors.APIError(1011, QUOTA)
+            raise ConnectionResetError()
+        self.run_models(3, receive)
+        # The quota close on a connection that worked reconnects with 2.5; it moves on once
+        # a connection fails before any turn.
+        self.assertEqual(self.models, [OLD, OLD, NEW])
+        self.assertEqual(self.pauses, [0.3, 0.6])
 
 
 class RealTimeThreadTests(unittest.TestCase):

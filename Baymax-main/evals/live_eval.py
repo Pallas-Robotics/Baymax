@@ -14,6 +14,7 @@ listed by --dry-run (or pass --yes). Reports go to .local-review/ (gitignored).
 
     python evals/live_eval.py --dry-run
     python evals/live_eval.py --only greeting --repeat 3
+    python evals/live_eval.py --model gemini-3.8-live   # another Live model, adapted as the runtime does
     python evals/live_eval.py --root ../../Baymax-brain-games/Baymax-main   # another PR's checkout
 """
 import argparse
@@ -149,6 +150,20 @@ def mvp_session(environ=os.environ, root=ROOT):
         if name != "BAYMAX_HARDWARE_PROFILE":  # Device selection only; nothing is opened here.
             environ.setdefault(name, value)
     return core_session(runtime(root))
+
+
+def for_model(model, config, requested=None):
+    """(model, config) to test: `requested` (--model), else the first Live model the
+    runtime connects with (BAYMAX_LIVE_MODELS, else its MODEL), and Ember's config with
+    the settings that model needs, adapted as the runtime adapts it."""
+    try:
+        from features.conversational_ability import live_models
+    except ImportError:  # --root on a branch from before the model list: its MODEL, as it was
+        if requested:
+            print("That branch has no live_models.py: the config is sent as it is, not adapted to the model.")
+        return requested or model, config
+    model = requested or live_models.configured(model)[0]
+    return model, live_models.adapt(config, model)
 
 
 def declared_tools(config):
@@ -428,12 +443,13 @@ async def run_scenario(connect, model, config, scenario, real_tools=False, speak
 
 
 # ── Report ───────────────────────────────────────────────────────────────────
-def summarize(results):
+def summarize(results, model=None):
     lines = ["# Ember live evaluation (Gemini in the loop, no robot)", "",
-             f"Generated: {time.strftime('%Y-%m-%d %H:%M:%S %Z')}", "",
-             "Synthetic speech and pictures only. This is Gemini-behaviour evidence; the robot's "
-             "microphone, echo cancellation, speaker, camera and eyes are NOT exercised.", "",
-             "| Scenario | Passed | Median first audio | Notes |", "|---|---|---|---|"]
+             f"Generated: {time.strftime('%Y-%m-%d %H:%M:%S %Z')}", ""]
+    lines += [f"Model: {model}", ""] if model else []
+    lines += ["Synthetic speech and pictures only. This is Gemini-behaviour evidence; the robot's "
+              "microphone, echo cancellation, speaker, camera and eyes are NOT exercised.", "",
+              "| Scenario | Passed | Median first audio | Notes |", "|---|---|---|---|"]
     detail = []
     for name, outcome in results.items():
         if "skipped" in outcome:
@@ -531,6 +547,8 @@ def main(argv=None, connect=None, confirm=input):
     parser.add_argument("--report", type=Path, default=REPORT_DIR / "live-eval.md")
     parser.add_argument("--root", type=Path, default=ROOT,
                         help="Baymax-main of the branch to test, e.g. a PR worktree (default: this one)")
+    parser.add_argument("--model", help="Gemini Live model to test, e.g. gemini-3.8-live (default: the first the "
+                        "runtime uses: BAYMAX_LIVE_MODELS, else its MODEL); the config is adapted to it as the runtime does")
     args = parser.parse_args(argv)
 
     root = args.root.resolve()
@@ -541,7 +559,7 @@ def main(argv=None, connect=None, confirm=input):
         sys.path.insert(0, str(root))  # That branch's features, prompts and tools.
     from dotenv import load_dotenv
     load_dotenv(root / ".env", override=False, interpolate=False)  # The user's toggles, as on the robot.
-    model, config = mvp_session(root=root)
+    model, config = for_model(*mvp_session(root=root), args.model)
     CHUNK = chunk_size(runtime(root))
     print(f"Branch under test: {root}")
     scenarios = [s for s in load_scenarios(args.scenarios) if not args.only or s["name"] in args.only]
@@ -571,7 +589,7 @@ def main(argv=None, connect=None, confirm=input):
         print("Nothing was sent.")
         return 1
     results.update(asyncio.run(run_all(plan, model, config, args.repeat, args.real_tools, connect)))
-    report = summarize(results)
+    report = summarize(results, model)
     args.report.parent.mkdir(parents=True, exist_ok=True)
     args.report.write_text(report, encoding="utf-8")
     args.report.with_suffix(".json").write_text(json.dumps(results, indent=2), encoding="utf-8")

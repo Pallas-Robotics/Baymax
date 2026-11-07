@@ -243,6 +243,12 @@ sd.default.device = [target_device_microphone, target_device_speaker]
 # ________________________________________________________________________________________________________________________________________________________________
 
 MODEL = "gemini-2.5-flash-native-audio-preview-12-2025"
+# Google shuts MODEL down as early as 2026-11-17 (replacement: gemini-3.8-live).
+# BAYMAX_LIVE_MODELS lists the Live models to use, in order (default: MODEL, then
+# gemini-3.8-live); run() moves on from one this API key can't use and adapts the
+# config to each (features/conversational_ability/live_models.py).
+from features.conversational_ability import live_models
+_live_models = live_models.ModelChoice(live_models.configured(MODEL))
 # gemini-2.5-flash now returns 404 ("no longer available to new users").
 SUMMARY_MODEL = "gemini-3.5-flash"  # lighter model for memory summaries
 
@@ -2579,16 +2585,18 @@ async def run():
     )
     quick_failures = 0  # connections in a row that ended within QUICK_SESSION_S
     while True:
-        started = time.monotonic()
+        started, set_up = time.monotonic(), False
+        model = _live_models.current
         try:
             monitor.finish_transcripts()
             monitor.emit("connecting", "Connecting to Gemini Live")
-            print(f"Connecting to {MODEL}...")
+            print(f"Connecting to {model}...")
             _boot_status("connecting", f"Connecting to Gemini model...")
             _go_away_at = None
             async with client.aio.live.connect(
-                model=MODEL, config=_build_config()
+                model=model, config=_live_models.adapt(_build_config())  # the settings `model` needs
             ) as live_session:
+                set_up = True
                 live_session = _address_gate.watch(live_session)  # notes Ember's own messages
                 print("Connected. System ready.")
                 monitor.emit("listening", "Connected to Gemini; listening")
@@ -2650,6 +2658,9 @@ async def run():
                     output_stream.stop()
                     output_stream.close()
         except Exception as e:
+            # This API key can't use the model (gone, or out of quota): the next one, at once.
+            if _live_models.move_on(e, set_up=set_up, served=_turn_done_at >= started):
+                continue
             reason = "; ".join(repr(error) for error in _leaves(e))
             pause, quick_failures = _reconnect_plan(e, time.monotonic() - started, quick_failures)
             if pause is not None:

@@ -2,6 +2,8 @@
 import asyncio
 import contextlib
 import os
+from pathlib import Path
+import tempfile
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
@@ -218,6 +220,63 @@ class SessionTests(unittest.TestCase):
         self.assertIn("Dropped", run["error"])
         self.assertEqual(run["during"]["tools"], ["reminder"])
         self.assertIn("during:", live_eval.summarize(results))
+
+
+class ModelTests(unittest.TestCase):
+    """--model: another Live model, with Ember's config adapted as the runtime adapts it."""
+    LATER = "gemini-3.8-live"
+
+    def run_main(self, *argv, models=""):
+        """main() up to the Gemini runs, which are recorded instead of made. `models` is
+        BAYMAX_LIVE_MODELS (set, so a developer's .env can't change it)."""
+        seen = []
+
+        async def run_all(plan, model, config, repeat, real_tools, connect):
+            seen.append((model, config))
+            return {}
+        with tempfile.TemporaryDirectory() as folder, patch.dict(os.environ, {"BAYMAX_LIVE_MODELS": models}), \
+                patch.object(live_eval, "run_all", run_all), patch("builtins.print") as printed:
+            report = Path(folder) / "eval.md"
+            result = live_eval.main([*argv, "--only", "greeting", "--yes", "--report", str(report)],
+                                    connect=connector(FakeSession([]), []))
+            shown = "\n".join(" ".join(map(str, call.args)) for call in printed.call_args_list)
+            self.assertEqual(result, 0)
+            return *seen[0], shown, report.read_text(encoding="utf-8")
+
+    @staticmethod
+    def behaviors(config):
+        return {d.get("behavior") for tool in config["tools"] for d in tool.get("function_declarations", [])}
+
+    def test_the_model_option_sends_the_config_the_runtime_would_send_that_model(self):
+        model, config, shown, report = self.run_main("--model", self.LATER)
+        self.assertEqual(model, self.LATER)
+        self.assertNotIn("thinking_config", config)
+        self.assertEqual(self.behaviors(config), {"BLOCKING"})
+        self.assertIn(f"Model: {self.LATER}", shown)   # in what --dry-run and the prompt list
+        self.assertIn(f"Model: {self.LATER}", report)
+
+    def test_without_it_the_eval_uses_the_model_the_runtime_connects_with_first(self):
+        runtime_model, runtime_config = live_eval.core_session()
+        model, config, _, report = self.run_main()
+        self.assertEqual(model, runtime_model)  # MODEL, gemini-2.5: its config as the runtime builds it
+        self.assertEqual(config["thinking_config"], runtime_config["thinking_config"])
+        self.assertEqual(self.behaviors(config), {None})
+        self.assertIn(f"Model: {runtime_model}", report)
+        model, config, _, _ = self.run_main(models=f"{self.LATER},{runtime_model}")
+        self.assertEqual(model, self.LATER)
+        self.assertNotIn("thinking_config", config)
+
+    def test_a_branch_from_before_the_model_list_keeps_its_model_and_config(self):
+        import sys
+        import features.conversational_ability as package
+        config = {"thinking_config": {"thinking_budget": 0}}
+        with patch.dict(sys.modules, {"features.conversational_ability.live_models": None}), \
+                patch.dict(package.__dict__), patch("builtins.print") as printed:
+            package.__dict__.pop("live_models", None)  # --root on an older checkout: no live_models.py
+            self.assertEqual(live_eval.for_model("m", config), ("m", config))
+            printed.assert_not_called()
+            self.assertEqual(live_eval.for_model("m", config, self.LATER), (self.LATER, config))
+            self.assertIn("not adapted", printed.call_args.args[0])
 
 
 class MainTests(unittest.TestCase):
