@@ -47,6 +47,12 @@ noise: 242 and 250 µs in another set), but 441 µs with a `threading.Timer` per
 never counts against the 60 s. A child stuck inside a kernel call dies only when the
 driver returns, and the call waits until then.
 
+The camera thread gives `FallDetector.update(landmarks, timestamp=...)` each frame's
+capture time (`time.monotonic()` right after `cap.read()`), and passes it on to the fall
+toolkit (`share(..., captured_at=...)`): fall velocities use when the frames were
+captured, not when their pose came back, which varies with the round trip to the pose
+process. Thresholds are unchanged.
+
 | `BAYMAX_POSE_BACKEND` | Behaviour |
 |---|---|
 | `auto` (default) | NPU only if **all** hold: Linux aarch64; `rockchip,rk3588` in `/proc/device-tree/compatible`; `rknnlite` (rknn-toolkit-lite2) imports; `.models/pose_npu/*.rknn` exist with the SHA-256s in `manifest.json`; the converter's on-board accuracy check passed, run with the same rknn-toolkit-lite2 version as Ember's Python; `init_runtime` and a warm-up inference (finite outputs) succeed; `librknnrt` and the rknpu driver report the same versions (`get_sdk_version()`, whitespace ignored) as when the check ran, so a new librknnrt or rknpu driver (e.g. a kernel update that brings another rknpu) means CPU until the check is re-run; a kernel update that keeps both versions keeps the NPU (the kernel is only recorded in `manifest.json`). Otherwise MediaPipe CPU, also when anything in these checks raises (unreadable file, malformed manifest). |
@@ -249,9 +255,11 @@ the start limit (not a frame's), and no process is left; a load slower than a fr
 limit is kept; one watchdog thread per child, no thread or timer per frame.
 `tests/test_v10_runtime.py`: the camera thread with real vision processes, an NPU child
 that hangs on its second frame is stopped and pose restarts once on the CPU while video
-continues.
+continues; `FallDetector` and the fall toolkit get each frame's capture time, not the
+time its pose came back.
 
-`tests/test_toolkit_fall_detection.py` covers the `NPU (core pose)` status.
+`tests/test_toolkit_fall_detection.py` covers the `NPU (core pose)` status and capture
+times in `FallDetector` and the toolkit.
 
 ## Limits
 

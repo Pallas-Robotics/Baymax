@@ -154,9 +154,10 @@ class FallWorker:
     def _running_label(self):
         return f"Running on {self.pose_device} (core pose)" if self.shared else "Running on CPU"
 
-    def share(self, landmarks, inference_ms=None, device=None):
-        """The core's pose result for the latest frame, how long it took and where it ran
-        ("CPU" or "NPU", from features/pose/backend.py) in shared_pose mode."""
+    def share(self, landmarks, inference_ms=None, device=None, captured_at=None):
+        """The core's pose result for the latest frame, how long it took, where it ran
+        ("CPU" or "NPU", from features/pose/backend.py) and when the frame was captured
+        (time.monotonic(); fall velocities use it) in shared_pose mode."""
         if device and self.shared and device != self.pose_device:
             with self.lock:
                 previous = self.running_state
@@ -166,7 +167,7 @@ class FallWorker:
                     self.state = self.running_state
         if not self.shared or not self.is_enabled or self.stop_event.is_set() or not self.thread or not self.thread.is_alive():
             return
-        self._put((time.monotonic(), landmarks, inference_ms))
+        self._put((time.monotonic(), landmarks, inference_ms, captured_at))
 
     def _put(self, item):
         with self.lock:
@@ -198,7 +199,9 @@ class FallWorker:
                 landmarks = item[1] if self.shared else backend.detect(item[1])
                 if self.stop_event.is_set():
                     break
-                result = detector.update(landmarks)
+                # Velocities use when the frame was captured (the core's time; or when
+                # submit() got it), not when its pose was done.
+                result = detector.update(landmarks, timestamp=item[3] if self.shared else item[0])
                 finished = time.monotonic()
                 with self.lock:
                     self.inference_ms = (item[2] if self.shared else round((finished - started) * 1000, 1))

@@ -131,7 +131,7 @@ class FallDetector:
     # Public API
     # ------------------------------------------------------------------
 
-    def update(self, landmarks) -> dict:
+    def update(self, landmarks, timestamp=None) -> dict:
         """
         Process one frame's pose landmarks.
 
@@ -139,6 +139,8 @@ class FallDetector:
         ----------
         landmarks : mediapipe.framework.formats.landmark_pb2.NormalizedLandmarkList
             The `pose_landmarks` field from a MediaPipe Pose result, or None.
+        timestamp : float | None
+            Monotonic capture time for asynchronous inference. Defaults to now.
 
         Returns
         -------
@@ -153,7 +155,7 @@ class FallDetector:
             angular_vel    : float | None  — angular velocity in deg/s
             hip_descent_vel: float | None  — hip downward velocity (norm/s)
         """
-        now = time.monotonic()
+        now = time.monotonic() if timestamp is None else timestamp
 
         result = dict(
             fall_detected=False,

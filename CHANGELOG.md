@@ -17,6 +17,16 @@
   only when the driver returns. Offline tests pass (fake hung children, and the camera
   thread with real vision processes); a real hung NPU call on the 5 Max is pending.
 
+- Fall detection: velocities use each frame's capture time. `FallDetector.update()`
+  read the clock when the frame's pose came back, so the varying round trip to the pose
+  process went into the angular and hip velocities. The camera thread now passes the
+  time right after `cap.read()` (`update(landmarks, timestamp=...)`, opi4-demo's local
+  change to the vendored detector, recorded in `fall_detection/UPSTREAM.json`), and the
+  fall toolkit gets it too (`share(..., captured_at=...)`; with its own model, the time
+  `submit()` got the frame). Thresholds are unchanged; without a timestamp the detector
+  reads the clock as before. Offline tests pass; fall accuracy on the boards is pending
+  as before.
+
 - Address gate: a name said just before Gemini ends a turn without replying is
   no longer forgotten. On ember-002 "Amber, please response." was followed by an
   empty turn, and the reply "I'm here." in the next turn was dropped. Speech

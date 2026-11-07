@@ -58,6 +58,36 @@ class FallAlgorithmTests(unittest.TestCase):
         self.assertTrue(any(result["fall_pending"] for result in results))
         self.assertFalse(any(result["fall_detected"] for result in results))
 
+    def test_capture_times_not_the_time_of_the_call_give_the_motion(self):
+        # update() runs when the frame's pose comes back, a different time after each
+        # capture; given each frame's capture time, the result is that of on-time calls.
+        frames = [(i/10, 0) for i in range(13)] + [(1.3, 60), (1.4, 80)]
+        frames += [(i/10, 90) for i in range(15, 55)]
+        on_time = self.simulate(frames)
+        detector = upstream_detector.FallDetector(angle_threshold=45, ang_vel_threshold=25,
+                                                   hip_vel_threshold=0.12, confirmation_frames=2)
+        late = []
+        for number, (moment, angle) in enumerate(frames):
+            pose_ms = (20, 90, 45, 70, 30)[number % 5]
+            with patch.object(upstream_detector.time, "monotonic", return_value=moment + pose_ms / 1000):
+                late.append(detector.update(pose(angle), timestamp=moment))
+        self.assertEqual(late, on_time)
+        self.assertEqual(sum(result["fall_detected"] for result in late), 1)
+
+    def test_capture_times_matter_when_the_clock_runs_differently(self):
+        # Ported from opi4-demo (ff168ca): the clock says the fall took 7 times as long.
+        detector = upstream_detector.FallDetector(confirmation_frames=2)
+        frames = [(i / 10, 0) for i in range(13)] + [(1.3, 70), (1.4, 85)]
+        frames += [(i / 10, 90) for i in range(15, 36)]
+        results = []
+        for captured_at, angle in frames:
+            with patch.object(upstream_detector.time, "monotonic", return_value=1000 + captured_at * 7):
+                results.append(detector.update(pose(angle), timestamp=captured_at))
+        self.assertTrue(results[14]["fall_pending"])
+        self.assertEqual(sum(result["fall_detected"] for result in results), 1)
+        self.assertFalse(results[33]["fall_detected"])
+        self.assertTrue(results[34]["fall_detected"])          # stayed down 2 s by the capture times
+
     def test_upstream_detector_matches_recorded_source_hash(self):
         directory = Path(upstream_detector.__file__).parent
         manifest = json.loads((directory / "UPSTREAM.json").read_text())
@@ -112,7 +142,7 @@ class FallWorkerTests(unittest.TestCase):
         self.worker.share(landmarks, 12.5)
         self.wait_for(lambda: self.worker.status()["last_result"] is not None)
         self.factory.assert_not_called()
-        self.detector.update.assert_called_with(landmarks)
+        self.detector.update.assert_called_with(landmarks, timestamp=None)   # no capture time: the clock
         status = self.worker.status()
         self.assertEqual(status["backend"], "CPU (core pose)")
         self.assertEqual(status["inference_ms"], 12.5)
@@ -131,6 +161,27 @@ class FallWorkerTests(unittest.TestCase):
         self.worker.share(landmarks, 30.0, device="CPU")       # the backend fell back to MediaPipe
         self.wait_for(lambda: self.worker.status()["inference_ms"] == 30.0)
         self.assertEqual(self.worker.status()["state"], "Running on CPU (core pose)")
+
+    def test_shared_pose_is_timed_by_the_frames_capture(self):
+        landmarks = [SimpleNamespace(x=0.5, y=0.5, visibility=1.0)] * 33
+        self.worker.start(shared_pose=True, angle_threshold=45)
+        self.worker.share(landmarks, 30.0, device="NPU", captured_at=1234.5)
+        self.wait_for(lambda: self.worker.status()["last_result"] is not None)
+        self.detector.update.assert_called_with(landmarks, timestamp=1234.5)
+
+    def test_own_model_is_timed_by_when_the_frame_came_not_when_its_pose_did(self):
+        def slow_pose(frame):
+            time.sleep(0.2)
+            return None
+        self.backend.detect.side_effect = slow_pose
+        self.worker.start(angle_threshold=45)
+        before = time.monotonic()
+        self.worker.submit(np.zeros((2, 2, 3), dtype=np.uint8))
+        submitted = time.monotonic()
+        self.wait_for(lambda: self.worker.status()["last_result"] is not None)
+        timestamp = self.detector.update.call_args.kwargs.get("timestamp")
+        self.assertIsNotNone(timestamp)
+        self.assertTrue(before <= timestamp <= submitted)       # not 0.2 s later, after the pose
 
     def test_unshared_worker_ignores_core_landmarks(self):
         self.worker.start(angle_threshold=45)

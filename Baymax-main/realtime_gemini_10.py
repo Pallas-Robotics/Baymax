@@ -1233,6 +1233,9 @@ def _fall_detection_thread():
             if not ret:
                 time.sleep(0.1)
                 continue
+            # Fall velocities use when the frame came, not when its pose came back:
+            # the round trip to the pose process varies from frame to frame.
+            captured_at = time.monotonic()
 
             # Share raw frame for Gemini video sender
             with _latest_frame_lock:
@@ -1259,12 +1262,12 @@ def _fall_detection_thread():
                               flush=True)
                 else:
                     fall_worker.share(landmarks, round((time.monotonic() - pose_t0) * 1000, 1),
-                                      device=landmarker.device)
+                                      device=landmarker.device, captured_at=captured_at)
 
             # Share face-presence signal with the initiation monitor
             _update_face_visibility(landmarks)
 
-            result = fall_detector.update(landmarks) if fall_detector else no_fall
+            result = fall_detector.update(landmarks, timestamp=captured_at) if fall_detector else no_fall
             if result["trunk_angle"] is not None:
                 angle_history.append(result["trunk_angle"])
                 a = result["trunk_angle"]

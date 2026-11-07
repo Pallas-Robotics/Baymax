@@ -675,7 +675,9 @@ class PoseProcessRestartTests(unittest.TestCase):
         def close(self):
             self.closed = True
 
-    def run_thread(self, children, frames=5, pose_tracking=True, download_error=None):
+    def run_thread(self, children, frames=5, pose_tracking=True, download_error=None, fall_detection=False,
+                   **names):
+        """names: replacements for the thread's globals (e.g. time, FallDetector)."""
         import collections
         shutdown = threading.Event()
 
@@ -715,7 +717,7 @@ class PoseProcessRestartTests(unittest.TestCase):
             "os": os, "time": time, "collections": collections, "CAMERA_INDICES": [0],
             "cv2": SimpleNamespace(VideoCapture=lambda index: Capture(), CAP_PROP_FRAME_WIDTH=3,
                                    CAP_PROP_FRAME_HEIGHT=4),
-            "POSE_TRACKING_ENABLED": pose_tracking, "FALL_DETECTION_ENABLED": False, "FallDetector": Mock(),
+            "POSE_TRACKING_ENABLED": pose_tracking, "FALL_DETECTION_ENABLED": fall_detection, "FallDetector": Mock(),
             "_ensure_pose_model": Mock(side_effect=download_error), "_open_pose": open_pose, "fall_worker": Mock(),
             "FALL_DETECTION_FPS": 1000, "FALL_ANGLE_THRESHOLD": 60.0, "FALL_ANG_VEL_THRESHOLD": 1.0,
             "FALL_HIP_VEL_THRESHOLD": 1.0, "FALL_HISTORY_FRAMES": 6, "FALL_CONFIRMATION_FRAMES": 2,
@@ -726,6 +728,7 @@ class PoseProcessRestartTests(unittest.TestCase):
             "_draw_annotated": Mock(), "_fall_detected_event": threading.Event(), "monitor": Mock(),
             "_notify_webapp": Mock(),
         })
+        ns.update(names)
         thread = load_function("_fall_detection_thread", ns)
         with patch.dict(os.environ, {"BAYMAX_HARDWARE_PROFILE": "test"}), patch("builtins.print") as printed:
             thread()
@@ -796,6 +799,39 @@ class PoseProcessRestartTests(unittest.TestCase):
         ns, latest, faces, opened, logged = self.run_thread([], pose_tracking=False)
         self.assertEqual(opened, [])
         self.assertEqual(latest[:-1], ["frame2", "frame3", "frame4", "frame5", "frame6"])
+
+    @staticmethod
+    def detector(stamps):
+        """A FallDetector stand-in that records each update's timestamp and sees no fall."""
+        class Detector:
+            _suspicious_streak = 0
+
+            def __init__(self, **settings):
+                pass
+
+            def update(self, landmarks, timestamp=None):
+                stamps.append(timestamp)
+                return dict(fall_detected=False, fall_active=False, fall_pending=False,
+                            trunk_angle=None, angular_vel=None, hip_descent_vel=None)
+        return Detector
+
+    def test_fall_velocities_use_each_frames_capture_time_not_its_pose_round_trip(self):
+        clock = SimpleNamespace(now=100.0)
+        clock.monotonic = lambda: clock.now
+        clock.sleep = lambda seconds: setattr(clock, "now", clock.now + seconds)
+        captured, stamps = [], []
+
+        class SlowPose(self.Working):
+            def detect(self, frame):
+                captured.append(clock.now)                 # the frame was read just now
+                clock.now += (0.02, 0.09)[len(captured) % 2]   # 20 or 90 ms in the pose process
+                return super().detect(frame)
+        ns, latest, faces, opened, logged = self.run_thread(
+            [SlowPose()], fall_detection=True, time=clock, FallDetector=self.detector(stamps))
+        self.assertEqual(len(captured), 5)
+        self.assertEqual(stamps, captured)
+        # The fall toolkit's own detector (Monitor, or check-ins when the built-in one is off) too.
+        self.assertEqual([c.kwargs["captured_at"] for c in ns["fall_worker"].share.call_args_list], captured)
 
     HANGING = textwrap.dedent('''
         import time
