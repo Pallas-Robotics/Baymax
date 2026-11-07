@@ -1,5 +1,12 @@
 # MVP (unreleased)
 
+- Speaker stream knobs for a board A/B of reply latency, documented in
+  `.env.example`: `BAYMAX_OUTPUT_BLOCKSIZE` (frames per speaker callback, default
+  1024; 0 lets PortAudio choose) and `BAYMAX_OUTPUT_LATENCY` (`low`, `high` or
+  seconds; unset keeps sounddevice's default, `high`). Read once at start; bad
+  values warn and fall back. Unset, the stream is opened exactly as before; when
+  set, the stream's reported latency is logged at each connection.
+
 - Less work on the real-time threads. PortAudio's capture callback printed a
   flushed `[MIC LEVEL]` line every 50 blocks, which can stall the capture when the
   log is slow; it now only stores the level, and the existing 3 s `[QUEUES]` monitor

@@ -943,14 +943,51 @@ def _output_callback(outdata, frames, time_info, status):
     if _audio_enhancer is not None:
         _audio_enhancer.rendered(chunk, time_info)
 
+def _output_stream_settings():
+    """(blocksize, latency) for the speaker stream, from BAYMAX_OUTPUT_BLOCKSIZE (frames per
+    callback, default 1024; 0 lets PortAudio choose) and BAYMAX_OUTPUT_LATENCY ('low', 'high'
+    or seconds; unset keeps sounddevice's default, 'high'). Knobs for measuring speaker
+    latency on a board; unset, the stream is opened exactly as before. Bad values warn
+    and use the default."""
+    blocksize, latency = 1024, None
+    raw = os.getenv("BAYMAX_OUTPUT_BLOCKSIZE", "").strip()
+    if raw:
+        try:
+            blocksize = int(raw)
+            if not 0 <= blocksize <= 16384:
+                raise ValueError
+        except ValueError:
+            print(f"[AUDIO] Invalid BAYMAX_OUTPUT_BLOCKSIZE {raw!r}; using 1024.", flush=True)
+            blocksize = 1024
+    raw = os.getenv("BAYMAX_OUTPUT_LATENCY", "").strip().lower()
+    if raw in ("low", "high"):
+        latency = raw
+    elif raw:
+        try:
+            latency = float(raw)
+            if not 0 < latency <= 2:
+                raise ValueError
+        except ValueError:
+            print(f"[AUDIO] Invalid BAYMAX_OUTPUT_LATENCY {raw!r}; using the default.", flush=True)
+            latency = None
+    return blocksize, latency
+
+
+OUTPUT_BLOCKSIZE, OUTPUT_LATENCY = _output_stream_settings()  # read once, at start
+
+
 def start_output_stream() -> sd.OutputStream:
     stream = sd.OutputStream(
         samplerate=RECEIVE_SAMPLE_RATE,
         channels=OUTPUT_CHANNELS,
         dtype="int16",
-        blocksize=1024,
+        blocksize=OUTPUT_BLOCKSIZE,
         callback=_output_callback,
+        **({"latency": OUTPUT_LATENCY} if OUTPUT_LATENCY is not None else {}),
     )
+    if (OUTPUT_BLOCKSIZE, OUTPUT_LATENCY) != (1024, None):
+        print(f"[AUDIO] Speaker stream: blocksize {OUTPUT_BLOCKSIZE}, latency setting "
+              f"{OUTPUT_LATENCY or 'default'}, reported latency {float(stream.latency) * 1000:.1f} ms", flush=True)
     if _audio_enhancer is not None:
         _audio_enhancer.output_latency_ms = float(stream.latency) * 1000
     stream.start()

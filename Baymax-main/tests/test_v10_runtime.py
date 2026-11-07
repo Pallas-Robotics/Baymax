@@ -826,6 +826,52 @@ class RealTimeThreadTests(unittest.TestCase):
         self.assertEqual(sent, [b"jpeg"])
 
 
+class SpeakerStreamTests(unittest.TestCase):
+    """BAYMAX_OUTPUT_BLOCKSIZE / BAYMAX_OUTPUT_LATENCY: knobs for a board A/B of speaker
+    latency. Unset, the speaker stream is opened exactly as before."""
+
+    def settings(self, **env):
+        clean = {k: v for k, v in os.environ.items() if k not in ("BAYMAX_OUTPUT_BLOCKSIZE", "BAYMAX_OUTPUT_LATENCY")}
+        with patch("test_public_core_integration.CORE", V10):
+            read = load_function("_output_stream_settings", {"os": os})
+        with patch.dict(os.environ, {**clean, **env}, clear=True), patch("builtins.print") as printed:
+            return read(), printed.call_count
+
+    def test_unset_keeps_todays_stream_and_bad_values_fall_back(self):
+        self.assertEqual(self.settings(), ((1024, None), 0))
+        self.assertEqual(self.settings(BAYMAX_OUTPUT_BLOCKSIZE="480", BAYMAX_OUTPUT_LATENCY=" Low ")[0], (480, "low"))
+        self.assertEqual(self.settings(BAYMAX_OUTPUT_BLOCKSIZE="0", BAYMAX_OUTPUT_LATENCY="0.03")[0], (0, 0.03))
+        self.assertEqual(self.settings(BAYMAX_OUTPUT_LATENCY="high")[0], (1024, "high"))
+        for bad in ({"BAYMAX_OUTPUT_BLOCKSIZE": "big"}, {"BAYMAX_OUTPUT_BLOCKSIZE": "-1"},
+                    {"BAYMAX_OUTPUT_LATENCY": "fast"}, {"BAYMAX_OUTPUT_LATENCY": "nan"},
+                    {"BAYMAX_OUTPUT_LATENCY": "0"}):
+            with self.subTest(**bad):
+                self.assertEqual(self.settings(**bad), ((1024, None), 1))   # warned once, default kept
+
+    def test_the_speaker_stream_is_opened_with_them(self):
+        opened = []
+
+        class Stream:
+            latency = 0.04
+
+            def __init__(self, **kwargs):
+                opened.append(kwargs)
+
+            def start(self):
+                pass
+        ns = {"sd": SimpleNamespace(OutputStream=Stream), "RECEIVE_SAMPLE_RATE": 48000, "OUTPUT_CHANNELS": 1,
+              "_output_callback": Mock(), "_audio_enhancer": None, "OUTPUT_BLOCKSIZE": 1024, "OUTPUT_LATENCY": None}
+        with patch("test_public_core_integration.CORE", V10):
+            start = load_function("start_output_stream", ns)
+        start()
+        self.assertEqual(opened[-1]["blocksize"], 1024)
+        self.assertNotIn("latency", opened[-1])        # sounddevice's own default, as before
+        ns.update(OUTPUT_BLOCKSIZE=480, OUTPUT_LATENCY="low")
+        with patch("builtins.print"):
+            start()
+        self.assertEqual((opened[-1]["blocksize"], opened[-1]["latency"]), (480, "low"))
+
+
 class TranscriptsStayOnRobotTests(unittest.TestCase):
     def test_cloud_never_queues_transcripts_and_drops_old_ones(self):
         with patch("dotenv.load_dotenv"):  # not this machine's .env, for every later test
