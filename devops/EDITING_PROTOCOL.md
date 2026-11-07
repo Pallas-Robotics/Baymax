@@ -49,6 +49,9 @@ python tests/run.py
 - Application tests retain `Baymax-main/check_release.py` as the robot/CI gate.
   That gate also discovers root overall checks, so source parsing, test ownership
   and the chat UI check participate in existing CI without a workflow change.
+  Ownership and suite-selection checks (`tests/overall/test_validation.py`) run
+  only in CI (`GITHUB_ACTIONS=true`) and `tests/run.py`, not on a robot: robots
+  roll back a release whose gate fails.
 - Existing CI filters miss root-only tests/docs/devops changes. Enable the full
   workflow described in `tests/README.md`; until then run the root gate manually
   and include its report. Do not claim automatic coverage that is not enabled.

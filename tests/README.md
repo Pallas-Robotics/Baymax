@@ -49,10 +49,13 @@ not presented as an implemented feature with passing tests. Feature selection is
 for fast development; a focused pass is not full release validation.
 
 `Baymax-main/check_release.py` remains the existing core/toolkit gate used by
-robots and CI and also runs root overall checks. Local skips are reported; the
-chat UI check requires Node in CI. Physical devices and provider calls are outside
-these offline suites. Follow [the editing protocol](../devops/EDITING_PROTOCOL.md)
-and the live checklist before release.
+robots and CI and also runs root overall checks. Its ownership and selection
+checks (`overall/test_validation.py`) run only in CI (`GITHUB_ACTIONS=true`) and
+in `tests/run.py`: a robot rolls back a release whose gate fails, and a test file
+missing from a `suite.json` must not stop the robots updating. Local skips are
+reported; the chat UI check requires Node in CI. Physical devices and provider
+calls are outside these offline suites. Follow [the editing
+protocol](../devops/EDITING_PROTOCOL.md) and the live checklist before release.
 
 ## CI activation
 

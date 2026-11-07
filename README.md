@@ -87,9 +87,11 @@ python tests/run.py --changed origin/main
 Feature commands include overall checks. Shared/unknown changes select all
 suites. [tests/README.md](tests/README.md) explains ownership, reports and how to
 add tests. Existing CI also runs `Baymax-main/check_release.py`; it preserves
-separate core/toolkit results and includes root overall checks. Explain skips and
-platform failures. Passing offline tests is not permission to merge/deploy or
-proof of live hardware behavior; use [the live checklist](Baymax-main/TESTING_PROTOCOL.md).
+separate core/toolkit results and includes root overall checks (the
+suite-ownership checks run only in CI and `tests/run.py`, not in a robot's update
+gate). Explain skips and platform failures. Passing offline tests is not
+permission to merge/deploy or proof of live hardware behavior; use [the live
+checklist](Baymax-main/TESTING_PROTOCOL.md).
 Full root/deployment CI is provided as a workflow template awaiting a maintainer
 with workflow-write access; see the tests guide's CI activation section.
 

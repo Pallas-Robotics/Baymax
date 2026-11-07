@@ -1,5 +1,16 @@
 # MVP (unreleased)
 
+- Robot updates: `check_release.py` no longer runs the repository's bookkeeping
+  checks (`tests/overall/test_validation.py`: every test file listed in one
+  `suite.json`, the suites `tests/run.py --changed` picks) on a robot. The Orange
+  Pi 5 Max updater and the 4 Pro image run that gate before taking a release and
+  roll back when it fails, so one correct test file missing from a `suite.json`
+  stopped every robot updating (the 5 Max never retries that commit). CI, where
+  GitHub sets `GITHUB_ACTIONS=true`, and `tests/run.py` still run them; the
+  source, chat UI and performance-sampler checks stay in the robots' gate.
+  Offline: with an unlisted test file the gate now passes as a robot (core 571,
+  toolkit 241) and fails in CI.
+
 - Address gate: a name said just before Gemini ends a turn without replying is
   no longer forgotten. On ember-002 "Amber, please response." was followed by an
   empty turn, and the reply "I'm here." in the next turn was dropped. Speech
