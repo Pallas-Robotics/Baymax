@@ -442,6 +442,17 @@ class V10ReceiveLoopTests(unittest.TestCase):
         self.assertIn(call("[GEMINI] Hello there.", flush=True), printed.call_args_list)
         self.assertFalse(self.namespace["_gemini_speaking"])  # and its turn ended
 
+    def test_queued_reply_audio_records_when_embers_voice_ends(self):
+        # The module global, not a local of the nested play_reply_audio: _handover_due()
+        # waits HANDOVER_AFTER_REPLY_S after it, because people answer right then.
+        pcm = np.array([1, 2], dtype=np.int16).tobytes()
+        def one_second_queued(clock):
+            self.namespace["_playback_buffer"] = bytes(96000)  # 1 s of 48 kHz mono int16
+        self.run_receive([content(user="Ember, are you there?"), one_second_queued,
+                          content(ember="Yes.", audio=pcm), content(done=True)])
+        self.assertEqual(self.namespace["_reply_audible_until"], 1001.0)  # the clock reads 1000.0
+        self.assertEqual(self.namespace["_address_gate"]._spoke_until, 1001.0)
+
     def test_a_model_turn_without_parts_still_ends_the_turn(self):
         pcm = np.array([1, 2], dtype=np.int16).tobytes()
         end = content(done=True)

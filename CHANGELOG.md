@@ -2,9 +2,10 @@
 
 - Faster, surer replies on the Orange Pi 5 Max. With interruptions off (MVP), the mic
   is muted while Ember speaks, and Gemini got digital zeros for each reply. Gemini 2.5 then
-  committed the person's next question seconds late or not at all: answers came 5-10 s
-  after a question, sometimes 10-17 s, and some never came, though once the transcript
-  arrived the reply followed in 1-2 s (network RTT ~9 ms, no send backlog). Gemini now
+  committed the person's next question seconds late or not at all. On the robot answers
+  came 5-10 s after a question, though once the transcript arrived the reply followed in
+  1-2 s (network RTT ~9 ms, no send backlog); single benchmark runs with zeros reached
+  10-17 s. Gemini now
   gets steady noise at the room's cleaned level instead (`ComfortNoise` in
   `features/conversational_ability/processing.py`, `BAYMAX_COMFORT_NOISE`, set by
   `run_mvp.py`; off elsewhere, so `run_pc.py`'s processing is unchanged). The level is
@@ -14,12 +15,18 @@
   benchmark (`bench_turns.py`: the room's own voice-free noise from Ember's recording
   through `InputEnhancer` in real time, black camera frames, 6-7 synthetic questions per
   session asked 1.5 s after each reply, 33 each): median reply 3.4 -> 2.7 s, p90 about 9 ->
-  5.3 s, unanswered 3 -> 0; a question with a 0.9 s pause was never cut off. Higher
-  start/end sensitivities on top did not help (3.0-3.2 s median), so they stay low.
+  5.3 s, unanswered 3 -> 0; a question with a 0.9 s pause was never cut off. That run's
+  stand-in was the benchmark's own white noise at a running average of the cleaned level,
+  not the shipped band-limited `ComfortNoise`, whose own on-board run is pending. Higher
+  start/end sensitivities on top did not help (3.0-3.2 s median), so they stay low. Live on
+  the robot it did not remove the delay: after this change one question's transcript still
+  arrived 9 s after the person stopped, so the live delay has another cause (open).
   `gemini-3.8-live` measured 1.6 s median (max 2.1 s) on the same benchmark; the model is
   unchanged (`BAYMAX_LIVE_MODELS` puts 3.8 first). The GoAway handover now waits 3 s
   after Ember's reply has played (at most 30 s after the GoAway): it landed right as the
-  person answered, and what they said during the reconnect was lost. `test_language_eval`
+  person answered, and what they said during the reconnect was lost. (The reply's end is
+  recorded in the nested `play_reply_audio`, which declares the module global; a test runs
+  the real receive loop to check it.) `test_language_eval`
   no longer leaks `run_mvp.py`'s defaults into later tests. Pending: a live conversation
   on the board with this build and the shared performance check (both need a person
   talking), and lead review.

@@ -177,10 +177,19 @@ class EngageTests(unittest.TestCase):
         engage.register(gates=gates, listeners=[], tasks=[])
         self.assertEqual(gates, [engage.engagement.gate, book_gate])  # First, once.
         with patch.object(processing, "input_gates", [self.ember.gate]), \
-                patch.dict("os.environ", {"BAYMAX_MUTE_MIC_DURING_REPLY": "1"}):
+                patch.dict("os.environ", {"BAYMAX_MUTE_MIC_DURING_REPLY": "1", "BAYMAX_COMFORT_NOISE": "0"}):
             enhancer = InputEnhancer(processor=FakeDSP())
             self.assertFalse(np.any(enhancer.process(MIC)))  # Gemini gets silence.
             self.assertTrue(np.any(self.listeners[0].fed[-1]))
+        # MVP: generated room-level noise instead, never the mic; the wake listener still hears it.
+        with patch.object(processing, "input_gates", [self.ember.gate]):
+            enhancer = InputEnhancer(processor=FakeDSP(), comfort=processing.ComfortNoise(seed=0))
+            sent = enhancer.process(MIC)
+            self.assertTrue(np.any(sent))
+            self.assertFalse(np.array_equal(sent, MIC))
+            # About -70 dBFS (the start level: nothing is learned while disengaged); MIC is 1000.
+            self.assertLess(np.sqrt(np.mean(sent.astype(float) ** 2)), 100)
+            np.testing.assert_array_equal(self.listeners[0].fed[-1], MIC)
 
     def test_registered_on_mic_transcripts_and_sessions(self):
         from features.toolkits.fall_detection import session_tasks

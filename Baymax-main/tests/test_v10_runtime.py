@@ -917,7 +917,7 @@ class ReconnectTests(unittest.TestCase):
         from features.conversational_ability import session as resumption
         resumption.forget()
         self.addCleanup(resumption.forget)
-        connected = []
+        connected, played, moved = [], [], []
 
         async def receive(index, session, ns):
             if index == 0:
@@ -928,12 +928,16 @@ class ReconnectTests(unittest.TestCase):
                 connected.append(index)
                 with ns["_playback_lock"]:
                     ns["_playback_buffer"] = b""         # played
+                ns["_reply_audible_until"] = time.monotonic()  # as receive_audio records the reply's end
+                played.append(ns["_reply_audible_until"])
                 await REAL_SLEEP(2)
                 raise AssertionError("still on the old connection")
+            moved.append(time.monotonic())
             raise ConnectionResetError()                 # ends the test's second connection
         # The first connection counts as a long one (QUICK_SESSION_S), as after Gemini's ~10 minutes.
-        sessions, ns = self.run_goaways(2, receive, QUICK_SESSION_S=0.01)
+        sessions, ns = self.run_goaways(2, receive, QUICK_SESSION_S=0.01, HANDOVER_AFTER_REPLY_S=0.03)
         self.assertEqual(connected, [0])                              # stayed while the reply played
+        self.assertGreaterEqual(moved[0] - played[0], 0.03)  # not at the first quiet poll (1 ms): people answer then
         self.assertEqual(sessions[1].config["session_resumption"], {"handle": "h1"})
         self.assertEqual([p for p in self.pauses if p != 0.001], [0.3])   # at once; then the second one's loss
         ns["sd"]._terminate.assert_not_called()

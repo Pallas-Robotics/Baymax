@@ -2188,7 +2188,6 @@ async def receive_audio(session):
     waits for a lookup or sends anything while Gemini is replying."""
     global _last_mic_send_ts, _last_robot_speech_ts, _last_user_speech_ts, _gemini_speaking
     global _user_turn, _user_turn_words, _recalled, _reply_owed_since, _go_away_at, _turn_done_at
-    global _reply_audible_until
     global _tool_calls_running
     _is_new_turn = True
     _reply_audio_started = False
@@ -2307,7 +2306,7 @@ async def receive_audio(session):
                             timing_id = monitor.timing.received_audio(at=received_at)
                             def play_reply_audio(data=part.inline_data.data, new_turn=not _reply_audio_started,
                                                  timing_id=timing_id):
-                                global _last_robot_speech_ts, _gemini_speaking
+                                global _last_robot_speech_ts, _gemini_speaking, _reply_audible_until
                                 monitor.emit("speaking", "Gemini is producing reply audio")
                                 with _gemini_speaking_lock:
                                     _gemini_speaking = True

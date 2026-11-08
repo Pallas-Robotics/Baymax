@@ -180,9 +180,10 @@ cannot become a later user turn. Speech during a reply is not heard; set it to
 `0` to restore full-duplex input.
 
 What Gemini gets in place of the muted audio matters. Digital zeros (the default
-outside MVP) held up Gemini 2.5's next turn on the Orange Pi 5 Max: after zeros for
-a reply, the person's question was committed 6.7-13.5 s late, and some questions
-were never answered. `BAYMAX_COMFORT_NOISE=1` (MVP sets it) sends steady noise at the
+outside MVP) held up Gemini 2.5's next turn on the Orange Pi 5 Max: in a 33-question
+benchmark with zeros, replies started 3.4 s after the question (median), the slowest
+10% took about 9 s, and 3 questions were never answered (in single runs the question
+after a reply was committed up to 13.5 s late). `BAYMAX_COMFORT_NOISE=1` (MVP sets it) sends steady noise at the
 room's cleaned level instead (`ComfortNoise` in `processing.py`), so the stream
 Gemini hears never steps from silence to the room right before the person speaks.
 The level is learned only from cleaned blocks that actually go to Gemini while the
@@ -191,14 +192,19 @@ speaker is silent and WebRTC hears no speech: it follows the floor down within a
 noise is generated, never taken from the microphone, so nothing from the room
 reaches Gemini while the mic is muted or withheld (audiobooks, radio, a
 disengaged Ember, or the failed-DSP half-duplex fallback, which keeps the last
-learned level). Monitor's `comfort_noise_dbfs` shows the level; conversation timing
+learned level). `/api/runtime` reports the level as `metrics.audio_input.comfort_noise_dbfs`,
+and the Microphone card's Clean level is the stand-in's while the mic is muted; conversation timing
 treats the stand-in as the silence it replaces. On-board benchmark (Gemini 2.5; the
 room's own voice-free noise from Ember's recording through this cleanup, black
 camera frames, 6-7 synthetic questions per session each asked 1.5 s after a reply;
-33 questions each): replies started 2.7 s after the question (median) instead of
-3.4 s, 90% within 5.3 s instead of about 9 s, and none went unanswered (3 of 33
-with zeros). Raising the start/end sensitivities as well did not help further
-(3.0-3.2 s median), so they stay low. Without the mute, leaked echo
+33 questions each): with noise in place of the zeros, replies started 2.7 s after
+the question (median) instead of 3.4 s, 90% within 5.3 s instead of about 9 s, and
+none went unanswered (3 of 33 with zeros). That benchmark's noise was its own white
+noise at a running average of the cleaned level, not this class's band-limited table;
+the shipped stand-in's own on-board run is pending. Raising the start/end sensitivities
+as well did not help further (3.0-3.2 s median), so they stay low. On the robot itself
+the delay was not gone: in a live test after this change a question's transcript still
+arrived 9 s after the person stopped, so the remaining live delay has another cause. Without the mute, leaked echo
 can still be recognized as input. Matching a transcript afterward cannot remove
 audio already processed by Gemini. We retain transcript warnings rather than
 delete phrases a person may intentionally repeat. Echo subtraction is an acoustic
@@ -217,8 +223,9 @@ Quiet interruptions may receive less gain while the robot speaks and need
 physical-device testing. These settings can reduce noise, but do not
 repair microphone clipping. If native processing fails, raw capture continues
 with a visible half-duplex failure state. In this failure mode only, microphone
-input to Gemini is zeroed while rendered audio and its tail are audible, even
-when the Python playback queue has drained. Raw session recording is unchanged.
+input to Gemini is replaced by the stand-in (zeros, or with `BAYMAX_COMFORT_NOISE=1`
+comfort noise at the last learned level) while rendered audio and its tail are
+audible, even when the Python playback queue has drained. Raw session recording is unchanged.
 
 Monitor's Microphone card shows raw/clean RMS dBFS, raw clipping percentage, speech
 probability, gain, and whether listening during replies is active. Probability
@@ -365,7 +372,13 @@ thread); the reset only runs after a device or unknown error.
 waiting to be cut off, possibly mid-sentence, `between_turns()` ends the session at the
 next quiet moment: Gemini owes no reply and isn't producing one, nothing is queued for
 the speaker, nobody has spoken for 1 s and none of Ember's own messages awaits its
-answer. It waits for a resume handle that includes the last turn
+answer. It also waits until 3 s after the reply's audio has played
+(`HANDOVER_AFTER_REPLY_S`, from `_reply_audible_until`, which the receive loop sets as
+reply audio is queued): that is when people answer, and what they say while the
+connection is replaced is lost. That wait ends at most 30 s after the GoAway
+(`HANDOVER_PATIENCE_S`); Gemini's lead time after a GoAway (about 50 s in the logs) is
+not measured on the robot, and the code does not read `go_away.time_left`. It waits
+for a resume handle that includes the last turn
 (`session.handle_received_at`), at most 3 s after that turn or the GoAway
 (`GO_AWAY_HANDLE_WAIT_S`), and `run()` reconnects with the newest handle. A handle from
 before this connection was used to set it up, and `session.py` offers a handle only once,

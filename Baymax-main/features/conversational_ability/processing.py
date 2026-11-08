@@ -33,8 +33,9 @@ def mute_during_reply():
 def comfort_noise():
     # While the mic is muted or withheld, send Gemini steady noise at the room's level
     # instead of digital zeros. Zeros between turns made Gemini 2.5 commit the next
-    # question seconds late (6.7-13.5 s on the Orange Pi 5 Max) or not at all; see
-    # ComfortNoise. Off unless set: run_mvp.py turns it on for the MVP.
+    # question seconds late or not at all (Orange Pi 5 Max benchmark: median reply
+    # 3.4 s, p90 about 9 s, 3 of 33 unanswered); see ComfortNoise. Off unless set:
+    # run_mvp.py turns it on for the MVP.
     return os.getenv('BAYMAX_COMFORT_NOISE', '0') == '1'
 
 
@@ -111,8 +112,8 @@ class ComfortNoise:
 
     Gemini's turn detection reads the mic stream as one continuous signal. Zeros while
     Ember speaks, then the room's floor again just before the person answers, made
-    Gemini 2.5 commit that answer seconds late or not at all (Orange Pi 5 Max: input
-    transcripts 6.7-13.5 s after the question, some questions never answered). Noise
+    Gemini 2.5 commit that answer seconds late or not at all (Orange Pi 5 Max benchmark:
+    p90 reply about 9 s, 3 of 33 questions unanswered). Noise
     at the level Gemini hears between turns keeps the stream steady, so the only onset
     left is the person's speech. None of it comes from the microphone.
 
