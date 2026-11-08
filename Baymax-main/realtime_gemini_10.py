@@ -1921,6 +1921,9 @@ async def fall_alert_monitor(session):
 # are moved to such a moment too, so they don't land mid-sentence.
 BETWEEN_TURNS_POLL_S = 0.2
 BETWEEN_TURNS_QUIET_S = 1.0   # nobody heard on the mic or in the transcript for this long
+HANDOVER_AFTER_REPLY_S = 3.0  # a GoAway handover waits this long after Ember's voice ends...
+HANDOVER_PATIENCE_S = 30.0    # ...but no longer than this after the GoAway
+_reply_audible_until = 0.0    # time.monotonic() when the reply audio queued so far ends
 REPLY_OWED_MAX_S = 15.0       # stop waiting for a reply after this (e.g. it was only noise)
 _reply_owed_since = None      # time.monotonic() Gemini last heard something it should answer
 _tool_calls_running = 0       # tool calls in progress: their reply is owed however long they take
@@ -1944,12 +1947,17 @@ def _between_turns(now):
 
 
 def _handover_due(now):
-    """After a GoAway, at a quiet moment: whether to move to a new connection now. With no
-    resume handle there is no conversation to keep. A handle from before this connection
-    can't resume it again (session.extend_config drops a handle it has offered once), so
-    moving would start the conversation over: wait for this connection's own handle, or
-    Gemini's close. Then wait for one that includes the last turn, at most
+    """After a GoAway, at a quiet moment: whether to move to a new connection now. Not just
+    after Ember's reply: that is when people answer, and what they say while the connection
+    is replaced is lost, so it waits HANDOVER_AFTER_REPLY_S after the reply's audio ends, at
+    most HANDOVER_PATIENCE_S after the GoAway (Gemini resets the connection about 50 s
+    after it). With no resume handle there is no conversation to keep. A handle from before
+    this connection can't resume it again (session.extend_config drops a handle it has
+    offered once), so moving would start the conversation over: wait for this connection's
+    own handle, or Gemini's close. Then wait for one that includes the last turn, at most
     GO_AWAY_HANDLE_WAIT_S after that turn or the GoAway."""
+    if now - _reply_audible_until < HANDOVER_AFTER_REPLY_S and now - _go_away_at < HANDOVER_PATIENCE_S:
+        return False
     handle_at = handle_received_at()
     if handle_at is None:
         return True
@@ -2180,6 +2188,7 @@ async def receive_audio(session):
     waits for a lookup or sends anything while Gemini is replying."""
     global _last_mic_send_ts, _last_robot_speech_ts, _last_user_speech_ts, _gemini_speaking
     global _user_turn, _user_turn_words, _recalled, _reply_owed_since, _go_away_at, _turn_done_at
+    global _reply_audible_until
     global _tool_calls_running
     _is_new_turn = True
     _reply_audio_started = False
@@ -2311,8 +2320,9 @@ async def receive_audio(session):
                                 # timed from its first chunk with sound.
                                 _append_playback(upsampled_bytes, new_turn=new_turn, timing_id=timing_id)
                                 # -----------------------------------------------
-                                _address_gate.spoke(time.monotonic() + len(_playback_buffer)
-                                                    / (RECEIVE_SAMPLE_RATE * 2 * OUTPUT_CHANNELS))
+                                _reply_audible_until = time.monotonic() + len(_playback_buffer) / (
+                                    RECEIVE_SAMPLE_RATE * 2 * OUTPUT_CHANNELS)
+                                _address_gate.spoke(_reply_audible_until)
 
                                 # Robot is speaking → reset the idle timer so
                                 # initiation mode only arms after real silence.

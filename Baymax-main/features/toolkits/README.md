@@ -138,7 +138,8 @@ recording's own level.
 
 Book mode: echo cancellation leaves enough narration that Gemini answered the
 narrator as the person. While a book plays, `gate` (in `processing.input_gates`)
-withholds the mic from Gemini and feeds it to `wakeword.py`, an offline Vosk
+withholds the mic from Gemini (which gets room-level noise under MVP's
+`BAYMAX_COMFORT_NOISE`, digital zeros otherwise) and feeds it to `wakeword.py`, an offline Vosk
 listener (`vosk==0.3.45`, small English model ~41 MB in `models/`, gitignored;
 fetch once with `python features/toolkits/wakeword.py --download`). "Hey Ember",
 "Ember stop/pause", or a lone "stop"/"pause" pauses the book; the book also

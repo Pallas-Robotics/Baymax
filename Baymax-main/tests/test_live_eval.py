@@ -187,6 +187,7 @@ class ConfigTests(unittest.TestCase):
         defaults = live_eval.launcher_defaults()
         self.assertEqual(defaults["BAYMAX_WAIT_CUE_ENABLED"], "0")
         self.assertEqual(defaults["BAYMAX_AUDIO_ENHANCEMENT"], "1")
+        self.assertEqual(defaults["BAYMAX_COMFORT_NOISE"], "1")
 
 
 class ScenarioTests(unittest.TestCase):

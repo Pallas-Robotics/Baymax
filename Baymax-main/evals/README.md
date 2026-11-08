@@ -31,7 +31,7 @@ python evals/live_eval.py --root ../../Baymax-look-closely/Baymax-main   # test 
   before putting 3.8 first on a robot (MVP.md, Gemini model).
 - **Turns.**
   - `say`: macOS `say` (or `espeak-ng`) text-to-speech, sent as 16-bit 48 kHz PCM in
-    real time over quiet room noise (2 s lead-in, 1.5 s after) so Gemini's activity detection starts and ends the turn. With the MVP's LOW start sensitivity, Gemini ignored clean speech framed by digital silence.
+    real time over quiet room noise (2 s lead-in, 1.5 s after) so Gemini's activity detection starts and ends the turn. With the MVP's LOW start sensitivity, Gemini ignored clean speech framed by digital silence; MVP's robot likewise sends room-level noise, not zeros, while its mic is muted (`BAYMAX_COMFORT_NOISE`).
   - `text`: a client text turn, like the `[FALL ALERT]` and `[ENGAGED]` notes.
   - `note`: client content with `turn_complete=False`, like the `[MEMORY CONTEXT]` note the
     runtime gives between turns. It needs no reply and is not checked as a turn; the next

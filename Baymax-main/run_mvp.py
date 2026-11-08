@@ -119,6 +119,9 @@ def main(argv=None):
                 from run_pc import main as start_runtime
                 os.environ.setdefault("BAYMAX_WAIT_CUE_ENABLED", "0")  # The fixed "hmm" felt unsettling.
                 os.environ.setdefault("BAYMAX_INTERRUPTION_ENABLED", "0")
+                # With interruptions off the mic is muted while Ember speaks; Gemini gets
+                # room-level noise then, not digital zeros, which held up its next turn.
+                os.environ.setdefault("BAYMAX_COMFORT_NOISE", "1")
                 os.environ.setdefault("BAYMAX_TURN_END_SILENCE_MS", "400")
                 os.environ.setdefault("BAYMAX_VOICE_ANALYSIS", "0")
                 # The service stops in 15 s (TimeoutStopSec); memory gets 10 of them.

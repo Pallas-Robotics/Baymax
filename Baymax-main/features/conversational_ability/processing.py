@@ -9,6 +9,7 @@ import runtime_monitor as monitor
 from .echo import ResidualEcho
 
 _active_enhancer = None
+_SILENCE_DBFS = round(float(20 * np.log10(1e-3 / 32768)), 1)  # levels() of digital silence
 
 
 def enabled():
@@ -27,6 +28,14 @@ def mute_during_reply():
     # later echo "user" turn, so default to silence while the speaker is audible.
     interruptions = os.getenv('BAYMAX_INTERRUPTION_ENABLED', '1') != '0'
     return os.getenv('BAYMAX_MUTE_MIC_DURING_REPLY', '0' if interruptions else '1') == '1'
+
+
+def comfort_noise():
+    # While the mic is muted or withheld, send Gemini steady noise at the room's level
+    # instead of digital zeros. Zeros between turns made Gemini 2.5 commit the next
+    # question seconds late (6.7-13.5 s on the Orange Pi 5 Max) or not at all; see
+    # ComfortNoise. Off unless set: run_mvp.py turns it on for the MVP.
+    return os.getenv('BAYMAX_COMFORT_NOISE', '0') == '1'
 
 
 def extend_config(config):
@@ -97,6 +106,68 @@ def fan_filter_hz():
         return 200.0
 
 
+class ComfortNoise:
+    """What Gemini hears while the mic is muted or withheld, in place of digital zeros.
+
+    Gemini's turn detection reads the mic stream as one continuous signal. Zeros while
+    Ember speaks, then the room's floor again just before the person answers, made
+    Gemini 2.5 commit that answer seconds late or not at all (Orange Pi 5 Max: input
+    transcripts 6.7-13.5 s after the question, some questions never answered). Noise
+    at the level Gemini hears between turns keeps the stream steady, so the only onset
+    left is the person's speech. None of it comes from the microphone.
+
+    observe() learns the level from cleaned blocks that really go to Gemini while the
+    speaker is silent and WebRTC hears no speech: it follows the floor down within about
+    0.1 s and up over about 1 s, within -90..-40 dBFS (-70 until something is heard).
+    fill() returns that level of 100-7000 Hz noise (white if scipy is missing), sliced
+    from a table made once, so a block costs one slice and one multiply.
+    """
+    FLOOR_DBFS, CEILING_DBFS, START_DBFS = -90.0, -40.0, -70.0
+    FALL, RISE = 0.2, 0.02  # per 20 ms block
+
+    def __init__(self, rate=48000, seed=None, seconds=2.0):
+        self.rng = np.random.default_rng(seed)
+        noise = self.rng.standard_normal(int(rate * seconds))
+        try:
+            from scipy.signal import butter, sosfilt
+            sos = butter(4, [100, min(7000, 0.45 * rate)], btype='bandpass', fs=rate, output='sos')
+            noise = sosfilt(sos, noise)
+        except Exception:
+            pass  # white noise: still steady, only a few dB quieter after Gemini resamples
+        self.table = (noise / (np.sqrt(np.mean(noise ** 2)) or 1.0)).astype(np.float32)
+        self.level_dbfs = None
+        self.pos = 0
+
+    @property
+    def level(self):
+        return self.START_DBFS if self.level_dbfs is None else self.level_dbfs
+
+    def observe(self, samples):
+        values = samples.astype(np.float32)
+        power = float(values @ values) / len(values) if len(values) else 0.0
+        if power <= 0:
+            return  # exact zeros: a dead device, not the room
+        level = min(self.CEILING_DBFS, max(self.FLOOR_DBFS, 10 * np.log10(power) - 90.309))
+        if self.level_dbfs is None:
+            self.level_dbfs = level
+        else:
+            rate = self.FALL if level < self.level_dbfs else self.RISE
+            self.level_dbfs += rate * (level - self.level_dbfs)
+
+    def fill(self, count, restart=False):
+        if restart:  # a new muted stretch starts somewhere else in the table
+            self.pos = int(self.rng.integers(len(self.table)))
+        out = np.empty(count, dtype=np.float32)
+        done = 0
+        while done < count:
+            take = min(count - done, len(self.table) - self.pos)
+            out[done:done + take] = self.table[self.pos:self.pos + take]
+            done += take
+            self.pos = (self.pos + take) % len(self.table)
+        scale = 32768 * 10 ** (self.level / 20)
+        return np.clip(np.round(out * scale), -32768, 32767).astype(np.int16)
+
+
 class InputEnhancer:
     """DSP runs only on the capture thread; render callback only queues PCM.
 
@@ -105,7 +176,8 @@ class InputEnhancer:
     starts a 10ms output carry once, retaining leftovers across callbacks, so no
     tail is padded or discarded on every callback.
     """
-    def __init__(self, rate=48000, processor=None, ns_level=None, clock=time.monotonic, fan_filter_hz=0):
+    def __init__(self, rate=48000, processor=None, ns_level=None, clock=time.monotonic, fan_filter_hz=0,
+                 comfort=None):
         self.fan_filter = None
         if fan_filter_hz > 0:
             try:
@@ -124,6 +196,9 @@ class InputEnhancer:
         self.processor = processor
         self.residual = ResidualEcho(rate, clock, enabled=os.getenv('BAYMAX_RESIDUAL_ECHO_ENABLED', '1') == '1')
         self.mute_during_reply = mute_during_reply()
+        # Muted or withheld mic audio: zeros, or with BAYMAX_COMFORT_NOISE=1 room-level noise.
+        self.comfort = comfort if comfort is not None else (ComfortNoise(rate) if comfort_noise() else None)
+        self.standing_in = False  # the latest block Gemini got was the stand-in, not the mic
         try:
             self.max_lag_ms = float(os.getenv('BAYMAX_MAX_MIC_LAG_MS', '1000'))
         except ValueError:
@@ -161,6 +236,7 @@ class InputEnhancer:
             self.speaker_until = float('-inf')
             self.voice_until = float('-inf')
         self.failed = False
+        self.standing_in = False  # the comfort level is kept: the room is the same after a reconnect
         if self.fan_filter is not None:
             self.fan_filter.reset()
 
@@ -318,8 +394,14 @@ class InputEnhancer:
                     if withheld:
                         break
             if muted or withheld:
-                # AEC above still adapts on this audio; Gemini only gets silence.
-                result = np.zeros_like(result)
+                # AEC above still adapts on this audio; Gemini only gets the stand-in
+                # (zeros, or room-level comfort noise), never this audio.
+                result = self._stand_in(len(result))
+            else:
+                self.standing_in = False
+                if (self.comfort is not None and not echo_guard
+                        and float(self.processor.speech_probability) < 0.5):
+                    self.comfort.observe(result)  # the room as Gemini hears it between turns
             self.metrics = {'state': 'WebRTC echo cancellation + noise suppression + gain control',
                             'raw': self.levels(samples), 'clean': self.levels(result),
                             'speech_probability': round(float(self.processor.speech_probability), 3),
@@ -328,6 +410,7 @@ class InputEnhancer:
                             'echo_guard': echo_guard,
                             'mic_muted_during_reply': muted,
                             'mic_withheld_for_audiobook': withheld,
+                            'comfort_noise_dbfs': round(self.comfort.level, 1) if self.comfort is not None else None,
                             'fan_filter_hz': self.fan_filter.cutoff if self.fan_filter is not None else 0,
                             'residual_echo': dict(self.residual.metrics),
                             'aec_delay_ms': self.processor.stream_delay_ms,
@@ -343,8 +426,9 @@ class InputEnhancer:
         # timing off and never switches Ember to the half-duplex fallback above.
         try:
             if not monitor.timing.failed:
+                # The stand-in is not the person: timing sees it as the silence it replaces.
                 monitor.timing.microphone(self.metrics['speech_probability'],
-                                          self.metrics['clean']['rms_dbfs'],
+                                          _SILENCE_DBFS if self.standing_in else self.metrics['clean']['rms_dbfs'],
                                           len(samples) / self.rate, self.input_latency_ms / 1000)
         except Exception:
             monitor.timing.failed = True
@@ -360,7 +444,18 @@ class InputEnhancer:
                         'full_duplex': False, 'echo_guard': active}
         # Playback may already have left the Python queue but still be audible.
         # Only failed DSP uses this mute; healthy AEC retains near-end speech.
-        return np.zeros_like(samples) if active else samples
+        if active:
+            return self._stand_in(len(samples))  # comfort noise keeps the last cleaned level
+        self.standing_in = False
+        return samples
+
+    def _stand_in(self, count):
+        """Gemini's audio while the mic is muted or withheld: zeros, or the comfort noise."""
+        restart = not self.standing_in
+        self.standing_in = True
+        if self.comfort is None:
+            return np.zeros(count, dtype=np.int16)
+        return self.comfort.fill(count, restart)
 
 
 def create(rate=48000):

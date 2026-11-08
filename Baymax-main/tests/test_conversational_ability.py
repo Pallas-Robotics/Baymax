@@ -8,7 +8,8 @@ import unittest
 from unittest.mock import Mock, patch
 import runtime_monitor as monitor
 import numpy as np
-from features.conversational_ability.processing import InputEnhancer, extend_config
+from features.conversational_ability import processing
+from features.conversational_ability.processing import ComfortNoise, InputEnhancer, comfort_noise, extend_config
 from features.conversational_ability.timing import ConversationTiming
 from test_public_core_integration import load_function
 
@@ -257,7 +258,7 @@ class AudioInputTests(unittest.TestCase):
 
     def test_reply_mute_sends_silence_while_speaker_audible_but_keeps_aec_adapting(self):
         clock = [10.0]
-        with patch.dict(os.environ, {'BAYMAX_MUTE_MIC_DURING_REPLY': '1'}):
+        with patch.dict(os.environ, {'BAYMAX_MUTE_MIC_DURING_REPLY': '1', 'BAYMAX_COMFORT_NOISE': '0'}):
             dsp = FakeDSP()
             enhancer = InputEnhancer(processor=dsp, clock=lambda: clock[0])
         enhancer.rendered(np.full(960, 500, dtype=np.int16).tobytes())
@@ -301,7 +302,8 @@ class AudioInputTests(unittest.TestCase):
         clock = [10.0]
         dsp = FakeDSP()
         dsp.process = Mock(side_effect=RuntimeError('DSP failed'))
-        enhancer = InputEnhancer(processor=dsp, clock=lambda: clock[0])
+        with patch.dict(os.environ, {'BAYMAX_COMFORT_NOISE': '0'}):
+            enhancer = InputEnhancer(processor=dsp, clock=lambda: clock[0])
         enhancer.rendered(np.ones(960, dtype=np.int16).tobytes())
         near = np.full(960, 1000, dtype=np.int16)
         np.testing.assert_array_equal(enhancer.process(near), np.zeros_like(near))
@@ -406,3 +408,160 @@ class AudioInputTests(unittest.TestCase):
         asyncio.run(run())
         self.assertEqual(raw_recording.get_nowait(), samples.tobytes())
         self.assertEqual(microphone.get_nowait()['data'], bytes(2048))
+
+
+class ComfortNoiseTests(unittest.TestCase):
+    """BAYMAX_COMFORT_NOISE: room-level noise, not digital zeros, while the mic is muted or withheld."""
+    ROOM_STD = 33.0  # about -60 dBFS
+
+    def room(self, rng, std=ROOM_STD):
+        return np.clip(np.round(rng.normal(0, std, 960)), -32768, 32767).astype(np.int16)
+
+    @staticmethod
+    def dbfs(samples):
+        values = samples.astype(np.float64)
+        return 10 * np.log10(np.mean(values * values)) - 90.309
+
+    @staticmethod
+    def quiet_dsp():
+        dsp = FakeDSP()
+        dsp.speech_probability = .1  # WebRTC hears no speech
+        return dsp
+
+    def enhancer(self, clock, dsp=None):
+        with patch.dict(os.environ, {'BAYMAX_MUTE_MIC_DURING_REPLY': '1'}):
+            return InputEnhancer(processor=dsp or self.quiet_dsp(), clock=lambda: clock[0],
+                                 comfort=ComfortNoise(seed=0))
+
+    def test_switch_is_off_unless_set(self):
+        for env, expected in [({}, False), ({'BAYMAX_COMFORT_NOISE': '0'}, False),
+                              ({'BAYMAX_COMFORT_NOISE': '1'}, True)]:
+            clean = {k: v for k, v in os.environ.items() if k != 'BAYMAX_COMFORT_NOISE'}
+            with patch.dict(os.environ, {**clean, **env}, clear=True):
+                self.assertEqual(comfort_noise(), expected, env)
+                self.assertEqual(InputEnhancer(processor=FakeDSP()).comfort is not None, expected, env)
+
+    def test_reply_mute_sends_room_level_noise_not_zeros_or_the_mic(self):
+        clock, rng = [10.0], np.random.default_rng(1)
+        dsp = self.quiet_dsp()
+        enhancer = self.enhancer(clock, dsp)
+        room = [self.room(rng) for _ in range(50)]
+        for block in room:
+            enhancer.process(block)  # the room between turns, as Gemini hears it
+        learned = enhancer.comfort.level
+        self.assertAlmostEqual(learned, self.dbfs(np.concatenate(room)), delta=1.0)
+        enhancer.rendered(np.full(960, 500, dtype=np.int16).tobytes())  # Ember speaks
+        near = self.room(rng, std=3000)  # Ember's echo and anything else the mic hears
+        sent = enhancer.process(near)
+        self.assertTrue(enhancer.metrics['mic_muted_during_reply'])
+        self.assertTrue(np.any(sent))
+        self.assertAlmostEqual(self.dbfs(sent), learned, delta=1.5)
+        self.assertLess(self.dbfs(sent), self.dbfs(near) - 30)
+        self.assertLess(abs(np.corrcoef(sent.astype(float), near.astype(float))[0, 1]), .2)
+        self.assertAlmostEqual(enhancer.metrics['comfort_noise_dbfs'], learned, delta=.1)
+        self.assertAlmostEqual(enhancer.metrics['clean']['rms_dbfs'], self.dbfs(sent), delta=.2)
+        self.assertEqual(len(dsp.frames), 102)  # AEC still saw the echo frames.
+        clock[0] += 1
+        np.testing.assert_array_equal(enhancer.process(near), near)  # the mic again after Ember
+        self.assertFalse(enhancer.standing_in)
+
+    def test_level_learns_only_from_quiet_room_blocks_that_reach_gemini(self):
+        clock, rng = [10.0], np.random.default_rng(2)
+        dsp = self.quiet_dsp()
+        enhancer = self.enhancer(clock, dsp)
+        for _ in range(30):
+            enhancer.process(self.room(rng))
+        learned = enhancer.comfort.level
+        loud = self.room(rng, std=3000)
+        dsp.speech_probability = .9  # the person speaking
+        enhancer.process(loud)
+        self.assertEqual(enhancer.comfort.level, learned)
+        dsp.speech_probability = .1
+        enhancer.process(np.zeros(960, dtype=np.int16))  # a dead device
+        self.assertEqual(enhancer.comfort.level, learned)
+        enhancer.voice_hint = False  # the speaker plays a book, not Ember: heard, but not learned
+        enhancer.rendered(np.full(960, 500, dtype=np.int16).tobytes())
+        np.testing.assert_array_equal(enhancer.process(loud), loud)
+        self.assertTrue(enhancer.metrics['echo_guard'])
+        self.assertEqual(enhancer.comfort.level, learned)
+        clock[0] += 1
+        enhancer.rendered(np.full(960, 500, dtype=np.int16).tobytes())  # Ember's voice: muted
+        enhancer.process(loud)
+        self.assertTrue(enhancer.metrics['mic_muted_during_reply'])
+        self.assertEqual(enhancer.comfort.level, learned)
+        clock[0] += 1
+        seen = []
+        def gate(block):  # an audiobook or a disengaged Ember: the wake listener hears the room
+            seen.append(block.copy())
+            return True
+        with patch('features.conversational_ability.processing.input_gates', [gate]):
+            sent = enhancer.process(loud)
+        np.testing.assert_array_equal(seen[-1], loud)
+        self.assertTrue(enhancer.metrics['mic_withheld_for_audiobook'])
+        self.assertEqual(enhancer.comfort.level, learned)
+        self.assertAlmostEqual(self.dbfs(sent), learned, delta=1.5)
+
+    def test_level_falls_fast_rises_slowly_is_clamped_and_survives_reconnects(self):
+        comfort, rng = ComfortNoise(seed=0), np.random.default_rng(3)
+        self.assertEqual(comfort.level, ComfortNoise.START_DBFS)
+        comfort.observe(self.room(rng, std=330))  # about -40 dBFS
+        for _ in range(20):  # 0.4 s of a quieter room (about -60 dBFS)
+            comfort.observe(self.room(rng))
+        self.assertLess(comfort.level, -59)
+        quiet = comfort.level
+        for _ in range(10):  # 0.2 s louder again
+            comfort.observe(self.room(rng, std=330))
+        self.assertLess(comfort.level, quiet + 5)
+        hot = ComfortNoise(seed=0)
+        hot.observe(np.full(960, 32000, dtype=np.int16))
+        self.assertEqual(hot.level, ComfortNoise.CEILING_DBFS)
+        faint = ComfortNoise(seed=0)
+        faint.observe(np.ones(960, dtype=np.int16))  # -90.3 dBFS
+        self.assertEqual(faint.level, ComfortNoise.FLOOR_DBFS)
+        clock = [10.0]
+        enhancer = self.enhancer(clock)
+        for _ in range(10):
+            enhancer.process(self.room(rng))
+        learned = enhancer.comfort.level
+        enhancer.reset()  # every reconnect: the room is the same
+        self.assertEqual(enhancer.comfort.level, learned)
+        self.assertFalse(enhancer.standing_in)
+
+    def test_same_seed_same_noise_and_long_fills_wrap_the_table(self):
+        a, b = ComfortNoise(seed=5), ComfortNoise(seed=5)
+        first = a.fill(960, restart=True)
+        np.testing.assert_array_equal(first, b.fill(960, restart=True))
+        self.assertEqual(first.dtype, np.int16)
+        self.assertFalse(np.array_equal(first, a.fill(960)))  # the stretch continues, no repeat
+        long = a.fill(len(a.table) + 100)
+        self.assertEqual(len(long), len(a.table) + 100)
+        self.assertAlmostEqual(self.dbfs(long), ComfortNoise.START_DBFS, delta=1.0)
+
+    def test_dsp_failure_fallback_stands_in_at_the_last_cleaned_level(self):
+        clock, rng = [10.0], np.random.default_rng(4)
+        dsp = self.quiet_dsp()
+        enhancer = self.enhancer(clock, dsp)
+        for _ in range(30):
+            enhancer.process(self.room(rng))
+        learned = enhancer.comfort.level
+        dsp.process = Mock(side_effect=RuntimeError('DSP failed'))
+        enhancer.rendered(np.ones(960, dtype=np.int16).tobytes())
+        near = np.full(960, 1000, dtype=np.int16)
+        sent = enhancer.process(near)
+        self.assertFalse(enhancer.full_duplex)
+        self.assertAlmostEqual(self.dbfs(sent), learned, delta=1.5)
+        clock[0] += 1
+        np.testing.assert_array_equal(enhancer.process(near), near)
+        self.assertFalse(enhancer.standing_in)
+
+    def test_timing_sees_the_stand_in_as_the_silence_it_replaces(self):
+        clock = [10.0]
+        enhancer = self.enhancer(clock)
+        enhancer.rendered(np.full(960, 500, dtype=np.int16).tobytes())
+        timing = SimpleNamespace(failed=False, microphone=Mock())
+        with patch.object(monitor, 'timing', timing):
+            enhancer.process(np.full(960, 1000, dtype=np.int16))
+            self.assertEqual(timing.microphone.call_args[0][1], processing._SILENCE_DBFS)
+            clock[0] += 1
+            enhancer.process(np.full(960, 1000, dtype=np.int16))
+            self.assertEqual(timing.microphone.call_args[0][1], enhancer.metrics['clean']['rms_dbfs'])

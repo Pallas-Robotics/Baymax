@@ -865,14 +865,15 @@ class ReconnectTests(unittest.TestCase):
         self.assertGreaterEqual(ns["_turn_done_at"], ns["_go_away_at"])
 
     def handed_over(self, quiet=True, handle_at=None, turn_done_at=0.0, go_away_at=100.0, now=101.0,
-                    connected_at=0.0):
+                    connected_at=0.0, reply_until=0.0):
         """Whether the real between_turns() ends the connection within a few polls."""
         clock = SimpleNamespace(monotonic=lambda: now)
         ns = {"asyncio": asyncio, "time": clock, "_between_turns": lambda at: quiet, "_recalled": None,
               "_go_away_at": go_away_at, "_turn_done_at": turn_done_at, "handle_received_at": lambda: handle_at,
               "_connected_at": connected_at, "BETWEEN_TURNS_POLL_S": 0.001, "GO_AWAY_HANDLE_WAIT_S": 3.0,
               "_user_turn": None, "_looked_up": None, "_memory_embedder": None, "live_models": live_models,
-              "MEMORY_NOTES_ENABLED": False}  # the default; the GoAway handover works either way
+              "MEMORY_NOTES_ENABLED": False,  # the default; the GoAway handover works either way
+              "_reply_audible_until": reply_until, "HANDOVER_AFTER_REPLY_S": 3.0, "HANDOVER_PATIENCE_S": 30.0}
         with patch("test_public_core_integration.CORE", V10):
             for name in ("_SessionHandover", "_handover_due", "between_turns"):
                 load_function(name, ns)
@@ -901,6 +902,16 @@ class ReconnectTests(unittest.TestCase):
         # again, so moving would start the conversation over. Wait for this connection's own.
         self.assertFalse(self.handed_over(handle_at=40.0, connected_at=50.0, now=200.0))
         self.assertTrue(self.handed_over(handle_at=60.0, connected_at=50.0, now=200.0))
+
+    def test_a_goaway_handover_waits_a_few_seconds_after_embers_reply(self):
+        # People answer right as Ember stops talking, and what they say while the connection is
+        # replaced is lost: the move waits HANDOVER_AFTER_REPLY_S after the reply's audio ends...
+        self.assertFalse(self.handed_over(reply_until=100.5, now=101.0))
+        self.assertFalse(self.handed_over(reply_until=102.0, now=101.0))   # still playing
+        self.assertTrue(self.handed_over(reply_until=97.9, now=101.0))
+        # ...but at most HANDOVER_PATIENCE_S after the GoAway, before Gemini cuts the connection.
+        self.assertFalse(self.handed_over(reply_until=128.0, go_away_at=100.0, now=129.9))
+        self.assertTrue(self.handed_over(reply_until=129.0, go_away_at=100.0, now=130.1))
 
     def test_after_a_goaway_ember_moves_once_the_reply_has_played_and_resumes(self):
         from features.conversational_ability import session as resumption
@@ -937,7 +948,8 @@ class ReconnectTests(unittest.TestCase):
                        _reply_owed_since=None, _tool_calls_running=0, _last_loud_mic_ts=0.0, _last_user_speech_ts=0.0, _turn_done_at=0.0,
                        handle_received_at=resumption.handle_received_at, BETWEEN_TURNS_POLL_S=0.001,
                        BETWEEN_TURNS_QUIET_S=1.0, REPLY_OWED_MAX_S=15.0, GO_AWAY_HANDLE_WAIT_S=3.0,
-                       MEMORY_NOTES_ENABLED=False)
+                       MEMORY_NOTES_ENABLED=False, _reply_audible_until=0.0, HANDOVER_AFTER_REPLY_S=3.0,
+                       HANDOVER_PATIENCE_S=30.0)
         options.update(overrides)
         with patch.dict(os.environ, {"BAYMAX_SESSION_RESUMPTION": "1", "BAYMAX_CONTEXT_COMPRESSION": "0"}):
             return self.run_connections(count, receive, **options)

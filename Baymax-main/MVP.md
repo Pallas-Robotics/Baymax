@@ -196,7 +196,9 @@ buffered playback, reset afterward, and have a safety expiry. See
 MVP defaults to `BAYMAX_INTERRUPTION_ENABLED=0`: while Ember speaks, the existing
 echo guard sends silence to Gemini through playback plus its 250 ms tail. This
 prevents leaked speaker audio from cutting off a reply or becoming a follow-up
-turn. Set the option to `1` only after live echo-cancellation testing confirms
+turn. MVP also sets `BAYMAX_COMFORT_NOISE=1`, so that silence is steady noise at the
+room's level rather than digital zeros: on the Orange Pi 5 Max, zeros made Gemini
+commit the next question seconds late, or miss it (features/conversational_ability/README.md). Set the option to `1` only after live echo-cancellation testing confirms
 barge-in works on the target hardware. Saved overrides still win. AEC/residual
 subtraction remain enabled. **3 - Start Ember** runs `run_mvp.py` on the Orange Pis,
 so it has these defaults too; on other computers it keeps `run_pc.py`'s.

@@ -158,8 +158,8 @@ below 211 Hz (29 Hz rotation, 88/193 Hz tones); filtering a recording removed
 `scipy` (installed with `librosa`); if unavailable or failing, cleanup continues
 without it.
 
-MVP sets `BAYMAX_INTERRUPTION_ENABLED=1` by default so the person can reclaim
-the turn. Healthy DSP keeps cleaned microphone audio flowing during replies;
+With interruptions on (`BAYMAX_INTERRUPTION_ENABLED=1`, the default outside MVP;
+MVP sets `0`), the person can reclaim the turn. Healthy DSP keeps cleaned microphone audio flowing during replies;
 Gemini's interruption notification flushes queued audio before any co-delivered
 reply text/audio is processed. New user transcription on that message is retained.
 The receive loop updates the shared speaking flag used by initiation and Monitor,
@@ -177,7 +177,28 @@ With interruptions off, `BAYMAX_MUTE_MIC_DURING_REPLY` defaults to `1`: AEC keep
 adapting on the captured audio, but Gemini receives silence while the speaker,
 its device buffer and the 250 ms echo tail are active, so leaked robot speech
 cannot become a later user turn. Speech during a reply is not heard; set it to
-`0` to restore full-duplex input. Without the mute, leaked echo
+`0` to restore full-duplex input.
+
+What Gemini gets in place of the muted audio matters. Digital zeros (the default
+outside MVP) held up Gemini 2.5's next turn on the Orange Pi 5 Max: after zeros for
+a reply, the person's question was committed 6.7-13.5 s late, and some questions
+were never answered. `BAYMAX_COMFORT_NOISE=1` (MVP sets it) sends steady noise at the
+room's cleaned level instead (`ComfortNoise` in `processing.py`), so the stream
+Gemini hears never steps from silence to the room right before the person speaks.
+The level is learned only from cleaned blocks that actually go to Gemini while the
+speaker is silent and WebRTC hears no speech: it follows the floor down within about
+0.1 s and up over about 1 s, within -90..-40 dBFS, and survives reconnects. The
+noise is generated, never taken from the microphone, so nothing from the room
+reaches Gemini while the mic is muted or withheld (audiobooks, radio, a
+disengaged Ember, or the failed-DSP half-duplex fallback, which keeps the last
+learned level). Monitor's `comfort_noise_dbfs` shows the level; conversation timing
+treats the stand-in as the silence it replaces. On-board benchmark (Gemini 2.5; the
+room's own voice-free noise from Ember's recording through this cleanup, black
+camera frames, 6-7 synthetic questions per session each asked 1.5 s after a reply;
+33 questions each): replies started 2.7 s after the question (median) instead of
+3.4 s, 90% within 5.3 s instead of about 9 s, and none went unanswered (3 of 33
+with zeros). Raising the start/end sensitivities as well did not help further
+(3.0-3.2 s median), so they stay low. Without the mute, leaked echo
 can still be recognized as input. Matching a transcript afterward cannot remove
 audio already processed by Gemini. We retain transcript warnings rather than
 delete phrases a person may intentionally repeat. Echo subtraction is an acoustic

@@ -167,7 +167,8 @@ No extra microphone/camera streams are opened by hardware enumeration or tests.
 The conversation service starts **`run_mvp.py`**, which wraps the same v10
 conversation in `run_pc.py` with saved-device readiness, single-instance handling,
 the eye lifecycle and `run_mvp.py`'s MVP defaults: 400 ms turn-end silence,
-interruptions off, the wait cue off, voice analysis off and at most 10 s for saving
+interruptions off, room-level noise instead of digital zeros while the mic is muted,
+the wait cue off, voice analysis off and at most 10 s for saving
 memories when Ember stops. Existing `.env` overrides still win: a `BAYMAX_TURN_END_SILENCE_MS` saved on a
 board (for example 600 from an earlier test) replaces the 400 ms default there.
 No connected eye board is required for conversation; physical eyes and their

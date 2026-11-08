@@ -1,5 +1,29 @@
 # MVP (unreleased)
 
+- Faster, surer replies on the Orange Pi 5 Max. With interruptions off (MVP), the mic
+  is muted while Ember speaks, and Gemini got digital zeros for each reply. Gemini 2.5 then
+  committed the person's next question seconds late or not at all: answers came 5-10 s
+  after a question, sometimes 10-17 s, and some never came, though once the transcript
+  arrived the reply followed in 1-2 s (network RTT ~9 ms, no send backlog). Gemini now
+  gets steady noise at the room's cleaned level instead (`ComfortNoise` in
+  `features/conversational_ability/processing.py`, `BAYMAX_COMFORT_NOISE`, set by
+  `run_mvp.py`; off elsewhere, so `run_pc.py`'s processing is unchanged). The level is
+  learned only from cleaned blocks that reach Gemini while the speaker is silent and
+  WebRTC hears no speech; the noise is generated, never the microphone. It also replaces
+  the zeros for audiobooks/radio, a disengaged Ember and the failed-DSP fallback. On-board
+  benchmark (`bench_turns.py`: the room's own voice-free noise from Ember's recording
+  through `InputEnhancer` in real time, black camera frames, 6-7 synthetic questions per
+  session asked 1.5 s after each reply, 33 each): median reply 3.4 -> 2.7 s, p90 about 9 ->
+  5.3 s, unanswered 3 -> 0; a question with a 0.9 s pause was never cut off. Higher
+  start/end sensitivities on top did not help (3.0-3.2 s median), so they stay low.
+  `gemini-3.8-live` measured 1.6 s median (max 2.1 s) on the same benchmark; the model is
+  unchanged (`BAYMAX_LIVE_MODELS` puts 3.8 first). The GoAway handover now waits 3 s
+  after Ember's reply has played (at most 30 s after the GoAway): it landed right as the
+  person answered, and what they said during the reconnect was lost. `test_language_eval`
+  no longer leaks `run_mvp.py`'s defaults into later tests. Pending: a live conversation
+  on the board with this build and the shared performance check (both need a person
+  talking), and lead review.
+
 - Ember answers in the language the person speaks: Hindi gets Hindi, Spanish gets
   Spanish, a switch is followed on the next reply, a Hindi-English mix gets the same
   mix, and Ember's own English notes (`[FALL ALERT]`, reminders, check-ins) are

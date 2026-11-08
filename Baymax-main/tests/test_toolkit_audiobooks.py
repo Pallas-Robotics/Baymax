@@ -273,7 +273,7 @@ class AudiobookTests(unittest.TestCase):
             voice_seen.append(voice_active)
             return book[0]
         with patch("features.conversational_ability.processing.output_sources", [source]), \
-                patch.dict("os.environ", {"BAYMAX_MUTE_MIC_DURING_REPLY": "1"}):
+                patch.dict("os.environ", {"BAYMAX_MUTE_MIC_DURING_REPLY": "1", "BAYMAX_COMFORT_NOISE": "0"}):
             enhancer = InputEnhancer(processor=FakeDSP())
             silence = bytes(2048)
             mixed = enhancer.mix_output(silence)
@@ -293,7 +293,7 @@ class AudiobookTests(unittest.TestCase):
             calls.append(samples)
             return True
         with patch("features.conversational_ability.processing.input_gates", [gate]), \
-                patch.dict("os.environ", {"BAYMAX_MUTE_MIC_DURING_REPLY": "1"}):
+                patch.dict("os.environ", {"BAYMAX_MUTE_MIC_DURING_REPLY": "1", "BAYMAX_COMFORT_NOISE": "0"}):
             enhancer = InputEnhancer(processor=FakeDSP())
             near = np.full(960, 1000, dtype=np.int16)
             self.assertFalse(np.any(enhancer.process(near)))
