@@ -1,5 +1,40 @@
 # MVP (unreleased)
 
+- Wi-Fi setup hotspot fixes for the Orange Pi boards (`deploy/host/ember_wifi_setup.py`),
+  for times when no hotspot came up or it vanished:
+  - Losing Wi-Fi now counts as offline. Before, dhclient kept its lease and the kernel
+    only marked the route `linkdown`, so the board stayed "online" and showed no
+    hotspot until reboot.
+  - One nearby router whose name was not valid UTF-8 crashed the service every time
+    it started the hotspot. Command output is now decoded leniently.
+  - The hotspot is watched. hostapd's own messages say when it is on the air and which
+    phones are connected; the 4 Pro's driver cannot list connected phones through `iw`,
+    so the hotspot used to close every 5 minutes mid-setup. If hostapd or dnsmasq
+    exits or the access point drops, the hotspot is restarted within seconds instead
+    of staying off for 5 minutes. dnsmasq no longer takes 127.0.0.1:53.
+  - Checking for saved networks scans first, about 10 s off the air, and leaves the
+    hotspot only when a saved network is in range (every third time regardless). It
+    used to go off the air for about 2 minutes every 5 minutes.
+  - A phone left connected keeps the hotspot up for at most 15 minutes.
+  - Plugging in Ethernet closes the hotspot within about 10 s.
+  - A bad or missing password file is reported once, with exit 78 and no restart
+    loop, before the radio is touched.
+  - The service unit uses `KillMode=process`, and the Wi-Fi client is started
+    through `ifup@wlan0.service`. Restarting or stopping the service no longer kills
+    the board's Wi-Fi, and a run that died mid-hotspot is cleaned up.
+  - Listed networks are saved by their exact bytes, so names with spaces at the ends
+    or non-UTF-8 names work. No network is preselected.
+  - The network list retries an empty scan and adds wpa_supplicant's recent results.
+  - The same script now runs on the Orange Pi 5 Max, using NetworkManager (Armbian).
+    The hotspot is a NetworkManager access-point connection, and a network from the
+    page becomes a NetworkManager connection.
+  - The install steps write the password file with `json.dumps`, and there are
+    update steps.
+  Offline tests in `tests/test_ember_wifi_setup.py` (29) cover the routes, decoding,
+  the password file, the page and form, hostapd messages, the retry rules, both
+  stacks' saved networks and the unit settings. Neither board has run the hotspot
+  yet; the hardware checks are listed in `deploy/host/README.md`.
+
 - Ember answers in the language the person speaks: Hindi gets Hindi, Spanish gets
   Spanish, a switch is followed on the next reply, a Hindi-English mix gets the same
   mix, and Ember's own English notes (`[FALL ALERT]`, reminders, check-ins) are

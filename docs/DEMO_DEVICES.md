@@ -8,7 +8,7 @@
 | Dependencies | `requirements-orange-pi.txt` | the same file |
 | NPU for pose | none: MediaPipe on the CPU | optional: the RK3588 NPU after `features/pose`'s conversion and on-board check; MediaPipe on the CPU otherwise |
 | Fast-core pinning, `BAYMAX_CPU_PINNING=auto` | not pinned (unmeasured; `on` tries the 2 A76s) | pinned to cpu4-7 (measured) |
-| Wi-Fi provisioning | the image's preset network; optional setup hotspot installed by hand (`deploy/host`) | the OS's own network setup; no hotspot |
+| Wi-Fi provisioning | the image's preset network; optional setup hotspot installed by hand (`deploy/host`) | the OS's own network setup; optional setup hotspot installed by hand (`deploy/host`, NetworkManager) |
 | Eye connection | external Firmata-compatible Arduino; set its real serial path | the same |
 | Updates | the image's `ember-update` (branch, default `release`) | opt-in: `devops/mvp/update.py` before each start of the autostart service (git checkout, `install_autostart.py`, `BAYMAX_AUTO_UPDATE=1`; `BAYMAX_UPDATE_BRANCH`, default `release`); otherwise `git pull` by hand |
 
@@ -66,8 +66,8 @@ libportaudio2, libgl1, libegl1, libgles2, libglib2.0-0 (or the distro's t64
 variant), libsndfile1, libasound2-plugins, build-essential, cmake, pkg-config,
 and xdg-utils; a browser/terminal and working desktop audio for Setup/Monitor.
 Kernel/audio-server provisioning is separate work; the SD image covers it for the
-Orange Pi 4 Pro. Install the root-owned single-radio hotspot service only on an
-Orange Pi 4 Pro.
+Orange Pi 4 Pro. The root-owned single-radio hotspot service is for the Orange Pi
+boards only (ifupdown on the 4 Pro, NetworkManager on the 5 Max), never an x86 robot.
 
 Save the actual microphone, speaker and camera in Setup. Never copy another
 robot's `.env`, API/device keys or `/etc/ember/device.toml`. Confirm the local
@@ -103,7 +103,7 @@ board's camera, daily check-ins on the board's clock, reconnecting after a Wi-Fi
 reminders/app integration, memory, fall behavior,
 sustained camera+audio performance (CPU summed over Ember and its pose/face
 processes), clean stop/restart and cold boot. On the Orange Pi 5 Max also the NPU
-path inside Ember; on the Orange Pi 4 Pro the hotspot (if installed) and the SD
+path inside Ember; on both boards the hotspot (if installed); on the Orange Pi 4 Pro the SD
 image's first boot and updates. Hardware/provider checks remain pending; no device,
 service, saved SD image or production alert is changed by preparing this
 repository. Software-lead review remains required for release.

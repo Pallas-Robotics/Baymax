@@ -1,12 +1,18 @@
 [Unit]
 Description=Ember-Setup Wi-Fi hotspot when no saved network works
-After=networking.service
+After=networking.service NetworkManager.service
 StartLimitIntervalSec=0
 
 [Service]
 ExecStart=/usr/bin/python3 /usr/local/lib/ember/ember_wifi_setup.py
 Restart=always
 RestartSec=10
+# A missing or invalid /etc/ember/wifi-setup.json is logged once (exit 78), not retried.
+RestartPreventExitStatus=78
+# Stop only the script: it closes the hotspot and hands the radio back to the Wi-Fi
+# client itself, and a wpa_supplicant/dhclient started by `ifup` must outlive it.
+KillMode=process
+TimeoutStopSec=60
 
 [Install]
 WantedBy=multi-user.target
