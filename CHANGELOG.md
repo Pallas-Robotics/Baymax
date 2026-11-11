@@ -35,6 +35,30 @@
   stacks' saved networks and the unit settings. Neither board has run the hotspot
   yet; the hardware checks are listed in `deploy/host/README.md`.
 
+- x86 robot hotspot fixes (`deploy/host/startup.sh`, `baymax_portal.py`,
+  `deploy/provision/provision.sh`):
+  - Phones now open the setup page by themselves. startup.sh points the names phones
+    use to check for internet at the hotspot (`dnsmasq-shared.d`, no real sites), and
+    the portal answers them: "online" while the robot has internet, so phones keep
+    browsing over the hotspot, and the setup page while it is offline. The page was
+    reachable only by typing its address before.
+  - The portal and a hotspot watchdog start before startup.sh's 30 s and DNS waits.
+    The page was missing for the first 1-3 minutes after boot.
+  - The watchdog brings the hotspot back within 30 s whenever it is down and the
+    radio is free. NetworkManager stops retrying after a few failed activations, and
+    the hotspot used to be nudged only once at boot.
+  - The hotspot keeps retrying (`autoconnect-retries 0`) and has a fixed address,
+    10.42.0.1.
+  - The portal rescans before joining, so "No network with SSID found" no longer
+    happens for a network that is there. It suggests nearby names, and the phone
+    keyboard no longer capitalizes or autocorrects the name.
+  - Passwords are kept exactly as typed and checked.
+  - A saved profile of the same name is moved onto the dongle.
+  - A timeout shows "failed" instead of "connecting" forever, without logging the
+    password.
+  Offline tests in `tests/test_baymax_portal.py` (11). The hardware test on unit 001
+  is pending.
+
 - Ember answers in the language the person speaks: Hindi gets Hindi, Spanish gets
   Spanish, a switch is followed on the next reply, a Hindi-English mix gets the same
   mix, and Ember's own English notes (`[FALL ALERT]`, reminders, check-ins) are

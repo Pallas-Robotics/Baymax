@@ -26,6 +26,38 @@ sudo cp deploy/device.example.toml /etc/ember/device.toml   # then edit for this
 
 `startup.sh` reads values with `python3 device_config.py section.key`, falling back to built-in defaults if the app folder can't be read. The portal reads the file directly, since it runs outside the app folder.
 
+## x86 robot hotspot and portal
+
+The hotspot is a NetworkManager connection on the built-in radio (`network.ap_iface`,
+`wlo1`), up the whole time; the robot joins the user's Wi-Fi on a USB dongle.
+`startup.sh` starts, before anything that waits:
+
+- `baymax_portal.py` on port 80, restarted whenever it exits;
+- a watchdog that checks the hotspot every 30 s and brings it back up when it is down
+  and the radio is free (NetworkManager stops retrying after a few failed tries); it
+  also sets the connection's `autoconnect-retries` to 0 (retry forever) on every boot;
+- `/etc/NetworkManager/dnsmasq-shared.d/ember-captive.conf`, which points the names
+  phones use to check for internet (`captive.apple.com`,
+  `connectivitycheck.gstatic.com` and others; no real sites) at the hotspot's address.
+  While the robot has internet the portal answers those checks the way each phone
+  expects, so phones keep using the hotspot normally; while it is offline it sends
+  them to the setup page, which iOS and Android then open as a sign-in page. The page
+  is also at `http://10.42.0.1` (the hotspot's address; `provision.sh` fixes it).
+
+The page suggests the networks the dongle can see, does not let the phone keyboard
+capitalize or autocorrect the name, keeps the password exactly as typed, rescans for
+the network before joining (`nmcli` only joins networks in its last scan), moves a
+saved profile of the same name onto the dongle, and reports failures and timeouts on
+`/status` without the password. Logs: `portal_boot.log` and `startup_boot.log` in the
+log folder.
+
+Hardware test pending (unit 001): reboot with the dongle's network off and confirm
+the hotspot and page appear within a minute and an iPhone and an Android phone open
+the page by themselves; with internet, confirm a phone on the hotspot shows no
+sign-in page and browses; take the hotspot down (`nmcli connection down
+Baymax_Hotspot`) and confirm it is back within a minute; join a network whose name
+starts with a lowercase letter; a password with a space at the end.
+
 ## Orange Pi Wi-Fi setup hotspot
 
 The Orange Pi boards have one Wi-Fi radio, so `ember_wifi_setup.py` takes turns
