@@ -1,17 +1,21 @@
-"""Start an Ember-Setup hotspot and phone page when no saved Wi-Fi works.
+"""An Ember-Setup hotspot with a phone page for giving the robot Wi-Fi details.
 
-The board has one Wi-Fi radio, so the hotspot and the Wi-Fi client take turns: the
-board stays a normal Wi-Fi client while it is online, and only after GRACE seconds
-offline does the radio become a password-protected access point with a setup page.
+The board has one Wi-Fi radio. If its driver can run an access point next to the Wi-Fi
+client (both Orange Pi boards' drivers say they can), the hotspot stays on all the
+time on a second interface, AP_IFACE, and a network from the page is joined without
+closing it. Otherwise, or if that fails on the board, the hotspot and the client take
+turns: the hotspot opens after GRACE seconds offline and closes once a network works.
 
-Two network stacks are supported; the script picks one at startup:
-- ifupdown + wpa_supplicant (the Orange Pi 4 Pro's DietPi image): hostapd and dnsmasq
-  run the hotspot, and networks are saved in wpa_supplicant.conf.
-- NetworkManager (Armbian on the Orange Pi 5 Max): a NetworkManager access-point
-  connection runs the hotspot, and networks are saved as NetworkManager connections.
+Two network stacks are supported for the Wi-Fi client; the script picks one at startup:
+- ifupdown + wpa_supplicant (the Orange Pi 4 Pro's DietPi image): networks are saved in
+  wpa_supplicant.conf.
+- NetworkManager (Armbian on the Orange Pi 5 Max): networks are saved as NetworkManager
+  connections. When taking turns, the hotspot is a NetworkManager connection too.
+hostapd and dnsmasq run the always-on hotspot, and the take-turns one on ifupdown.
 """
 import hashlib
 from html import escape
+import ipaddress
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import os
@@ -38,19 +42,23 @@ def default_iface():
 
 
 IFACE = default_iface()
+AP_IFACE = os.environ.get('EMBER_WIFI_AP_IFACE', 'ember-ap')  # the always-on hotspot's interface
 ADDRESS = '192.168.4.1'
+AP_ADDRESSES = (ADDRESS, '10.88.0.1', '172.31.88.1')          # the first one the home network doesn't use
 SUPPLICANT = Path('/etc/wpa_supplicant/wpa_supplicant.conf')
 SECRET = Path('/etc/ember/wifi-setup.json')
 RUN = Path('/run/ember-wifi-setup')
 NM_CONNECTIONS = Path('/etc/NetworkManager/system-connections')
 NM_DNS = Path('/etc/NetworkManager/dnsmasq-shared.d/ember-wifi-setup.conf')
 NM_HOTSPOT_UUID = str(uuid.uuid5(uuid.NAMESPACE_URL, 'ember-wifi-setup:hotspot'))
-GRACE = 90            # seconds offline before the hotspot starts
+NM_UNMANAGED = Path('/etc/NetworkManager/conf.d/ember-wifi-setup.conf')
+GRACE = 30            # taking turns: seconds offline before the hotspot opens
 JOIN_WAIT = 90        # seconds from leaving the hotspot for a saved network to come online
 RETRY_EVERY = 300     # seconds with no page visit and no phone before checking saved networks
 SESSION_LIMIT = 900   # even with a phone connected, check saved networks after this long
 AP_START_WAIT = 15    # seconds for the access point to come on the air
 EX_CONFIG = 78        # exit status for a bad password file; the unit does not restart on it
+BLIND_AFTER = 600     # always on: offline this long with no network seen means the radio can't scan
 MAC = re.compile(r'(?:[0-9a-f]{2}:){5}[0-9a-f]{2}', re.I)
 
 
@@ -199,6 +207,11 @@ def supplicant_ssids(text):
     return {ssid for ssid in map(block_ssid, re.findall(r'network=\{.*?\n\}', text, re.S)) if ssid}
 
 
+def iw_name(text):
+    # iw prints spaces at either end, backslashes and non-ASCII bytes as \xNN.
+    return re.sub(rb'\\x([0-9a-fA-F]{2})', lambda m: bytes.fromhex(m[1].decode()), text.encode('utf-8'))
+
+
 def scan_ssids(output):
     """Visible network names (bytes) from `iw dev ... scan`, strongest first."""
     best, signal_dbm = {}, -100.0
@@ -210,8 +223,7 @@ def scan_ssids(output):
         elif match := re.match(r'\s*SSID: (.+)$', line):
             if match[1].startswith('\\x00'):
                 continue  # hidden network
-            # iw prints spaces at either end, backslashes and non-ASCII bytes as \xNN.
-            name = re.sub(rb'\\x([0-9a-fA-F]{2})', lambda m: bytes.fromhex(m[1].decode()), match[1].encode('utf-8'))
+            name = iw_name(match[1])
             best[name] = max(signal_dbm, best.get(name, -1000.0))
     return sorted(best, key=lambda name: -best[name])
 
@@ -223,15 +235,16 @@ def merge(*lists):
     return merged
 
 
-def hostapd_config(ssid, password):
+def hostapd_config(ssid, password, iface=None, channel=6):
     check_hotspot_password(password)
-    return '\n'.join([f'interface={IFACE}', 'driver=nl80211', f'ctrl_interface={RUN}/hostapd', f'ssid={ssid}',
-                      'country_code=US', 'hw_mode=g', 'channel=6', 'ieee80211n=1', 'wpa=2',
-                      'wpa_key_mgmt=WPA-PSK', 'rsn_pairwise=CCMP', f'wpa_passphrase={password}', ''])
+    return '\n'.join([f'interface={iface or IFACE}', 'driver=nl80211', f'ctrl_interface={RUN}/hostapd', f'ssid={ssid}',
+                      'country_code=US', 'hw_mode=' + ('a' if channel > 14 else 'g'), f'channel={channel}',
+                      'ieee80211n=1', 'wpa=2', 'wpa_key_mgmt=WPA-PSK', 'rsn_pairwise=CCMP',
+                      f'wpa_passphrase={password}', ''])
 
 
-def iw_stations():
-    return bool(re.search(r'^Station ', run('iw', 'dev', IFACE, 'station', 'dump', timeout=5).stdout, re.M))
+def iw_stations(iface=None):
+    return bool(re.search(r'^Station ', run('iw', 'dev', iface or IFACE, 'station', 'dump', timeout=5).stdout, re.M))
 
 
 class Hostapd:
@@ -239,7 +252,8 @@ class Hostapd:
     point is on the air and which phones are connected: the 4 Pro's aic8800 driver
     cannot list connected phones through `iw`."""
 
-    def __init__(self):
+    def __init__(self, iface=None, address=None, channel=6):
+        self.iface, self.address, self.channel = iface or IFACE, address or ADDRESS, channel
         self.processes = []
         self.enabled = threading.Event()
         self.off_since = None
@@ -264,10 +278,10 @@ class Hostapd:
                 self.event(line)
 
     def start(self, name, password):
-        run('ip', 'addr', 'add', ADDRESS + '/24', 'dev', IFACE)
+        run('ip', 'addr', 'add', self.address + '/24', 'dev', self.iface)
         RUN.mkdir(mode=0o700, exist_ok=True)
         config = RUN / 'hostapd.conf'
-        write_private(config, hostapd_config(name, password))
+        write_private(config, hostapd_config(name, password, self.iface, self.channel))
         line_buffered = ['stdbuf', '-oL'] if shutil.which('stdbuf') else []
         hostapd = subprocess.Popen(line_buffered + ['hostapd', str(config)], stdout=subprocess.PIPE,
                                    stderr=subprocess.STDOUT, text=True, encoding='utf-8', errors='replace')
@@ -278,17 +292,18 @@ class Hostapd:
             if hostapd.poll() is not None:
                 raise HotspotError(f'hostapd exited with status {hostapd.returncode}')
             if time.monotonic() > deadline:
-                if 'type AP' not in run('iw', 'dev', IFACE, 'info', timeout=5).stdout:
+                if 'type AP' not in run('iw', 'dev', self.iface, 'info', timeout=5).stdout:
                     raise HotspotError(f'the access point did not start within {AP_START_WAIT} s')
                 log('hostapd did not report AP-ENABLED, but the radio is an access point; continuing')
                 break
-        # The portal answers on wlan0 only; without --except-interface=lo dnsmasq also takes
-        # 127.0.0.1:53 and exits if a local resolver already has it.
+        # The portal answers on the hotspot only; without --except-interface=lo dnsmasq also
+        # takes 127.0.0.1:53 and exits if a local resolver already has it.
+        net = self.address.rsplit('.', 1)[0]
         dnsmasq = subprocess.Popen(['dnsmasq', '--keep-in-foreground', '--log-facility=-', '--conf-file=/dev/null',
-                                    '--no-resolv', '--no-hosts', f'--interface={IFACE}', '--except-interface=lo',
+                                    '--no-resolv', '--no-hosts', f'--interface={self.iface}', '--except-interface=lo',
                                     '--bind-interfaces', '--dhcp-authoritative', f'--dhcp-leasefile={RUN}/dnsmasq.leases',
-                                    '--dhcp-range=192.168.4.10,192.168.4.100,10m', f'--address=/#/{ADDRESS}',
-                                    '--dhcp-option=option:router,' + ADDRESS])
+                                    f'--dhcp-range={net}.10,{net}.100,10m', f'--address=/#/{self.address}',
+                                    '--dhcp-option=option:router,' + self.address])
         self.processes.append(dnsmasq)
         time.sleep(1)
         if dnsmasq.poll() is not None:
@@ -302,8 +317,8 @@ class Hostapd:
     def phones_connected(self):
         if self.stations:
             return True
-        listed = run('hostapd_cli', '-p', str(RUN / 'hostapd'), '-i', IFACE, 'list_sta', timeout=5)
-        return (listed.returncode == 0 and bool(MAC.search(listed.stdout))) or iw_stations()
+        listed = run('hostapd_cli', '-p', str(RUN / 'hostapd'), '-i', self.iface, 'list_sta', timeout=5)
+        return (listed.returncode == 0 and bool(MAC.search(listed.stdout))) or iw_stations(self.iface)
 
     def stop(self):
         for process in self.processes:
@@ -315,7 +330,7 @@ class Hostapd:
             except subprocess.TimeoutExpired:
                 process.kill()
         self.processes = []
-        run('ip', 'addr', 'flush', 'dev', IFACE)
+        run('ip', 'addr', 'flush', 'dev', self.iface)
 
 
 class Ifupdown:
@@ -350,11 +365,8 @@ class Ifupdown:
         run('ip', 'addr', 'flush', 'dev', IFACE)
 
     def recover(self):
-        """Clean up after a run that stopped mid-hotspot, then bring the Wi-Fi client up."""
-        left = [run('pkill', '-f', f'{program}.*{RUN}').returncode == 0 for program in ('hostapd', 'dnsmasq')]
-        if any(left) or f'inet {ADDRESS}/' in run('ip', '-4', 'addr', 'show', 'dev', IFACE).stdout:
-            log('Cleaning up a hotspot left by an earlier run')
-            time.sleep(1)
+        """After a run that stopped mid-hotspot (see kill_leftovers), bring the client up."""
+        if f'inet {ADDRESS}/' in run('ip', '-4', 'addr', 'show', 'dev', IFACE).stdout:
             run('ip', 'addr', 'flush', 'dev', IFACE)
         self.client_mode()
 
@@ -386,6 +398,28 @@ class Ifupdown:
 
     def new_hotspot(self):
         return Hostapd()
+
+    def unmanage(self, iface, exists=False):
+        pass
+
+    def cached_networks(self):
+        return scan_ssids(run('iw', 'dev', IFACE, 'scan', 'dump', timeout=10).stdout)
+
+    def refresh_networks(self):
+        # Ask wpa_supplicant, which owns the client interface, then read its results.
+        if run('wpa_cli', '-i', IFACE, 'scan', timeout=5).stdout.strip() == 'OK':
+            time.sleep(5)
+            return self.cached_networks()
+        return scan_ssids(run('iw', 'dev', IFACE, 'scan', timeout=30).stdout)
+
+    def apply_saved(self, ssid, wait):
+        """Make the running client pick up the saved network; the hotspot stays up."""
+        if run('wpa_cli', '-i', IFACE, 'reconfigure', timeout=10).stdout.strip() != 'OK':
+            if self.hotplug:
+                run('systemctl', 'restart', f'ifup@{IFACE}.service', timeout=wait)
+            else:
+                run('ifdown', IFACE, timeout=30)
+                run('ifup', IFACE, timeout=wait)
 
     def join(self, ssid, wait, visible=()):
         # wpa_supplicant tries saved networks itself, priority 200 (the page's) first.
@@ -548,6 +582,31 @@ class NetworkManager:
     def new_hotspot(self):
         return NMHotspot(self)
 
+    def unmanage(self, iface, exists=False):
+        if exists:  # also at runtime, in case the setting below is not read
+            self.nmcli('device', 'set', iface, 'managed', 'no', timeout=10)
+            return
+        # Before the interface exists, so NetworkManager never puts its own client on it.
+        text = f'# Written by ember_wifi_setup.py: the always-on setup hotspot runs here.\n' \
+               f'[device-ember-wifi-setup]\nmatch-device=interface-name:{iface}\nmanaged=0\n'
+        if not NM_UNMANAGED.exists() or NM_UNMANAGED.read_text() != text:
+            NM_UNMANAGED.parent.mkdir(parents=True, exist_ok=True)
+            NM_UNMANAGED.write_text(text)
+            self.nmcli('general', 'reload', 'conf', timeout=15)
+
+    def cached_networks(self):
+        return nm_scan_ssids(self.nmcli('-t', '-f', 'SSID-HEX', 'device', 'wifi', 'list', 'ifname', IFACE,
+                                        '--rescan', 'no', timeout=15).stdout)
+
+    def refresh_networks(self):
+        return nm_scan_ssids(self.nmcli('-t', '-f', 'SSID-HEX', 'device', 'wifi', 'list', 'ifname', IFACE,
+                                        '--rescan', 'yes', timeout=30).stdout)
+
+    def apply_saved(self, ssid, wait):
+        self.client_mode()
+        self.nmcli('--wait', str(int(wait)), 'connection', 'up', 'uuid', nm_uuid(ssid), 'ifname', IFACE,
+                   timeout=wait + 10)
+
     def join(self, ssid, wait, visible=()):
         deadline = time.monotonic() + wait
         self.client_mode()
@@ -586,10 +645,15 @@ def network_stack():
 
 # The phone page -----------------------------------------------------------------
 
-def page(networks, message=''):
+def page(networks, message='', in_place=False):
     options = ''.join(f'<option value="{ssid_bytes(name).hex()}">{escape(shown(name))}</option>' for name in networks)
     first = 'Choose a network' if networks else 'No networks found: type the name below'
     notice = f'<p class="note">{escape(message)}</p>' if message else ''
+    if in_place:
+        after = '<p>This hotspot stays on while Ember joins the network; the next page shows how it went.</p>'
+    else:
+        after = (f'<p>Ember will leave this hotspot to try the network. If <b>{escape(hotspot_name())}</b> comes '
+                 'back in about two minutes, the network could not be joined: reconnect and try again.</p>')
     return f'''<!DOCTYPE html><html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1"><title>Ember Wi-Fi setup</title>
 <style>body{{font-family:-apple-system,sans-serif;max-width:420px;margin:auto;padding:24px}}
@@ -601,22 +665,44 @@ button{{background:#E03C31;color:#fff;border:0;border-radius:8px;margin-top:20px
 <label>Or type the network name<input name="ssid" autocapitalize="none" autocorrect="off" spellcheck="false" autocomplete="off"></label>
 <label>Password (blank for open Wi-Fi)<input name="password" type="password"></label>
 <button type="submit">Connect</button></form>
-<p>Ember will leave this hotspot to try the network. If <b>{escape(hotspot_name())}</b> comes back
-in about two minutes, the network could not be joined: reconnect and try again.</p></body></html>'''
+{after}</body></html>'''
 
 
 def hotspot_name():
     return 'Ember-Setup-' + socket.gethostname()[-4:].upper()
 
 
+def status_page(status):
+    state, name, detail = status.get('state', ''), escape(status.get('ssid', '')), escape(status.get('detail', ''))
+    if state == 'joining':
+        head, body = '<meta http-equiv="refresh" content="3">', f'<h2>Joining {name}…</h2><p>This takes up to a minute.</p>'
+    elif state == 'joined':
+        head, body = '', f'<h2>Connected</h2><p>Ember is online on <b>{name}</b>. You can leave this hotspot.</p>'
+    elif state == 'failed':
+        head, body = '', f'<h2>Not connected</h2><p>{detail}</p><p><a href="/">Try again</a></p>'
+    else:
+        head, body = '', '<h2>No network submitted yet</h2><p><a href="/">Choose a network</a></p>'
+    return (f'<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, '
+            f'initial-scale=1">{head}<title>Ember Wi-Fi setup</title></head>'
+            f'<body style="font-family:-apple-system,sans-serif;max-width:420px;margin:auto;padding:24px">{body}</body></html>')
+
+
 class Portal:
-    def __init__(self, save):
+    def __init__(self, save, refresh=None):
         self.save = save
+        self.refresh = refresh            # always on: rescans for the page while the hotspot stays up
+        self.in_place = refresh is not None
         self.networks, self.message = [], ''
         self.submitted = threading.Event()
         self.chosen = None
-        self.last_visit = 0.0
+        self.status = {}
+        self.last_visit = self.refreshed = 0.0
         self.server = None
+
+    def refresh_networks(self):
+        names = self.refresh()
+        if names:
+            self.networks = names
 
     def choose(self, form):
         """The network the form names (bytes): a typed name, else the chosen list entry."""
@@ -646,9 +732,14 @@ class Portal:
                     portal.last_visit = time.monotonic()
 
             def do_GET(self):
-                # Every URL gets the form, so phones open it as a sign-in page.
                 self.visited()
-                self.reply(200, page(portal.networks, portal.message))
+                if self.path.split('?')[0] == '/status':
+                    return self.reply(200, status_page(portal.status))
+                if portal.refresh and time.monotonic() - portal.refreshed > 60:
+                    portal.refreshed = time.monotonic()
+                    threading.Thread(target=portal.refresh_networks, daemon=True).start()
+                # Every other URL gets the form, so phones open it as a sign-in page.
+                self.reply(200, page(portal.networks, portal.message, portal.in_place))
 
             def do_POST(self):
                 self.visited()
@@ -657,14 +748,18 @@ class Portal:
                 ssid = portal.choose(form)
                 password = form.get('password', [''])[0]
                 if not ssid:
-                    return self.reply(400, page(portal.networks, 'Choose a network or type its name.'))
+                    return self.reply(400, page(portal.networks, 'Choose a network or type its name.', portal.in_place))
                 try:
                     portal.save(ssid, password)
                 except (ValueError, OSError) as error:
-                    return self.reply(400, page(portal.networks, str(error)))
+                    return self.reply(400, page(portal.networks, str(error), portal.in_place))
                 log(f'Saved Wi-Fi network {shown(ssid)!r} from the setup page')
                 portal.chosen = ssid
                 portal.message = f'Could not join "{shown(ssid)}". Check the name and password and try again.'
+                if portal.in_place:
+                    portal.status = {'ssid': shown(ssid), 'state': 'joining'}
+                    portal.submitted.set()
+                    return self.reply(200, status_page(portal.status))
                 portal.submitted.set()
                 self.reply(200, f'<!DOCTYPE html><meta name="viewport" content="width=device-width, initial-scale=1">'
                                 f'<body style="font-family:sans-serif;padding:24px"><h2>Saved</h2><p>Ember is joining '
@@ -674,8 +769,8 @@ class Portal:
                 pass
         return Handler
 
-    def serve(self):
-        self.server = ThreadingHTTPServer((ADDRESS, 80), self.handler())
+    def serve(self, address=None):
+        self.server = ThreadingHTTPServer((address or ADDRESS, 80), self.handler())
         self.server.daemon_threads = True
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
 
@@ -684,6 +779,200 @@ class Portal:
             self.server.shutdown()
             self.server.server_close()
             self.server = None
+
+
+# Always on: the hotspot next to the Wi-Fi client -----------------------------------
+
+def interface_combinations(info):
+    """`iw phy ... info`'s "valid interface combinations" as [(groups, total, channels)],
+    where groups is [(set of interface types, how many)]."""
+    lines, block, depth = info.splitlines(), [], None
+    for line in lines:
+        if depth is None:
+            if 'valid interface combinations:' in line:
+                depth = len(line) - len(line.lstrip())
+            continue
+        if line.strip() and len(line) - len(line.lstrip()) <= depth:
+            break
+        block.append(line.strip())
+    combos = []
+    for entry in ' '.join(block).split('* ')[1:]:
+        groups = [({kind.strip() for kind in kinds.split(',')}, int(count))
+                  for kinds, count in re.findall(r'#\{\s*([^}]*)\}\s*<=\s*(\d+)', entry)]
+        total = re.search(r'total <= (\d+)', entry)
+        channels = re.search(r'#channels <= (\d+)', entry)
+        combos.append((groups, int(total[1]) if total else 1, int(channels[1]) if channels else 1))
+    return combos
+
+
+def ap_with_client(info):
+    """How many channels the radio allows while running one Wi-Fi client and one access
+    point at once; 0 if it cannot."""
+    best = 0
+    for groups, total, channels in interface_combinations(info):
+        managed = [i for i, (kinds, count) in enumerate(groups) if 'managed' in kinds]
+        ap = [i for i, (kinds, count) in enumerate(groups) if 'AP' in kinds]
+        if total >= 2 and any(m != a or groups[m][1] >= 2 for m in managed for a in ap):
+            best = max(best, channels)
+    return best
+
+
+def radio_info():
+    try:
+        phy = Path('/sys/class/net', IFACE, 'phy80211', 'name').read_text().strip()
+    except OSError:
+        return ''
+    return run('iw', 'phy', phy, 'info', timeout=10).stdout
+
+
+def client_link():
+    """(SSID as bytes, frequency in MHz) of the network the Wi-Fi client is on, or (None, None)."""
+    text = run('iw', 'dev', IFACE, 'link', timeout=5).stdout
+    ssid = re.search(r'^\s*SSID: (.*)$', text, re.M)
+    freq = re.search(r'^\s*freq:\s*(\d+)', text, re.M)
+    return (iw_name(ssid[1]) if ssid else None), (int(freq[1]) if freq else None)
+
+
+def ap_channel(freq, five_ghz=True):
+    """The hotspot goes on the Wi-Fi client's own channel when an access point may use it,
+    so the radio never switches channels; else on 2.4 GHz channel 6."""
+    if freq and 2412 <= freq <= 2472:
+        return (freq - 2407) // 5
+    if five_ghz and freq and 5170 <= freq <= 5835 and (freq - 5000) // 5 in (36, 40, 44, 48, 149, 153, 157, 161, 165):
+        return (freq - 5000) // 5   # not radar (DFS) channels, which an access point can't just use
+    return 6
+
+
+def ap_address():
+    """The first of AP_ADDRESSES whose /24 the home network does not use."""
+    taken = []
+    for line in run('ip', '-4', 'route', 'show').stdout.splitlines():
+        words = line.split()
+        if words and words[0] != 'default' and f'dev {AP_IFACE}' not in line:
+            try:
+                taken.append(ipaddress.ip_network(words[0], strict=False))
+            except ValueError:
+                pass
+    for address in AP_ADDRESSES:
+        if not any(ipaddress.ip_network(address + '/24', strict=False).overlaps(net) for net in taken):
+            return address
+    return AP_ADDRESSES[-1]
+
+
+def local_mac(mac):
+    """The client's MAC with the locally administered bit, for the second interface."""
+    first = int(mac[:2], 16)
+    return f'{(first | 2) if not first & 2 else (first ^ 4):02x}' + mac[2:]
+
+
+def add_ap_iface(stack):
+    stack.unmanage(AP_IFACE)
+    if not Path('/sys/class/net', AP_IFACE).exists():
+        result = run('iw', 'dev', IFACE, 'interface', 'add', AP_IFACE, 'type', '__ap')
+        if result.returncode != 0:
+            raise HotspotError(f'could not add {AP_IFACE}: {(result.stderr or result.stdout).strip()}')
+        try:  # most drivers want a second interface to have its own address
+            mac = Path('/sys/class/net', IFACE, 'address').read_text().strip()
+            run('ip', 'link', 'set', 'dev', AP_IFACE, 'address', local_mac(mac))
+        except (OSError, ValueError):
+            pass
+    stack.unmanage(AP_IFACE, exists=True)
+
+
+def remove_ap_iface():
+    if Path('/sys/class/net', AP_IFACE).exists():
+        run('iw', 'dev', AP_IFACE, 'del')
+
+
+def join_in_place(stack, portal, ssid, wait=JOIN_WAIT):
+    """Join a network from the page while the hotspot stays up; the page shows the result."""
+    deadline = time.monotonic() + wait
+    log(f'Joining {shown(ssid)!r} with the hotspot still up')
+    stack.apply_saved(ssid, wait)
+    while time.monotonic() < deadline:
+        if client_link()[0] == ssid and online():
+            portal.status = {'ssid': shown(ssid), 'state': 'joined'}
+            portal.message = ''
+            log(f'Online on {shown(ssid)!r}')
+            return True
+        time.sleep(3)
+    portal.status = {'ssid': shown(ssid), 'state': 'failed', 'detail': portal.message}
+    log(f'Could not join {shown(ssid)!r}')
+    return False
+
+
+def always_on(stack, secret, keep_going=lambda: True):
+    """Keep the hotspot up on AP_IFACE, next to the Wi-Fi client, until keep_going() is
+    false. Returns why it stopped, with the hotspot off and AP_IFACE removed."""
+    portal = Portal(stack.save, stack.refresh_networks)
+    hotspot, channel, failures, five_ghz, on_air_since = None, None, 0, True, 0.0
+    offline_since, joining = None, None
+
+    def stop():
+        portal.close()
+        if hotspot:
+            hotspot.stop()
+
+    try:
+        add_ap_iface(stack)
+        while keep_going():
+            linked, freq = client_link()
+            want = ap_channel(freq, five_ghz)
+            if hotspot and not hotspot.alive():
+                log('The hotspot went off the air; restarting it')
+                failures += 1
+                stop()
+                hotspot = None
+            elif hotspot and want != channel and not (joining and joining.is_alive()):
+                log(f'The Wi-Fi client is on another channel; moving the hotspot to channel {want}')
+                stop()
+                hotspot = None
+            if hotspot is None:
+                if failures >= 3:
+                    return 'the hotspot kept failing next to the Wi-Fi client'
+                address = ap_address()
+                hotspot = Hostapd(AP_IFACE, address, want)
+                try:
+                    portal.networks = stack.cached_networks() or portal.networks
+                    hotspot.start(hotspot_name(), secret['password'])
+                    portal.serve(address)
+                    channel, on_air_since = want, time.monotonic()
+                    log(f'Hotspot {hotspot_name()} is on the air on channel {want} at {address}, next to the Wi-Fi client')
+                except (HotspotError, OSError) as error:
+                    log(f'Hotspot failed on channel {want}: {error}')
+                    stop()
+                    hotspot = None
+                    if want > 14:
+                        five_ghz = False  # e.g. not allowed here: use 2.4 GHz from now on
+                    else:
+                        failures += 1
+                        time.sleep(5 * failures)
+                    continue
+            if time.monotonic() - on_air_since > 120:
+                failures = 0
+            # Some radios cannot scan for networks while an access point is up; then the
+            # client would never find its network again.
+            if linked is None and not online():
+                offline_since = offline_since or time.monotonic()
+                if time.monotonic() - offline_since >= BLIND_AFTER:
+                    offline_since = time.monotonic()
+                    if not stack.cached_networks() and not stack.refresh_networks():
+                        return f'the Wi-Fi client found no networks in {BLIND_AFTER // 60} minutes'
+            else:
+                offline_since = None
+            if portal.submitted.wait(5):
+                portal.submitted.clear()
+                joining = threading.Thread(target=join_in_place, args=(stack, portal, portal.chosen), daemon=True)
+                joining.start()
+        return 'stopped'
+    except HotspotError as error:
+        return str(error)
+    except Exception:  # fall back to taking turns rather than crash-looping
+        log('Always-on hotspot failed:\n' + traceback.format_exc())
+        return 'an unexpected error'
+    finally:
+        stop()
+        remove_ap_iface()
 
 
 # Taking turns -------------------------------------------------------------------
@@ -770,17 +1059,35 @@ def setup_until_online(stack, secret):
         log('No saved Wi-Fi network joined; reopening the hotspot')
 
 
+def kill_leftovers():
+    """hostapd and dnsmasq of a run that stopped mid-hotspot (KillMode=process keeps them)."""
+    if any([run('pkill', '-f', f'{program}.*{RUN}').returncode == 0 for program in ('hostapd', 'dnsmasq')]):
+        log('Cleaning up a hotspot left by an earlier run')
+        time.sleep(1)
+    remove_ap_iface()
+
+
 def main():
     stack = network_stack()
     log(f'Wi-Fi setup hotspot for {IFACE} with {stack.name}')
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
     offline_since = None if online() else time.monotonic()
-    stack.recover()  # after a run that stopped mid-hotspot
+    kill_leftovers()
+    stack.recover()
     try:
         secret = load_secret()
     except ValueError as error:
         log(f'Not starting: {error}')
         sys.exit(EX_CONFIG)
+    if os.environ.get('EMBER_HOTSPOT_ALWAYS', '1') == '0':
+        log('EMBER_HOTSPOT_ALWAYS=0: the hotspot opens only while Ember is offline')
+    elif (channels := ap_with_client(radio_info())) >= 2:
+        log(f'The radio can run the hotspot next to the Wi-Fi client (up to {channels} channels): keeping it on')
+        reason = always_on(stack, secret)
+        log(f'The always-on hotspot stopped ({reason}); from now on it opens only while Ember is offline')
+        stack.client_mode()
+    else:
+        log('The radio cannot run the hotspot next to the Wi-Fi client; it opens only while Ember is offline')
     while True:
         if online():
             offline_since = None

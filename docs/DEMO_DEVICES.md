@@ -8,7 +8,7 @@
 | Dependencies | `requirements-orange-pi.txt` | the same file |
 | NPU for pose | none: MediaPipe on the CPU | optional: the RK3588 NPU after `features/pose`'s conversion and on-board check; MediaPipe on the CPU otherwise |
 | Fast-core pinning, `BAYMAX_CPU_PINNING=auto` | not pinned (unmeasured; `on` tries the 2 A76s) | pinned to cpu4-7 (measured) |
-| Wi-Fi provisioning | the image's preset network; optional setup hotspot installed by hand (`deploy/host`) | the OS's own network setup; optional setup hotspot installed by hand (`deploy/host`, NetworkManager) |
+| Wi-Fi provisioning | the image's preset network; optional setup hotspot installed by hand (`deploy/host`), always on next to the Wi-Fi client | the OS's own network setup; the same optional always-on hotspot (`deploy/host`, NetworkManager) |
 | Eye connection | external Firmata-compatible Arduino; set its real serial path | the same |
 | Updates | the image's `ember-update` (branch, default `release`) | opt-in: `devops/mvp/update.py` before each start of the autostart service (git checkout, `install_autostart.py`, `BAYMAX_AUTO_UPDATE=1`; `BAYMAX_UPDATE_BRANCH`, default `release`); otherwise `git pull` by hand |
 

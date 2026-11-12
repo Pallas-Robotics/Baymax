@@ -1,5 +1,23 @@
 # MVP (unreleased)
 
+- Orange Pi setup hotspot always on. Both boards' Wi-Fi drivers support a Wi-Fi
+  client and an access point at the same time. The 4 Pro's aic8800 allows 1 client +
+  1 AP on up to 3 channels; the 5 Max's bcmdhd allows up to 2. Wherever the radio's
+  `iw phy` combinations allow this on 2 or more channels, `ember_wifi_setup.py` keeps
+  the hotspot on all the time:
+  - It runs on a second interface, `ember-ap`, on the client's own channel when an
+    access point may use it (else 2.4 GHz channel 6), and follows the client.
+  - Its address avoids the home network's range.
+  - A network from the page is joined with the hotspot still up, and the page shows
+    the result.
+  - It uses about 25 MB and practically no CPU. `EMBER_HOTSPOT_ALWAYS=0` turns it off.
+  - If the access point keeps failing, or the client can't find networks while it is
+    up, the script takes turns as before.
+  - When taking turns, the hotspot now opens after 30 s offline instead of 90 s.
+  - The 5 Max now needs `hostapd` installed too.
+  - 16 more offline tests (45 in `tests/test_ember_wifi_setup.py`). Hardware checks,
+    including conversation latency with the hotspot up, are pending.
+
 - Wi-Fi setup hotspot fixes for the Orange Pi boards (`deploy/host/ember_wifi_setup.py`),
   for times when no hotspot came up or it vanished:
   - Losing Wi-Fi now counts as offline. Before, dhclient kept its lease and the kernel

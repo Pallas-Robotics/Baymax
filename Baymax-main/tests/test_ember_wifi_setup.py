@@ -447,5 +447,190 @@ class NetworkManagerTests(unittest.TestCase):
             self.assertFalse(module.nm_manages('wlan0'))
 
 
+AIC8800 = """Wiphy phy0
+	valid interface combinations:
+		 * #{ managed } <= 1, #{ AP } <= 1, #{ P2P-client, P2P-GO } <= 1, #{ P2P-device } <= 1,
+		   total <= 4, #channels <= 3
+	HT Capability overrides:
+"""
+BCMDHD = """Wiphy phy0
+	valid interface combinations:
+		 * #{ AP } <= 2, #{ managed } <= 4, #{ P2P-client, P2P-GO } <= 2, #{ P2P-device } <= 1, #{ IBSS } <= 1,
+		   total <= 5, #channels <= 2
+"""
+
+
+class FakeEvent:
+    """threading.Event whose wait() advances a fake clock instead of blocking."""
+    clock = None
+
+    def __init__(self):
+        self.flag = False
+
+    def set(self):
+        self.flag = True
+
+    def clear(self):
+        self.flag = False
+
+    def is_set(self):
+        return self.flag
+
+    def wait(self, timeout=None):
+        if not self.flag and FakeEvent.clock:
+            FakeEvent.clock.sleep(timeout or 0)
+        return self.flag
+
+
+class FakeAP:
+    starts, fail_channels, alive_after = [], set(), None
+
+    def __init__(self, iface, address, channel):
+        self.iface, self.address, self.channel = iface, address, channel
+
+    def start(self, name, password):
+        FakeAP.starts.append(self.channel)
+        if self.channel in FakeAP.fail_channels:
+            raise module.HotspotError(f'channel {self.channel} not allowed')
+
+    def alive(self):
+        return True
+
+    def stop(self):
+        pass
+
+
+class AlwaysOnTests(unittest.TestCase):
+    def test_radio_capability(self):
+        self.assertEqual(module.ap_with_client(AIC8800), 3)
+        self.assertEqual(module.ap_with_client(BCMDHD), 2)
+        for info, expected in [
+            ('\tvalid interface combinations:\n\t\t * #{ AP } <= 4,\n\t\t   total <= 4, #channels <= 1, STA/AP BI must match\n', 0),
+            ('\tvalid interface combinations:\n\t\t * #{ managed, AP } <= 1,\n\t\t   total <= 1, #channels <= 1\n', 0),
+            ('\tvalid interface combinations:\n\t\t * #{ managed, AP } <= 2,\n\t\t   total <= 2, #channels <= 1\n', 1),
+            ('\tSupported interface modes:\n\t\t * managed\n\t\t * AP\n', 0),
+            ('', 0)]:
+            with self.subTest(info=info):
+                self.assertEqual(module.ap_with_client(info), expected)
+
+    def test_hotspot_shares_the_client_channel_when_it_may(self):
+        cases = [(None, 6), (2412, 1), (2437, 6), (2462, 11), (5180, 36), (5745, 149),
+                 (5260, 6), (5500, 6), (5955, 6)]  # 52 and 100 are radar channels; 5955 is 6 GHz
+        for freq, channel in cases:
+            with self.subTest(freq=freq):
+                self.assertEqual(module.ap_channel(freq), channel)
+        self.assertEqual(module.ap_channel(5180, five_ghz=False), 6)
+        config = module.hostapd_config('Ember-Setup-5MAX', 'abcd2345ef', 'ember-ap', 36)
+        self.assertIn('interface=ember-ap', config)
+        self.assertIn('hw_mode=a', config)
+        self.assertIn('channel=36', config)
+
+    def test_client_link(self):
+        link = 'Connected to aa:bb:cc:dd:ee:ff (on wlan0)\n\tSSID: Home\\x20\n\tfreq: 2437.0\n\tsignal: -50 dBm\n'
+        with patch.object(module, 'run', return_value=done(link)):
+            self.assertEqual(module.client_link(), (b'Home ', 2437))
+        with patch.object(module, 'run', return_value=done('Not connected.\n')):
+            self.assertEqual(module.client_link(), (None, None))
+
+    def test_hotspot_address_avoids_the_home_network(self):
+        for routes, expected in [
+            ('default via 192.168.1.1 dev wlan0\n192.168.1.0/24 dev wlan0 proto kernel scope link\n', '192.168.4.1'),
+            ('default via 192.168.4.1 dev wlan0\n192.168.4.0/24 dev wlan0 proto kernel scope link\n', '10.88.0.1'),
+            ('192.168.4.0/24 dev wlan0\n10.0.0.0/8 dev eth0\n', '172.31.88.1'),
+            ('192.168.4.0/24 dev ember-ap proto kernel scope link\n', '192.168.4.1')]:  # its own route
+            with self.subTest(routes=routes), patch.object(module, 'run', return_value=done(routes)):
+                self.assertEqual(module.ap_address(), expected)
+        self.assertEqual(module.local_mac('00:11:22:33:44:55'), '02:11:22:33:44:55')
+        self.assertEqual(module.local_mac('02:11:22:33:44:55'), '06:11:22:33:44:55')
+
+    def run_always_on(self, links, rounds, online=False, cached=(b'Home',)):
+        clock = Clock()
+        FakeEvent.clock = clock
+        FakeAP.starts = []
+        links = list(links)
+        stack = FakeStack([], [])
+        stack.refresh_networks = lambda: []
+        stack.cached_networks = lambda: list(cached)
+        count = iter(range(rounds))
+        with patch.object(module.threading, 'Event', FakeEvent), patch.object(module, 'Hostapd', FakeAP), \
+             patch.object(module, 'add_ap_iface'), patch.object(module, 'remove_ap_iface') as removed, \
+             patch.object(module.Portal, 'serve'), patch.object(module, 'ap_address', return_value='192.168.4.1'), \
+             patch.object(module, 'client_link', side_effect=lambda: links.pop(0) if len(links) > 1 else links[0]), \
+             patch.object(module, 'online', return_value=online), \
+             patch.object(module.time, 'monotonic', clock.monotonic), patch.object(module.time, 'sleep', clock.sleep):
+            reason = module.always_on(stack, {'password': 'abcd2345ef'}, lambda: next(count, None) is not None)
+        removed.assert_called_once()
+        return reason
+
+    def test_hotspot_follows_the_client_to_its_channel(self):
+        FakeAP.fail_channels = set()
+        reason = self.run_always_on([(None, None), (None, None), (b'Home', 2412)], 5, online=True)
+        self.assertEqual(reason, 'stopped')
+        self.assertEqual(FakeAP.starts, [6, 1])
+
+    def test_five_ghz_refused_falls_back_to_channel_6(self):
+        FakeAP.fail_channels = {36}
+        self.run_always_on([(b'Home', 5180)], 5, online=True)
+        self.assertEqual(FakeAP.starts, [36, 6])  # and stays there
+
+    def test_gives_up_when_the_hotspot_keeps_failing(self):
+        FakeAP.fail_channels = {6}
+        reason = self.run_always_on([(None, None)], 20)
+        self.assertIn('kept failing', reason)
+        self.assertEqual(FakeAP.starts, [6, 6, 6])
+
+    def test_gives_up_when_the_client_sees_no_networks(self):
+        FakeAP.fail_channels = set()
+        reason = self.run_always_on([(None, None)], 1000, cached=())
+        self.assertIn('found no networks', reason)
+        FakeAP.fail_channels = set()
+        self.assertEqual(self.run_always_on([(None, None)], 300, cached=(b'Neighbour',)), 'stopped')
+
+    def test_join_in_place_reports_on_the_page(self):
+        portal, stack = module.Portal(None, refresh=lambda: []), FakeStack([], [])
+        applied = []
+        stack.apply_saved = lambda ssid, wait: applied.append(ssid)
+        portal.message = 'Could not join "Home". Check the name and password and try again.'
+        clock = Clock()
+        with patch.object(module, 'client_link', return_value=(b'Home', 2437)), \
+             patch.object(module, 'online', return_value=True), patch.object(module.time, 'sleep', clock.sleep):
+            self.assertTrue(module.join_in_place(stack, portal, b'Home'))
+        self.assertEqual(portal.status, {'ssid': 'Home', 'state': 'joined'})
+        self.assertEqual(applied, [b'Home'])
+        with patch.object(module, 'client_link', return_value=(b'Other', 2437)), \
+             patch.object(module, 'online', return_value=True), \
+             patch.object(module.time, 'monotonic', clock.monotonic), patch.object(module.time, 'sleep', clock.sleep):
+            portal.message = 'Could not join "Home". Check the name and password and try again.'
+            self.assertFalse(module.join_in_place(stack, portal, b'Home', wait=10))
+        self.assertEqual(portal.status['state'], 'failed')
+        self.assertIn('Check the name and password', module.status_page(portal.status))
+        self.assertIn('refresh', module.status_page({'ssid': 'Home', 'state': 'joining'}))
+
+
+class InPlacePortalTests(PortalTests):
+    def setUp(self):
+        super().setUp()
+        self.refreshed = threading.Event()
+        self.portal.refresh = lambda: (self.refreshed.set(), [b'Fresh'])[1]
+        self.portal.in_place = True
+
+    def test_submission_keeps_the_hotspot_and_shows_status(self):
+        status, text = self.request('POST', '/connect', {'choice': b'Cafe'.hex(), 'ssid': '', 'password': 'password1'})
+        self.assertEqual(status, 200)
+        self.assertIn('Joining Cafe', text)
+        self.assertEqual(self.portal.status, {'ssid': 'Cafe', 'state': 'joining'})
+        status, text = self.request('GET', '/status')
+        self.assertIn('Joining Cafe', text)
+
+    def test_page_rescans_while_up(self):
+        status, text = self.request('GET', '/')
+        self.assertIn('stays on while Ember joins', text)
+        self.assertTrue(self.refreshed.wait(5))
+        for _ in range(50):
+            if self.portal.networks == [b'Fresh']:
+                break
+            threading.Event().wait(0.05)
+        self.assertEqual(self.portal.networks, [b'Fresh'])
+
 if __name__ == '__main__':
     unittest.main()
