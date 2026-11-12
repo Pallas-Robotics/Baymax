@@ -1,10 +1,11 @@
 """An Ember-Setup hotspot with a phone page for giving the robot Wi-Fi details.
 
-The board has one Wi-Fi radio. If its driver can run an access point next to the Wi-Fi
-client (both Orange Pi boards' drivers say they can), the hotspot stays on all the
-time on a second interface, AP_IFACE, and a network from the page is joined without
-closing it. Otherwise, or if that fails on the board, the hotspot and the client take
-turns: the hotspot opens after GRACE seconds offline and closes once a network works.
+The hotspot opens whenever the board has been offline for GRACE seconds and closes as
+soon as it is online again. The board has one Wi-Fi radio. If its driver can run an
+access point next to the Wi-Fi client (both Orange Pi boards' drivers can), the hotspot
+runs on a second interface, AP_IFACE, so the client keeps looking for saved networks
+meanwhile and a network from the page is joined with the phone still connected.
+Otherwise, or if that fails on the board, the hotspot and the client take turns.
 
 Two network stacks are supported for the Wi-Fi client; the script picks one at startup:
 - ifupdown + wpa_supplicant (the Orange Pi 4 Pro's DietPi image): networks are saved in
@@ -46,19 +47,53 @@ AP_IFACE = os.environ.get('EMBER_WIFI_AP_IFACE', 'ember-ap')  # the always-on ho
 ADDRESS = '192.168.4.1'
 AP_ADDRESSES = (ADDRESS, '10.88.0.1', '172.31.88.1')          # the first one the home network doesn't use
 SUPPLICANT = Path('/etc/wpa_supplicant/wpa_supplicant.conf')
-SECRET = Path('/etc/ember/wifi-setup.json')
+SECRET = Path(os.environ.get('EMBER_WIFI_SECRET', '/etc/ember/wifi-setup.json'))
 RUN = Path('/run/ember-wifi-setup')
 NM_CONNECTIONS = Path('/etc/NetworkManager/system-connections')
 NM_DNS = Path('/etc/NetworkManager/dnsmasq-shared.d/ember-wifi-setup.conf')
 NM_HOTSPOT_UUID = str(uuid.uuid5(uuid.NAMESPACE_URL, 'ember-wifi-setup:hotspot'))
 NM_UNMANAGED = Path('/etc/NetworkManager/conf.d/ember-wifi-setup.conf')
-GRACE = 30            # taking turns: seconds offline before the hotspot opens
+GRACE = 30            # seconds offline before the hotspot opens
 JOIN_WAIT = 90        # seconds from leaving the hotspot for a saved network to come online
 RETRY_EVERY = 300     # seconds with no page visit and no phone before checking saved networks
 SESSION_LIMIT = 900   # even with a phone connected, check saved networks after this long
 AP_START_WAIT = 15    # seconds for the access point to come on the air
-EX_CONFIG = 78        # exit status for a bad password file; the unit does not restart on it
-BLIND_AFTER = 600     # always on: offline this long with no network seen means the radio can't scan
+EX_CONFIG = 78        # exit status for a bad (optional) password file; the unit does not restart on it
+BLIND_AFTER = 600     # shared radio: this long with no network seen means the client can't scan
+CLOSE_AFTER = 15      # shared radio: seconds online before the hotspot closes (the page shows the result)
+STALL_LIMIT = 600     # no progress for this long: stop telling systemd we are alive, so it restarts us
+_beat = [time.monotonic()]
+
+
+def beat():
+    """Progress: the systemd watchdog keeps getting pings while this is recent."""
+    _beat[0] = time.monotonic()
+
+
+def notify(message):
+    """sd_notify without libsystemd (Type=notify, WatchdogSec in the unit)."""
+    path = os.environ.get('NOTIFY_SOCKET')
+    if not path:
+        return
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as sock:
+            sock.connect('\0' + path[1:] if path.startswith('@') else path)
+            sock.sendall(message.encode())
+    except OSError:
+        pass
+
+
+def start_watchdog():
+    interval = int(os.environ.get('WATCHDOG_USEC', '0') or 0) / 3e6
+    if not interval:
+        return
+
+    def ping():
+        while True:
+            if time.monotonic() - _beat[0] < STALL_LIMIT:
+                notify('WATCHDOG=1')
+            time.sleep(interval)
+    threading.Thread(target=ping, daemon=True).start()
 MAC = re.compile(r'(?:[0-9a-f]{2}:){5}[0-9a-f]{2}', re.I)
 
 
@@ -104,6 +139,7 @@ def online():
 
 def wait_online(deadline):
     while time.monotonic() < deadline:
+        beat()
         if online():
             return True
         time.sleep(3)
@@ -135,12 +171,17 @@ def derived_psk(ssid, password):
 
 
 def check_hotspot_password(password):
-    # WPA2 passphrases are 8-63 printable ASCII characters (IEEE 802.11i).
+    # None: an open hotspot. WPA2 passphrases are 8-63 printable ASCII characters (IEEE 802.11i).
+    if password is None:
+        return
     if not isinstance(password, str) or not 8 <= len(password) <= 63 or not all(32 <= ord(c) <= 126 for c in password):
         raise ValueError('The setup hotspot password must be 8-63 printable ASCII characters.')
 
 
 def load_secret(path=SECRET):
+    """The hotspot is open (password None) unless this optional file sets a password."""
+    if not path.exists():
+        return {'password': None}
     try:
         password = json.loads(path.read_text())['password']
     except (OSError, ValueError, KeyError, TypeError) as error:
@@ -239,8 +280,9 @@ def hostapd_config(ssid, password, iface=None, channel=6):
     check_hotspot_password(password)
     return '\n'.join([f'interface={iface or IFACE}', 'driver=nl80211', f'ctrl_interface={RUN}/hostapd', f'ssid={ssid}',
                       'country_code=US', 'hw_mode=' + ('a' if channel > 14 else 'g'), f'channel={channel}',
-                      'ieee80211n=1', 'wpa=2', 'wpa_key_mgmt=WPA-PSK', 'rsn_pairwise=CCMP',
-                      f'wpa_passphrase={password}', ''])
+                      'ieee80211n=1']
+                     + (['wpa=2', 'wpa_key_mgmt=WPA-PSK', 'rsn_pairwise=CCMP', f'wpa_passphrase={password}']
+                        if password else []) + [''])
 
 
 def iw_stations(iface=None):
@@ -412,6 +454,10 @@ class Ifupdown:
             return self.cached_networks()
         return scan_ssids(run('iw', 'dev', IFACE, 'scan', timeout=30).stdout)
 
+    def joined(self, ssid):
+        # Same-name entries are replaced when saving, so the name identifies the entry.
+        return client_link()[0] == ssid_bytes(ssid)
+
     def apply_saved(self, ssid, wait):
         """Make the running client pick up the saved network; the hotspot stays up."""
         if run('wpa_cli', '-i', IFACE, 'reconfigure', timeout=10).stdout.strip() != 'OK':
@@ -448,8 +494,11 @@ def nm_client_keyfile(ssid, password):
     lines = ['[connection]', f'id={keyfile_value(shown(ssid) + " (Ember setup)")}', f'uuid={nm_uuid(ssid)}',
              'type=wifi', 'autoconnect=true', 'autoconnect-priority=200', '',
              '[wifi]', 'mode=infrastructure', f'ssid={keyfile_ssid(ssid)}', '']
-    if password:  # the derived PSK only, as in wpa_supplicant.conf
-        lines += ['[wifi-security]', 'key-mgmt=wpa-psk', f'psk={derived_psk(ssid, password)}', '']
+    if password:
+        # The password itself, as NetworkManager stores any network (root-only file): WPA3
+        # (SAE), which mixed WPA2/WPA3 routers get first, can't use a derived WPA2 key.
+        psk = password.lower() if re.fullmatch(r'[0-9a-fA-F]{64}', password) else keyfile_value(password)
+        lines += ['[wifi-security]', 'key-mgmt=wpa-psk', f'psk={psk}', '']
     return '\n'.join(lines + ['[ipv4]', 'method=auto', '', '[ipv6]', 'method=auto', ''])
 
 
@@ -458,8 +507,8 @@ def nm_hotspot_keyfile(name, password):
     return '\n'.join(['[connection]', 'id=Ember setup hotspot', f'uuid={NM_HOTSPOT_UUID}', 'type=wifi',
                       f'interface-name={IFACE}', 'autoconnect=false', '',
                       '[wifi]', 'mode=ap', f'ssid={keyfile_ssid(name)}', 'band=bg', 'channel=6', '',
-                      '[wifi-security]', 'key-mgmt=wpa-psk', 'proto=rsn', 'pairwise=ccmp', 'group=ccmp',
-                      'pmf=1', f'psk={keyfile_value(password)}', '',
+                      ] + (['[wifi-security]', 'key-mgmt=wpa-psk', 'proto=rsn', 'pairwise=ccmp', 'group=ccmp',
+                            'pmf=1', f'psk={keyfile_value(password)}', ''] if password else []) + [
                       '[ipv4]', 'method=shared', f'address1={ADDRESS}/24', '',
                       '[ipv6]', 'method=disabled', ''])
 
@@ -602,6 +651,11 @@ class NetworkManager:
         return nm_scan_ssids(self.nmcli('-t', '-f', 'SSID-HEX', 'device', 'wifi', 'list', 'ifname', IFACE,
                                         '--rescan', 'yes', timeout=30).stdout)
 
+    def joined(self, ssid):
+        # The page's own connection, not an older one with the same name (and maybe
+        # another password) that NetworkManager falls back to.
+        return nm_uuid(ssid) in self.active()
+
     def apply_saved(self, ssid, wait):
         self.client_mode()
         self.nmcli('--wait', str(int(wait)), 'connection', 'up', 'uuid', nm_uuid(ssid), 'ifname', IFACE,
@@ -669,7 +723,8 @@ button{{background:#E03C31;color:#fff;border:0;border-radius:8px;margin-top:20px
 
 
 def hotspot_name():
-    return 'Ember-Setup-' + socket.gethostname()[-4:].upper()
+    # The hostname's last four letters or digits: orangepi5-max -> Ember-Setup-5MAX.
+    return 'Ember-Setup-' + re.sub(r'[^A-Za-z0-9]', '', socket.gethostname())[-4:].upper()
 
 
 def status_page(status):
@@ -890,7 +945,7 @@ def join_in_place(stack, portal, ssid, wait=JOIN_WAIT):
     log(f'Joining {shown(ssid)!r} with the hotspot still up')
     stack.apply_saved(ssid, wait)
     while time.monotonic() < deadline:
-        if client_link()[0] == ssid and online():
+        if stack.joined(ssid) and online():
             portal.status = {'ssid': shown(ssid), 'state': 'joined'}
             portal.message = ''
             log(f'Online on {shown(ssid)!r}')
@@ -901,12 +956,13 @@ def join_in_place(stack, portal, ssid, wait=JOIN_WAIT):
     return False
 
 
-def always_on(stack, secret, keep_going=lambda: True):
-    """Keep the hotspot up on AP_IFACE, next to the Wi-Fi client, until keep_going() is
-    false. Returns why it stopped, with the hotspot off and AP_IFACE removed."""
+def shared_hotspot(stack, secret, keep_going=lambda: True):
+    """Run the hotspot on AP_IFACE, next to the Wi-Fi client, until the board has been
+    online for CLOSE_AFTER seconds ('online'), or return why it can't. Either way the
+    hotspot is off and AP_IFACE removed afterwards."""
     portal = Portal(stack.save, stack.refresh_networks)
     hotspot, channel, failures, five_ghz, on_air_since = None, None, 0, True, 0.0
-    offline_since, joining = None, None
+    offline_since, online_since, joining = None, None, None
 
     def stop():
         portal.close()
@@ -916,6 +972,7 @@ def always_on(stack, secret, keep_going=lambda: True):
     try:
         add_ap_iface(stack)
         while keep_going():
+            beat()
             linked, freq = client_link()
             want = ap_channel(freq, five_ghz)
             if hotspot and not hotspot.alive():
@@ -950,9 +1007,16 @@ def always_on(stack, secret, keep_going=lambda: True):
                     continue
             if time.monotonic() - on_air_since > 120:
                 failures = 0
+            is_online = online()
+            if is_online and not (joining and joining.is_alive()):
+                online_since = online_since or time.monotonic()
+                if time.monotonic() - online_since >= CLOSE_AFTER:
+                    return 'online'
+            else:
+                online_since = None
             # Some radios cannot scan for networks while an access point is up; then the
             # client would never find its network again.
-            if linked is None and not online():
+            if linked is None and not is_online:
                 offline_since = offline_since or time.monotonic()
                 if time.monotonic() - offline_since >= BLIND_AFTER:
                     offline_since = time.monotonic()
@@ -962,13 +1026,15 @@ def always_on(stack, secret, keep_going=lambda: True):
                 offline_since = None
             if portal.submitted.wait(5):
                 portal.submitted.clear()
+                if joining and joining.is_alive():
+                    continue  # the phone sent the form again; the first join is still running
                 joining = threading.Thread(target=join_in_place, args=(stack, portal, portal.chosen), daemon=True)
                 joining.start()
         return 'stopped'
     except HotspotError as error:
         return str(error)
     except Exception:  # fall back to taking turns rather than crash-looping
-        log('Always-on hotspot failed:\n' + traceback.format_exc())
+        log('Hotspot next to the Wi-Fi client failed:\n' + traceback.format_exc())
         return 'an unexpected error'
     finally:
         stop()
@@ -982,6 +1048,7 @@ def wait_for_phone(portal, hotspot):
     networks) or 'failed' (off the air)."""
     started = time.monotonic()
     while not portal.submitted.wait(10):
+        beat()
         if online():
             return 'online'
         if not hotspot.alive():
@@ -1026,6 +1093,7 @@ def setup_until_online(stack, secret):
     portal = Portal(stack.save)
     failures = misses = 0
     while True:
+        beat()
         outcome = hotspot_session(stack, portal, secret)
         if outcome == 'online':
             log('Online through another interface; setup hotspot closed')
@@ -1067,10 +1135,22 @@ def kill_leftovers():
     remove_ap_iface()
 
 
+def open_hotspot_until_online(stack, secret, shared):
+    if shared:
+        reason = shared_hotspot(stack, secret)
+        if reason == 'online':
+            log('Online; setup hotspot closed')
+            return
+        log(f'The hotspot next to the Wi-Fi client stopped ({reason}); taking turns until Ember is online')
+    setup_until_online(stack, secret)
+
+
 def main():
+    notify('READY=1')
+    start_watchdog()
+    signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
     stack = network_stack()
     log(f'Wi-Fi setup hotspot for {IFACE} with {stack.name}')
-    signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
     offline_since = None if online() else time.monotonic()
     kill_leftovers()
     stack.recover()
@@ -1079,28 +1159,30 @@ def main():
     except ValueError as error:
         log(f'Not starting: {error}')
         sys.exit(EX_CONFIG)
-    if os.environ.get('EMBER_HOTSPOT_ALWAYS', '1') == '0':
-        log('EMBER_HOTSPOT_ALWAYS=0: the hotspot opens only while Ember is offline')
-    elif (channels := ap_with_client(radio_info())) >= 2:
-        log(f'The radio can run the hotspot next to the Wi-Fi client (up to {channels} channels): keeping it on')
-        reason = always_on(stack, secret)
-        log(f'The always-on hotspot stopped ({reason}); from now on it opens only while Ember is offline')
-        stack.client_mode()
-    else:
-        log('The radio cannot run the hotspot next to the Wi-Fi client; it opens only while Ember is offline')
+    log('The hotspot is open: phones join without a password' if secret['password'] is None
+        else f'The hotspot needs the password in {SECRET}')
+    channels = ap_with_client(radio_info())
+    shared = channels >= 2 and os.environ.get('EMBER_WIFI_TAKE_TURNS') != '1'
+    log(f'While offline the hotspot runs next to the Wi-Fi client ({channels} channels allowed)' if shared
+        else 'While offline the hotspot and the Wi-Fi client take turns on the radio')
     while True:
-        if online():
-            offline_since = None
-        elif offline_since is None:
-            offline_since = time.monotonic()
-        elif time.monotonic() - offline_since >= GRACE:
-            log(f'Offline for {GRACE} s; starting the setup hotspot')
-            try:
-                setup_until_online(stack, secret)
-            except SystemExit:  # stopped: give the radio back to the Wi-Fi client
-                stack.client_mode(timeout=30)
-                raise
-            offline_since = None
+        beat()
+        try:
+            if online():
+                offline_since = None
+            elif offline_since is None:
+                offline_since = time.monotonic()
+            elif time.monotonic() - offline_since >= GRACE:
+                log(f'Offline for {GRACE} s; opening the setup hotspot')
+                try:
+                    open_hotspot_until_online(stack, secret, shared)
+                except SystemExit:  # stopped: give the radio back to the Wi-Fi client
+                    stack.client_mode(timeout=30)
+                    raise
+                offline_since = None
+        except Exception:  # one bad round must never end the service's watch
+            log('Unexpected error; trying again in 10 s:\n' + traceback.format_exc())
+            time.sleep(10)
         time.sleep(5)
 
 

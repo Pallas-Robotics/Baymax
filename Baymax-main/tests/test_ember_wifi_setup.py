@@ -129,8 +129,8 @@ class WifiSetupTests(unittest.TestCase):
                 with self.subTest(text=text), self.assertRaises(ValueError) as caught:
                     module.load_secret(path)
                 self.assertNotIn('abcd', str(caught.exception))  # never logged
-            with self.assertRaises(ValueError):
-                module.load_secret(Path(directory) / 'missing.json')
+            # No file: an open hotspot, so a phone joins and gets the page straight away.
+            self.assertEqual(module.load_secret(Path(directory) / 'missing.json'), {'password': None})
         self.assertEqual(module.EX_CONFIG, 78)
         unit = (HOST / 'ember-wifi-setup.service').read_text()
         self.assertIn('RestartPreventExitStatus=78', unit)
@@ -146,6 +146,17 @@ class WifiSetupTests(unittest.TestCase):
         html = module.page(['<script>'], 'bad "x"')
         self.assertNotIn('<script>', html)
         self.assertIn('&lt;script&gt;', html)
+
+    def test_hotspot_name_uses_letters_and_digits(self):
+        with patch.object(module.socket, 'gethostname', return_value='orangepi5-max'):
+            self.assertEqual(module.hotspot_name(), 'Ember-Setup-5MAX')
+
+    def test_open_hotspot_by_default(self):
+        config = module.hostapd_config('Ember-Setup-5MAX', None, 'ember-ap', 6)
+        self.assertNotIn('wpa', config)
+        self.assertIn('ssid=Ember-Setup-5MAX', config)
+        self.assertNotIn('[wifi-security]', module.nm_hotspot_keyfile('Ember-Setup-5MAX', None))
+        self.assertIn('method=shared', module.nm_hotspot_keyfile('Ember-Setup-5MAX', None))
 
     def test_page_lists_networks_by_their_exact_bytes(self):
         html = module.page([b' Home', b'\xff\xfe'])
@@ -388,9 +399,9 @@ class IfupdownTests(unittest.TestCase):
 class NetworkManagerTests(unittest.TestCase):
     def test_saved_network_keyfile(self):
         text = module.nm_client_keyfile(b'My Wi;Fi', 'pass word1')
-        psk = hashlib.pbkdf2_hmac('sha1', b'pass word1', b'My Wi;Fi', 4096, 32).hex()
-        self.assertIn('psk=' + psk, text)
-        self.assertNotIn('pass word1', text)
+        # The password itself (escaped): WPA3 on mixed WPA2/WPA3 routers needs it.
+        self.assertIn('psk=pass\\sword1', text)
+        self.assertIn('psk=' + 'ab' * 32, module.nm_client_keyfile('Home', 'AB' * 32))
         self.assertIn('ssid=' + ';'.join(str(b) for b in b'My Wi;Fi') + ';', text)
         self.assertIn('id=My\\sWi;Fi\\s(Ember\\ssetup)', text)
         self.assertIn('autoconnect-priority=200', text)
@@ -432,6 +443,13 @@ class NetworkManagerTests(unittest.TestCase):
             with patch.object(module, 'wait_online', return_value=True):
                 self.assertTrue(stack.join(None, 60, [b'Neighbour', b'Home']))
         self.assertTrue(any(args[-4:] == ('uuid', 'u-home', 'ifname', module.IFACE) for args in calls))
+
+    def test_joined_means_the_pages_own_connection(self):
+        stack = module.NetworkManager()
+        with patch.object(stack, 'active', return_value=['old-verizon-uuid']):
+            self.assertFalse(stack.joined(b'Verizon'))
+        with patch.object(stack, 'active', return_value=[module.nm_uuid(b'Verizon')]):
+            self.assertTrue(stack.joined(b'Verizon'))
 
     def test_stack_choice(self):
         with patch.dict(module.os.environ, {'EMBER_WIFI_STACK': 'ifupdown'}), \
@@ -543,7 +561,7 @@ class AlwaysOnTests(unittest.TestCase):
         self.assertEqual(module.local_mac('00:11:22:33:44:55'), '02:11:22:33:44:55')
         self.assertEqual(module.local_mac('02:11:22:33:44:55'), '06:11:22:33:44:55')
 
-    def run_always_on(self, links, rounds, online=False, cached=(b'Home',)):
+    def run_shared(self, links, rounds, online=False, cached=(b'Home',)):
         clock = Clock()
         FakeEvent.clock = clock
         FakeAP.starts = []
@@ -558,33 +576,66 @@ class AlwaysOnTests(unittest.TestCase):
              patch.object(module, 'client_link', side_effect=lambda: links.pop(0) if len(links) > 1 else links[0]), \
              patch.object(module, 'online', return_value=online), \
              patch.object(module.time, 'monotonic', clock.monotonic), patch.object(module.time, 'sleep', clock.sleep):
-            reason = module.always_on(stack, {'password': 'abcd2345ef'}, lambda: next(count, None) is not None)
+            reason = module.shared_hotspot(stack, {'password': 'abcd2345ef'}, lambda: next(count, None) is not None)
         removed.assert_called_once()
         return reason
 
     def test_hotspot_follows_the_client_to_its_channel(self):
         FakeAP.fail_channels = set()
-        reason = self.run_always_on([(None, None), (None, None), (b'Home', 2412)], 5, online=True)
+        # Linked but not yet online (e.g. waiting for DHCP): the hotspot moves to its channel.
+        reason = self.run_shared([(None, None), (None, None), (b'Home', 2412)], 5)
         self.assertEqual(reason, 'stopped')
         self.assertEqual(FakeAP.starts, [6, 1])
 
     def test_five_ghz_refused_falls_back_to_channel_6(self):
         FakeAP.fail_channels = {36}
-        self.run_always_on([(b'Home', 5180)], 5, online=True)
+        self.run_shared([(b'Home', 5180)], 5)
         self.assertEqual(FakeAP.starts, [36, 6])  # and stays there
+
+    def test_closes_once_online(self):
+        FakeAP.fail_channels = set()
+        reason = self.run_shared([(None, None)], 50, online=True)
+        self.assertEqual(reason, 'online')
+        self.assertEqual(FakeAP.starts, [6])
+
+    def test_shared_failure_falls_back_to_taking_turns(self):
+        calls = []
+        with patch.object(module, 'shared_hotspot', return_value='the hotspot kept failing'), \
+             patch.object(module, 'setup_until_online', side_effect=lambda *a: calls.append('turns')):
+            module.open_hotspot_until_online(FakeStack([], []), {'password': None}, shared=True)
+        self.assertEqual(calls, ['turns'])
+        with patch.object(module, 'shared_hotspot', return_value='online'), \
+             patch.object(module, 'setup_until_online', side_effect=lambda *a: calls.append('turns')):
+            module.open_hotspot_until_online(FakeStack([], []), {'password': None}, shared=True)
+        self.assertEqual(calls, ['turns'])
+
+    def test_systemd_watchdog_pings_only_while_making_progress(self):
+        import socket as sock
+        with tempfile.TemporaryDirectory() as directory:
+            path = str(Path(directory) / 'notify')
+            server = sock.socket(sock.AF_UNIX, sock.SOCK_DGRAM)
+            server.bind(path)
+            server.settimeout(2)
+            with patch.dict(module.os.environ, {'NOTIFY_SOCKET': path}):
+                module.notify('READY=1')
+                self.assertEqual(server.recv(100), b'READY=1')
+            server.close()
+        unit = (HOST / 'ember-wifi-setup.service').read_text()
+        self.assertIn('Type=notify', unit)
+        self.assertIn('WatchdogSec=', unit)
 
     def test_gives_up_when_the_hotspot_keeps_failing(self):
         FakeAP.fail_channels = {6}
-        reason = self.run_always_on([(None, None)], 20)
+        reason = self.run_shared([(None, None)], 20)
         self.assertIn('kept failing', reason)
         self.assertEqual(FakeAP.starts, [6, 6, 6])
 
     def test_gives_up_when_the_client_sees_no_networks(self):
         FakeAP.fail_channels = set()
-        reason = self.run_always_on([(None, None)], 1000, cached=())
+        reason = self.run_shared([(None, None)], 1000, cached=())
         self.assertIn('found no networks', reason)
         FakeAP.fail_channels = set()
-        self.assertEqual(self.run_always_on([(None, None)], 300, cached=(b'Neighbour',)), 'stopped')
+        self.assertEqual(self.run_shared([(None, None)], 300, cached=(b'Neighbour',)), 'stopped')
 
     def test_join_in_place_reports_on_the_page(self):
         portal, stack = module.Portal(None, refresh=lambda: []), FakeStack([], [])
@@ -592,13 +643,13 @@ class AlwaysOnTests(unittest.TestCase):
         stack.apply_saved = lambda ssid, wait: applied.append(ssid)
         portal.message = 'Could not join "Home". Check the name and password and try again.'
         clock = Clock()
-        with patch.object(module, 'client_link', return_value=(b'Home', 2437)), \
-             patch.object(module, 'online', return_value=True), patch.object(module.time, 'sleep', clock.sleep):
+        stack.joined = lambda ssid: ssid == b'Home'
+        with patch.object(module, 'online', return_value=True), patch.object(module.time, 'sleep', clock.sleep):
             self.assertTrue(module.join_in_place(stack, portal, b'Home'))
         self.assertEqual(portal.status, {'ssid': 'Home', 'state': 'joined'})
         self.assertEqual(applied, [b'Home'])
-        with patch.object(module, 'client_link', return_value=(b'Other', 2437)), \
-             patch.object(module, 'online', return_value=True), \
+        stack.joined = lambda ssid: False  # e.g. fell back to an older profile of the same name
+        with patch.object(module, 'online', return_value=True), \
              patch.object(module.time, 'monotonic', clock.monotonic), patch.object(module.time, 'sleep', clock.sleep):
             portal.message = 'Could not join "Home". Check the name and password and try again.'
             self.assertFalse(module.join_in_place(stack, portal, b'Home', wait=10))

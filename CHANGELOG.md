@@ -1,22 +1,34 @@
 # MVP (unreleased)
 
-- Orange Pi setup hotspot always on. Both boards' Wi-Fi drivers support a Wi-Fi
-  client and an access point at the same time. The 4 Pro's aic8800 allows 1 client +
-  1 AP on up to 3 channels; the 5 Max's bcmdhd allows up to 2. Wherever the radio's
-  `iw phy` combinations allow this on 2 or more channels, `ember_wifi_setup.py` keeps
-  the hotspot on all the time:
-  - It runs on a second interface, `ember-ap`, on the client's own channel when an
-    access point may use it (else 2.4 GHz channel 6), and follows the client.
-  - Its address avoids the home network's range.
-  - A network from the page is joined with the hotspot still up, and the page shows
-    the result.
-  - It uses about 25 MB and practically no CPU. `EMBER_HOTSPOT_ALWAYS=0` turns it off.
-  - If the access point keeps failing, or the client can't find networks while it is
-    up, the script takes turns as before.
-  - When taking turns, the hotspot now opens after 30 s offline instead of 90 s.
-  - The 5 Max now needs `hostapd` installed too.
-  - 16 more offline tests (45 in `tests/test_ember_wifi_setup.py`). Hardware checks,
-    including conversation latency with the hotspot up, are pending.
+- Orange Pi setup hotspot: open, only while offline, never left stuck.
+  - The hotspot opens after 30 s without a working network and closes about 15 s after
+    Ember is online again, every time. There is no hotspot while Ember is online.
+  - Both boards' drivers support a Wi-Fi client and an access point together. The 4 Pro's
+    aic8800 allows 1 + 1 on up to 3 channels; the 5 Max's bcmdhd allows up to 2. Where
+    `iw phy` shows this on 2 or more channels, the hotspot runs on a second interface,
+    `ember-ap`. The client keeps looking for saved networks meanwhile, and a network from
+    the page is joined with the phone still connected. Otherwise, or if that fails, the
+    hotspot and the client take turns, as before but after 30 s instead of 90 s.
+  - The hotspot is open: a phone joins with no password and the page opens by itself.
+    A password is optional (`/etc/ember/wifi-setup.json`). The name is the hostname's
+    last four letters or digits (`Ember-Setup-5MAX`).
+  - On NetworkManager the page saves the password itself, as NetworkManager stores any
+    network. Mixed WPA2/WPA3 routers use WPA3 first, which a derived WPA2 key can't do.
+  - "Connected" now counts only the page's own network, not an older one of the same
+    name.
+  - A form sent twice starts one join.
+  - The service is `Type=notify` with a 60 s watchdog: the script pings systemd while it
+    makes progress, so a hang longer than 10 minutes restarts it, and an error in one
+    round never ends it.
+  - Tested on the Orange Pi 5 Max:
+    - Taken offline, the hotspot appeared after 31 s and a phone joined.
+    - Verizon was submitted on the page; Ember was online 2 s later and the hotspot
+      closed 18 s after that.
+    - An earlier always-on version (hotspot up while online) made the radio time-share
+      with the router's 5 GHz radar channel (router round-trips 2.5 to 18 ms, up to
+      70 ms), so it was dropped.
+  - The 5 Max now needs `hostapd` and `dnsmasq-base`. 51 offline tests are in
+    `tests/test_ember_wifi_setup.py`. The 4 Pro hardware test is pending.
 
 - Wi-Fi setup hotspot fixes for the Orange Pi boards (`deploy/host/ember_wifi_setup.py`),
   for times when no hotspot came up or it vanished:

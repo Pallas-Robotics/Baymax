@@ -60,43 +60,60 @@ starts with a lowercase letter; a password with a space at the end.
 
 ## Orange Pi Wi-Fi setup hotspot
 
-The Orange Pi boards have one Wi-Fi radio. `ember_wifi_setup.py` runs a WPA2 setup
-hotspot `Ember-Setup-XXXX` (last four characters of the hostname) with a phone page
-for picking a network, in one of two ways.
+The Orange Pi boards have one Wi-Fi radio. `ember_wifi_setup.py` runs an open setup
+hotspot `Ember-Setup-XXXX` (last four letters or digits of the hostname, e.g.
+`Ember-Setup-5MAX`). A phone joins it with no password, the sign-in page opens by
+itself, and the person picks or types their home Wi-Fi and its password; Ember then
+joins that network. It runs in one of two ways.
 
-**Always on (both boards' drivers support it).** At startup the script reads the
-radio's `iw phy` interface combinations. The 4 Pro's aic8800 allows one Wi-Fi client
-plus one access point on up to 3 channels, and the 5 Max's bcmdhd (AP6611S) allows
-up to 2. When a combination allows a client and an access point on 2 or more
-channels, the hotspot stays on all the time, on a second interface `ember-ap` on
-the same radio, while `wlan0` stays the Wi-Fi client:
+The hotspot opens after 30 s without a working network (Wi-Fi or Ethernet) and closes
+about 15 s after Ember is online again, every time. While Ember is online there is no
+hotspot, so it costs nothing then. It runs in one of two ways:
 
-- The hotspot uses the client's own channel whenever an access point may use it: any
-  2.4 GHz channel, and 5 GHz 36-48 and 149-165. That way the radio never switches
-  channels. When the client is on a radar (DFS) or 6 GHz channel, or offline, the
-  hotspot uses 2.4 GHz channel 6, and the radio shares its time between the two
-  channels. When the client moves, the hotspot follows within about 10 s.
-- Its address is `192.168.4.1`, or `10.88.0.1` / `172.31.88.1` if the home network
-  uses that range. DHCP and DNS point every name at the board, so phones open the
-  page as a sign-in page.
-- A network from the page is saved, and the client joins it while the hotspot stays
-  up: the phone stays connected and the page shows "Connected" or why it failed.
-- Cost: hostapd, dnsmasq and the script use about 25 MB of memory and practically no
-  CPU (the script checks the client's link every 5 s). With no phone connected the
-  access point only sends beacons. The one real cost is the case above where the
-  radio shares its time between two channels. If that slows Ember's conversation,
-  switch to taking turns: `sudo systemctl edit ember-wifi-setup`, add
-  `Environment=EMBER_HOTSPOT_ALWAYS=0` under `[Service]`, then restart the service.
+**Next to the Wi-Fi client (both boards' drivers support it).** At startup the script
+reads the radio's `iw phy` interface combinations. The 4 Pro's aic8800 allows one Wi-Fi
+client plus one access point on up to 3 channels, and the 5 Max's bcmdhd (AP6611S) allows
+up to 2. When a combination allows a client and an access point on 2 or more channels,
+the hotspot runs on a second interface, `ember-ap`, on the same radio, and `wlan0` stays
+the Wi-Fi client:
+
+- The client keeps looking for its saved networks the whole time, so Ember rejoins by
+  itself when the router comes back, and the hotspot then closes.
+- A network from the page is joined with the phone still connected, and the page shows
+  "Connected" or why it failed. The result counts only if the page's own saved network
+  is the one in use.
+- The hotspot is on 2.4 GHz channel 6, or on the client's channel when the client is
+  linked but not yet online.
+- Its address is `192.168.4.1`, or `10.88.0.1` / `172.31.88.1` if the home network uses
+  that range. DHCP and DNS point every name at the board, so phones open the page as a
+  sign-in page.
 - If the access point cannot start three times in a row, or the client finds no
-  networks for 10 minutes while the hotspot is up (some radios can't scan with an
-  access point running), the script removes `ember-ap` and takes turns from then on.
+  networks for 10 minutes while it is up, the hotspot falls back to taking turns until
+  Ember is online. The next time Ember goes offline, the second interface is tried again.
+  `EMBER_WIFI_TAKE_TURNS=1` (`sudo systemctl edit ember-wifi-setup`, under `[Service]`)
+  always takes turns.
+
+Tested on the Orange Pi 5 Max, 2026-11-12:
+- Ember was taken off its Wi-Fi. The open hotspot appeared 31 s later.
+- A phone joined and the page opened.
+- Verizon and its password were submitted; Ember was online on the page's own network
+  2 s later, and the hotspot closed 18 s after that.
+- With the hotspot up and Ember online (the always-on mode this replaced), the radio
+  time-shared between the router's 5 GHz radar channel and the hotspot. Router
+  round-trips went from 2.5 ms to 18 ms (median) and 70 ms (worst), and the page was
+  slow. That is why the hotspot now runs only while Ember is offline.
+
+**Never left stuck.** The service is `Type=notify` with `WatchdogSec=60`: the script
+pings systemd while it makes progress, so if it hangs for 10 minutes, systemd restarts
+it; if it crashes, `Restart=always` restarts it within 10 s. An error in one round is
+logged and the next round runs. A run that died mid-hotspot is cleaned up at start.
 
 **Taking turns (any other radio, or the fallback above):**
 
 - While a default route through a working interface exists (a joined Wi-Fi network
   or Ethernet), it does nothing. A route the kernel marks `linkdown` after Wi-Fi
   drops, or Wi-Fi that has not finished its handshake, does not count.
-- After 30 s offline it starts the WPA2 hotspot `Ember-Setup-XXXX` (last four
+- After 30 s offline it starts the open hotspot `Ember-Setup-XXXX` (last four
   characters of the hostname) on `192.168.4.1`, with DHCP and DNS pointing every
   name at the board, so phones open the page as a sign-in page. The page lists
   nearby networks (strongest first) and takes a name and password.
@@ -124,19 +141,15 @@ The script picks the network stack at startup:
 
 `EMBER_WIFI_STACK=ifupdown|networkmanager` and `EMBER_WIFI_IFACE` override the
 choice and the interface (default `wlan0`, else the first Wi-Fi interface);
-`EMBER_WIFI_AP_IFACE` names the always-on hotspot's interface (default `ember-ap`) and
-`EMBER_HOTSPOT_ALWAYS=0` turns the always-on mode off. It uses
-only the system `python3` standard library. Install on the board, with a password of
-8-63 printable ASCII characters:
+`EMBER_WIFI_AP_IFACE` names the second interface (default `ember-ap`) and
+`EMBER_WIFI_TAKE_TURNS=1` never uses it. It uses
+only the system `python3` standard library. Install on the board:
 
 ```bash
 sudo apt-get install -y --no-install-recommends hostapd dnsmasq-base iw
 sudo systemctl mask hostapd   # the script runs hostapd itself
 sudo install -D -m 644 deploy/host/ember_wifi_setup.py /usr/local/lib/ember/ember_wifi_setup.py
 sudo install -m 644 deploy/host/ember-wifi-setup.service /etc/systemd/system/
-sudo -v   # sudo asks for its password first, so the two prompts don't mix
-python3 -c 'import getpass, json; print(json.dumps({"password": getpass.getpass("Hotspot password: ")}))' \
-    | sudo install -D -m 600 /dev/stdin /etc/ember/wifi-setup.json
 sudo systemctl daemon-reload
 sudo systemctl enable --now ember-wifi-setup
 ```
@@ -144,28 +157,28 @@ sudo systemctl enable --now ember-wifi-setup
 To update an installed copy, repeat the two `install` lines, then
 `sudo systemctl daemon-reload && sudo systemctl restart ember-wifi-setup`.
 
-The hotspot never runs open: if `/etc/ember/wifi-setup.json` is missing or its
-password is not 8-63 printable ASCII characters, the service logs why once and
-stops (exit 78, not restarted). Give each robot its own password and put it on the
-robot's label. The script is installed outside the user's release folder because it
+The hotspot is open, so anyone within Wi-Fi range can open the page and change the
+network Ember joins (not read its saved passwords, which are stored only as derived
+keys). To require a password instead, write one (8-63 printable ASCII characters) to
+`/etc/ember/wifi-setup.json` and restart the service; with an invalid file the
+service logs why once and stops (exit 78, not restarted):
+
+```bash
+sudo -v   # sudo asks for its password first, so the two prompts don't mix
+python3 -c 'import getpass, json; print(json.dumps({"password": getpass.getpass("Hotspot password: ")}))' \
+    | sudo install -D -m 600 /dev/stdin /etc/ember/wifi-setup.json
+```
+
+The script is installed outside the user's release folder because it
 runs as root. A stop or restart of the service closes the hotspot and hands the
 radio back to the Wi-Fi client; a run that died mid-hotspot is cleaned up at the
 next start. Log: `journalctl -u ember-wifi-setup`.
 
-No board has run the hotspot yet. Hardware test pending, on each board: check the log
-says "keeping it on" and `iw dev` lists `ember-ap` as type AP next to `wlan0`; with
-Ember online, join the hotspot from a phone, open the page and add a second network,
-confirm the page says Connected and Ember's conversation latency is unchanged with
-the hotspot up (and with a phone connected); put the router on a 5 GHz radar channel
-and repeat; then `EMBER_HOTSPOT_ALWAYS=0` for the taking-turns checks: boot with
-the saved network off and confirm the hotspot appears and needs the password; join
-from an iPhone and an Android phone and confirm the page opens and lists networks;
-a correct password joins and the hotspot closes; a wrong one brings it back with the
-error; a phone left connected does not keep the hotspot up past 15 minutes; a saved
-network coming back is picked up within about six minutes; no hotspot runs while a
-saved network or Ethernet works; turning the router off while online brings the
-hotspot within about two minutes; `systemctl restart ember-wifi-setup` while online
-keeps the Wi-Fi connection; the build-time network still works after adding one.
+Hardware test pending: the Orange Pi 4 Pro (all of it), and on the 5 Max an iPhone
+and an Android phone each, a wrong password (the page should say why and the hotspot
+stay up), the router switched off while Ember is online (the hotspot should appear
+within about 40 s and close again when the router is back), Ethernet, a reboot with no
+Wi-Fi, and `EMBER_WIFI_TAKE_TURNS=1`.
 On the 4 Pro the DietPi Wi-Fi menu (`dietpi-network`, linked from Device Settings)
 rewrites `wpa_supplicant.conf` from its own list, which removes networks saved from
 the page.

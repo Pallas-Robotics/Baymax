@@ -7,7 +7,11 @@ StartLimitIntervalSec=0
 ExecStart=/usr/bin/python3 /usr/local/lib/ember/ember_wifi_setup.py
 Restart=always
 RestartSec=10
-# A missing or invalid /etc/ember/wifi-setup.json is logged once (exit 78), not retried.
+# The script pings systemd while it makes progress; if it hangs, systemd restarts it.
+Type=notify
+NotifyAccess=main
+WatchdogSec=60
+# An invalid (optional) /etc/ember/wifi-setup.json is logged once (exit 78), not retried.
 RestartPreventExitStatus=78
 # Stop only the script: it closes the hotspot and hands the radio back to the Wi-Fi
 # client itself, and a wpa_supplicant/dhclient started by `ifup` must outlive it.
