@@ -27,8 +27,13 @@
     - An earlier always-on version (hotspot up while online) made the radio time-share
       with the router's 5 GHz radar channel (router round-trips 2.5 to 18 ms, up to
       70 ms), so it was dropped.
-  - The 5 Max now needs `hostapd` and `dnsmasq-base`. 51 offline tests are in
-    `tests/test_ember_wifi_setup.py`. The 4 Pro hardware test is pending.
+  - Always installed, not optional:
+    - The 4 Pro SD image bakes in `hostapd dnsmasq-base iw` and ships the service
+      enabled, with stock `hostapd` masked.
+    - On a board set up by hand (the 5 Max), **0 - Debian Prerequisites** runs the new
+      `deploy/host/install_wifi_setup.sh`; it is also the update step.
+  - 54 offline tests are in `tests/test_ember_wifi_setup.py`. The 4 Pro hardware test is
+    pending.
 
 - Wi-Fi setup hotspot fixes for the Orange Pi boards (`deploy/host/ember_wifi_setup.py`),
   for times when no hotspot came up or it vanished:

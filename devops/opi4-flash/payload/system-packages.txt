@@ -4,3 +4,4 @@ xserver-xorg-video-dummy dbus-x11 x11-xserver-utils
 libportaudio2 libgl1 libegl1 libgles2 libglib2.0-0t64 libsndfile1
 libasound2-plugins build-essential cmake pkg-config xdg-utils firefox-esr
 pipewire-audio wireplumber whiptail libevdev2 libpam-systemd dbus-user-session
+hostapd dnsmasq-base iw

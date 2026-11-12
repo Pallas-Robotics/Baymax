@@ -143,19 +143,20 @@ The script picks the network stack at startup:
 choice and the interface (default `wlan0`, else the first Wi-Fi interface);
 `EMBER_WIFI_AP_IFACE` names the second interface (default `ember-ap`) and
 `EMBER_WIFI_TAKE_TURNS=1` never uses it. It uses
-only the system `python3` standard library. Install on the board:
+only the system `python3` standard library.
+
+It is part of every Orange Pi setup and starts at every boot:
+- the Orange Pi 4 Pro SD image (OPI4-Flash) ships it enabled, with the packages built in;
+- on a board set up by hand (the Orange Pi 5 Max), **0 - Debian Prerequisites** runs
+  `install_wifi_setup.sh` when it sees an Orange Pi.
+
+To install or update it yourself, run this from a checkout (it installs `hostapd`,
+`dnsmasq-base` and `iw` if needed, masks the stock `hostapd` service, installs the
+script and unit, and enables and restarts the service):
 
 ```bash
-sudo apt-get install -y --no-install-recommends hostapd dnsmasq-base iw
-sudo systemctl mask hostapd   # the script runs hostapd itself
-sudo install -D -m 644 deploy/host/ember_wifi_setup.py /usr/local/lib/ember/ember_wifi_setup.py
-sudo install -m 644 deploy/host/ember-wifi-setup.service /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable --now ember-wifi-setup
+sudo bash Baymax-main/deploy/host/install_wifi_setup.sh
 ```
-
-To update an installed copy, repeat the two `install` lines, then
-`sudo systemctl daemon-reload && sudo systemctl restart ember-wifi-setup`.
 
 The hotspot is open, so anyone within Wi-Fi range can open the page and change the
 network Ember joins (not read its saved passwords, which are stored only as derived

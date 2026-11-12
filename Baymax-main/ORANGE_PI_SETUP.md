@@ -10,7 +10,7 @@ fast-core pinning) or comes from how the board is set up:
 | Install | the SD image ([OPI4-Flash](../devops/opi4-flash/README.md)), or the steps below on Debian 13 | the steps below (Armbian Debian 13, XFCE/Xorg) |
 | Pose | MediaPipe on the CPU | MediaPipe on the CPU, or the NPU after the optional steps below |
 | `BAYMAX_CPU_PINNING=auto` | not pinned | pinned to the A76s |
-| Wi-Fi setup hotspot | optional, installed by hand ([deploy/host](deploy/host/README.md)): open, only while offline, next to the Wi-Fi client (aic8800; untested) | the same (bcmdhd; tested 2026-11-12); NetworkManager keeps the client |
+| Wi-Fi setup hotspot | in the SD image, enabled ([deploy/host](deploy/host/README.md)): open, only while offline, next to the Wi-Fi client (aic8800; untested) | installed by **0 - Debian Prerequisites** (bcmdhd; tested 2026-11-12) |
 
 On the Orange Pi 4 Pro the SD image installs everything below itself (packages,
 Python environment, services, updates that keep memory in

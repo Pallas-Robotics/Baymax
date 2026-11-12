@@ -1,4 +1,5 @@
 import hashlib
+import shutil
 import http.client
 import importlib.util
 import json
@@ -682,6 +683,33 @@ class InPlacePortalTests(PortalTests):
                 break
             threading.Event().wait(0.05)
         self.assertEqual(self.portal.networks, [b'Fresh'])
+
+
+class InstallTests(unittest.TestCase):
+    """The hotspot is part of every Orange Pi setup, not an optional extra."""
+    REPO = HOST / '../../..'
+
+    def test_installer_enables_it_at_boot(self):
+        script = (HOST / 'install_wifi_setup.sh').read_text()
+        for needed in ['hostapd dnsmasq-base iw', 'systemctl mask hostapd', 'systemctl enable ember-wifi-setup.service',
+                       '/usr/local/lib/ember/ember_wifi_setup.py', '/etc/systemd/system/ember-wifi-setup.service']:
+            self.assertIn(needed, script)
+        if shutil.which('bash'):
+            subprocess.run(['bash', '-n', str(HOST / 'install_wifi_setup.sh')], check=True)
+
+    def test_orange_pi_prerequisites_install_it(self):
+        prerequisites = (self.REPO / 'devops/clickables/debian-prerequisites.sh').read_text()
+        self.assertIn('Orange Pi', prerequisites)
+        self.assertIn('Baymax-main/deploy/host/install_wifi_setup.sh', prerequisites)
+
+    def test_4_pro_image_ships_it_enabled(self):
+        flash = self.REPO / 'devops/opi4-flash'
+        self.assertIn('hostapd dnsmasq-base iw', (flash / 'payload/system-packages.txt').read_text())
+        inject = (flash / 'inject_image.py').read_text()
+        self.assertIn("multi-user.target.wants/ember-wifi-setup.service", inject)
+        self.assertIn("hostapd.service'", inject)
+        self.assertIn("'ember_wifi_setup.py'", (flash / 'build.py').read_text())
+        self.assertIn('ember-wifi-setup.service', (flash / 'validate_image.py').read_text())
 
 if __name__ == '__main__':
     unittest.main()

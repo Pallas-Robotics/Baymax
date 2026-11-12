@@ -41,7 +41,7 @@ assert (root / 'usr/local/bin/ember-device-settings').is_file()
 assert (root / 'opt/ember-provision/ember-hardware.py').is_file()
 assert (root / 'home/ember/.config/ember/initial.env').stat().st_uid == 1001
 assert (root / 'home/ember/.local/share/applications/Ember-Device-Settings.desktop').is_file()
-for unit in ['ember-provision.service', 'ember-update.service', 'ember-status.service']:
+for unit in ['ember-provision.service', 'ember-update.service', 'ember-status.service', 'ember-wifi-setup.service']:
     assert (root / 'etc/systemd/system/multi-user.target.wants' / unit).is_symlink()
     assert (root / 'etc/systemd/system' / unit).is_file()
 spec = importlib.util.spec_from_file_location('ember_status', root / 'opt/ember-provision/ember-status.py')
@@ -72,3 +72,4 @@ for directory in (root / 'opt/ember-python').rglob('*'):
 assert (root / 'var/lib/ember/packages-baked').is_file()
 assert (root / 'usr/bin/anydesk').exists() and (root / 'usr/sbin/lightdm').exists()
 assert (root / 'opt/ember-provision/system-packages.txt').read_text().split()
+assert (root / 'usr/local/lib/ember/ember_wifi_setup.py').is_file(), 'Wi-Fi setup hotspot missing'
