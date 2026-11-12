@@ -133,9 +133,13 @@ start_robot() {
 # It is the only way to hand Baymax new Wi-Fi credentials, so it has to be
 # reachable on the always-on hotspot even when internet is working fine.
 start_portal_supervised() {
+    local i
     pkill -f baymax_portal.py
     fuser -k 80/tcp 2>/dev/null
-    sleep 2
+    for i in {1..10}; do    # until port 80 is free
+        fuser 80/tcp >/dev/null 2>&1 || break
+        sleep 0.5
+    done
     (
         cd "$BAYMAX_HOME" || exit
         while true; do
@@ -147,6 +151,69 @@ start_portal_supervised() {
     ) &
     echo "Captive portal supervisor started (always-on)"
 }
+
+# Phones on the hotspot look up these names to test for internet. Point them at the
+# portal, which answers "online" while the robot has internet and sends the phone to
+# the setup page while it does not. Without this, an offline hotspot just shows
+# "No Internet" and the page never opens. NetworkManager's hotspot DNS reads
+# dnsmasq-shared.d when the hotspot starts, so a change is applied by restarting it.
+CAPTIVE_DNS=/etc/NetworkManager/dnsmasq-shared.d/ember-captive.conf
+ensure_captive_dns() {
+    local addr want name
+    addr=$(nmcli -g ipv4.addresses connection show "$HOTSPOT" 2>/dev/null | cut -d, -f1 | cut -d/ -f1)
+    addr=${addr:-10.42.0.1}    # NetworkManager's default for a shared connection
+    want="# Written by startup.sh: phones' internet checks go to the Wi-Fi setup portal."
+    for name in captive.apple.com connectivitycheck.gstatic.com connectivitycheck.android.com \
+                clients3.google.com www.msftconnecttest.com www.msftncsi.com \
+                detectportal.firefox.com nmcheck.gnome.org; do
+        want+=$'\n'"address=/$name/$addr"
+    done
+    [ "$(cat "$CAPTIVE_DNS" 2>/dev/null)" = "$want" ] && return
+    mkdir -p "$(dirname "$CAPTIVE_DNS")"
+    printf '%s\n' "$want" > "$CAPTIVE_DNS"
+    echo "Captive DNS for the hotspot written ($addr) at $(date)"
+    if nmcli -t -f NAME connection show --active | grep -qxF "$HOTSPOT"; then
+        nmcli --wait 30 connection up "$HOTSPOT" >/dev/null && echo "$HOTSPOT restarted to apply it"
+    fi
+}
+
+# NetworkManager starts the hotspot by itself (connection.autoconnect=yes), but it
+# gives up after a few failed tries and never retries after some radio errors.
+# Check every 30 s for the whole session and bring it back when it is down.
+keep_hotspot_up() {
+    local state said=""
+    while true; do
+        if nmcli -t -f NAME,DEVICE connection show --active | grep -qxF "$HOTSPOT:$AP_IFACE"; then
+            said=""
+        else
+            state=$(nmcli -t -f DEVICE,STATE,CONNECTION device status | awk -F: -v d="$AP_IFACE" '$1 == d { print $2 " (" $3 ")" }')
+            case "$state" in
+                connected*|connecting*)
+                    # The radio is joined to some other network; taking it would cut that off.
+                    [ "$said" = "$state" ] || echo "Hotspot down: $AP_IFACE is in use, $state, at $(date)" ;;
+                "")
+                    [ "$said" = none ] || echo "Hotspot down: no $AP_IFACE device at $(date)"
+                    state=none ;;
+                *)
+                    [ "$said" = "$state" ] || echo "Hotspot down ($AP_IFACE $state) at $(date); bringing it up (retried every 30 s)"
+                    if nmcli --wait 30 connection up "$HOTSPOT" ifname "$AP_IFACE" >/dev/null 2>&1; then
+                        echo "$HOTSPOT back up at $(date)"
+                        state=""
+                    fi ;;
+            esac
+            said=$state
+        fi
+        sleep 30
+    done
+}
+
+# The hotspot and portal need no internet, and a phone looks for the sign-in page
+# only right after it joins, so they come before every wait below.
+ensure_captive_dns
+nmcli connection modify "$HOTSPOT" connection.autoconnect-retries 0 2>/dev/null \
+    || echo "WARNING: no $HOTSPOT connection to keep retrying"
+start_portal_supervised
+keep_hotspot_up &
 
 # Give Debian time to initialize the Wi-Fi hardware
 sleep 30
@@ -162,20 +229,9 @@ for i in {1..10}; do
     sleep 2
 done
 
-# The hotspot is always-on via NetworkManager (connection.autoconnect=yes).
-# Nudge it in case NM has not finished, then log radio-level proof either way.
-if nmcli -t -f NAME connection show --active | grep -qx "$HOTSPOT"; then
-    echo "$HOTSPOT already active at $(date)"
-elif nmcli connection up "$HOTSPOT"; then
-    echo "$HOTSPOT brought up at $(date)"
-else
-    echo "ERROR: nmcli failed to bring up $HOTSPOT (exit $?)"
-    nmcli device status
-fi
+# The hotspot is always-on via NetworkManager (connection.autoconnect=yes) and
+# keep_hotspot_up; log radio-level proof once.
 /usr/sbin/iw dev "$AP_IFACE" info 2>&1 | grep -E "ssid|type|channel"
-
-# Portal must be reachable for the entire session, online or not.
-start_portal_supervised
 
 # Ping a reliable server to check for an existing internet connection
 if wget -q --spider --timeout=10 https://www.google.com; then

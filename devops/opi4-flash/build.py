@@ -92,6 +92,15 @@ def main():
         subprocess.run(['git', '-C', str(checkout), 'bundle', 'create', str(payload / 'ember.bundle'), 'refs/heads/image-release'], check=True)
         subprocess.run(['git', '-C', str(checkout), 'bundle', 'verify', str(payload / 'ember.bundle')], check=True)
         private_json(payload / 'bundle-source.json', selected | {'commit': commit, 'bundle_branch': 'image-release'})
+        # The Wi-Fi setup hotspot (open, only while offline): the selected branch's copy, or
+        # this builder's own for a branch from before it existed.
+        for name in ('ember_wifi_setup.py', 'ember-wifi-setup.service'):
+            shown = subprocess.run(['git', '-C', str(checkout), 'show', 'refs/heads/image-release:Baymax-main/deploy/host/' + name],
+                                   capture_output=True)
+            if shown.returncode == 0:
+                (payload / name).write_bytes(shown.stdout)
+            else:
+                shutil.copyfile(HERE.parents[1] / 'Baymax-main/deploy/host' / name, payload / name)
         print('Building and checking image file...', flush=True)
         subprocess.run(['bash', str(HERE / 'build_linux.sh'), str(work), str(cache)], check=True)
         image = output / 'ember-opi4.img'

@@ -185,11 +185,12 @@ step "Hotspot $HOTSPOT"
 if nmcli -t -f NAME connection show | grep -qx "$HOTSPOT"; then
     run nmcli connection delete "$HOTSPOT"
 fi
-# Same settings as unit 001's Baymax_Hotspot.
+# Same settings as unit 001's Baymax_Hotspot, plus: a fixed address (the portal and
+# startup.sh's captive DNS point phones at it) and no limit on activation retries.
 run nmcli connection add type wifi ifname "$AP_IFACE" con-name "$HOTSPOT" ssid "$SSID" \
-    connection.autoconnect yes connection.autoconnect-priority 10 \
+    connection.autoconnect yes connection.autoconnect-priority 10 connection.autoconnect-retries 0 \
     802-11-wireless.mode ap 802-11-wireless.band bg 802-11-wireless.channel 1 \
-    ipv4.method shared \
+    ipv4.method shared ipv4.addresses 10.42.0.1/24 \
     wifi-sec.key-mgmt wpa-psk wifi-sec.proto rsn wifi-sec.pairwise ccmp wifi-sec.pmf disable \
     wifi-sec.psk "$PASSWORD"
 if [ "$HOTSPOT_NOW" = 1 ]; then

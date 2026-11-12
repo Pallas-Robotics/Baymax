@@ -1,5 +1,99 @@
 # MVP (unreleased)
 
+- Orange Pi setup hotspot: open, only while offline, never left stuck.
+  - The hotspot opens after 30 s without a working network and closes about 15 s after
+    Ember is online again, every time. There is no hotspot while Ember is online.
+  - Both boards' drivers support a Wi-Fi client and an access point together. The 4 Pro's
+    aic8800 allows 1 + 1 on up to 3 channels; the 5 Max's bcmdhd allows up to 2. Where
+    `iw phy` shows this on 2 or more channels, the hotspot runs on a second interface,
+    `ember-ap`. The client keeps looking for saved networks meanwhile, and a network from
+    the page is joined with the phone still connected. Otherwise, or if that fails, the
+    hotspot and the client take turns, as before but after 30 s instead of 90 s.
+  - The hotspot is open: a phone joins with no password and the page opens by itself.
+    A password is optional (`/etc/ember/wifi-setup.json`). The name is the hostname's
+    last four letters or digits (`Ember-Setup-5MAX`).
+  - On NetworkManager the page saves the password itself, as NetworkManager stores any
+    network. Mixed WPA2/WPA3 routers use WPA3 first, which a derived WPA2 key can't do.
+  - "Connected" now counts only the page's own network, not an older one of the same
+    name.
+  - A form sent twice starts one join.
+  - The service is `Type=notify` with a 60 s watchdog: the script pings systemd while it
+    makes progress, so a hang longer than 10 minutes restarts it, and an error in one
+    round never ends it.
+  - Tested on the Orange Pi 5 Max:
+    - Taken offline, the hotspot appeared after 31 s and a phone joined.
+    - Verizon was submitted on the page; Ember was online 2 s later and the hotspot
+      closed 18 s after that.
+    - An earlier always-on version (hotspot up while online) made the radio time-share
+      with the router's 5 GHz radar channel (router round-trips 2.5 to 18 ms, up to
+      70 ms), so it was dropped.
+  - Always installed, not optional:
+    - The 4 Pro SD image bakes in `hostapd dnsmasq-base iw` and ships the service
+      enabled, with stock `hostapd` masked.
+    - On a board set up by hand (the 5 Max), **0 - Debian Prerequisites** runs the new
+      `deploy/host/install_wifi_setup.sh`; it is also the update step.
+  - 54 offline tests are in `tests/test_ember_wifi_setup.py`. The 4 Pro hardware test is
+    pending.
+
+- Wi-Fi setup hotspot fixes for the Orange Pi boards (`deploy/host/ember_wifi_setup.py`),
+  for times when no hotspot came up or it vanished:
+  - Losing Wi-Fi now counts as offline. Before, dhclient kept its lease and the kernel
+    only marked the route `linkdown`, so the board stayed "online" and showed no
+    hotspot until reboot.
+  - One nearby router whose name was not valid UTF-8 crashed the service every time
+    it started the hotspot. Command output is now decoded leniently.
+  - The hotspot is watched. hostapd's own messages say when it is on the air and which
+    phones are connected; the 4 Pro's driver cannot list connected phones through `iw`,
+    so the hotspot used to close every 5 minutes mid-setup. If hostapd or dnsmasq
+    exits or the access point drops, the hotspot is restarted within seconds instead
+    of staying off for 5 minutes. dnsmasq no longer takes 127.0.0.1:53.
+  - Checking for saved networks scans first, about 10 s off the air, and leaves the
+    hotspot only when a saved network is in range (every third time regardless). It
+    used to go off the air for about 2 minutes every 5 minutes.
+  - A phone left connected keeps the hotspot up for at most 15 minutes.
+  - Plugging in Ethernet closes the hotspot within about 10 s.
+  - A bad or missing password file is reported once, with exit 78 and no restart
+    loop, before the radio is touched.
+  - The service unit uses `KillMode=process`, and the Wi-Fi client is started
+    through `ifup@wlan0.service`. Restarting or stopping the service no longer kills
+    the board's Wi-Fi, and a run that died mid-hotspot is cleaned up.
+  - Listed networks are saved by their exact bytes, so names with spaces at the ends
+    or non-UTF-8 names work. No network is preselected.
+  - The network list retries an empty scan and adds wpa_supplicant's recent results.
+  - The same script now runs on the Orange Pi 5 Max, using NetworkManager (Armbian).
+    The hotspot is a NetworkManager access-point connection, and a network from the
+    page becomes a NetworkManager connection.
+  - The install steps write the password file with `json.dumps`, and there are
+    update steps.
+  Offline tests in `tests/test_ember_wifi_setup.py` (29) cover the routes, decoding,
+  the password file, the page and form, hostapd messages, the retry rules, both
+  stacks' saved networks and the unit settings. Neither board has run the hotspot
+  yet; the hardware checks are listed in `deploy/host/README.md`.
+
+- x86 robot hotspot fixes (`deploy/host/startup.sh`, `baymax_portal.py`,
+  `deploy/provision/provision.sh`):
+  - Phones now open the setup page by themselves. startup.sh points the names phones
+    use to check for internet at the hotspot (`dnsmasq-shared.d`, no real sites), and
+    the portal answers them: "online" while the robot has internet, so phones keep
+    browsing over the hotspot, and the setup page while it is offline. The page was
+    reachable only by typing its address before.
+  - The portal and a hotspot watchdog start before startup.sh's 30 s and DNS waits.
+    The page was missing for the first 1-3 minutes after boot.
+  - The watchdog brings the hotspot back within 30 s whenever it is down and the
+    radio is free. NetworkManager stops retrying after a few failed activations, and
+    the hotspot used to be nudged only once at boot.
+  - The hotspot keeps retrying (`autoconnect-retries 0`) and has a fixed address,
+    10.42.0.1.
+  - The portal rescans before joining, so "No network with SSID found" no longer
+    happens for a network that is there. It suggests nearby names, and the phone
+    keyboard no longer capitalizes or autocorrects the name.
+  - Passwords are kept exactly as typed and checked.
+  - A saved profile of the same name is moved onto the dongle.
+  - A timeout shows "failed" instead of "connecting" forever, without logging the
+    password.
+  Offline tests in `tests/test_baymax_portal.py` (11). The hardware test on unit 001
+  is pending.
+
 - Ember answers in the language the person speaks: Hindi gets Hindi, Spanish gets
   Spanish, a switch is followed on the next reply, a Hindi-English mix gets the same
   mix, and Ember's own English notes (`[FALL ALERT]`, reminders, check-ins) are

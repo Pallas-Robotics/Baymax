@@ -152,6 +152,16 @@ for name in ['ember-provision.service', 'ember-update.service', 'ember-status.se
     image_directory(link.parent)
     link.unlink(missing_ok=True)
     link.symlink_to('../' + name)
+# Wi-Fi setup hotspot: opens whenever the board has no network, at every boot.
+copy('ember_wifi_setup.py', '/usr/local/lib/ember/ember_wifi_setup.py')
+copy('ember-wifi-setup.service', '/etc/systemd/system/ember-wifi-setup.service')
+link = root / 'etc/systemd/system/multi-user.target.wants/ember-wifi-setup.service'
+image_directory(link.parent)
+link.unlink(missing_ok=True)
+link.symlink_to('../ember-wifi-setup.service')
+hostapd_unit = root / 'etc/systemd/system/hostapd.service'  # the script runs hostapd itself
+hostapd_unit.unlink(missing_ok=True)
+hostapd_unit.symlink_to('/dev/null')
 copy('20-ember-virtual.conf', '/etc/X11/xorg.conf.d/20-ember-virtual.conf')
 copy('45-ember-primary-display', '/etc/X11/Xsession.d/45-ember-primary-display')
 for name in ['ember-anydesk-id.service', 'ember-anydesk-id.timer']:
