@@ -191,25 +191,114 @@ class VoiceFeedTests(unittest.TestCase):
         self.assertEqual(self.feed.failed_at, self.clock.now)
 
 
+
+class VoiceLearningFromConversationTests(unittest.TestCase):
+    """A known face alone in view + a voice Ember doesn't know yet = that person talking."""
+
+    def child(self, has_voice=False):
+        import numpy as np
+        from features.person_recognition import voices
+        child = voice_process.VoiceChild.__new__(voice_process.VoiceChild)
+        added = []
+
+        class Identifier:
+            def has_voice(self, person_id):
+                return has_voice
+
+            def add_samples(self, person_id, embeddings, check_consistency=True):
+                added.append((person_id, len(embeddings), check_consistency))
+                return len(embeddings)
+        child.identifier, child.results, child.learned, child.adopted = Identifier(), [], [], []
+        child.recent, child.pending, child.next_id = __import__("collections").OrderedDict(), {}, 0
+        rng = np.random.default_rng(0)
+        base = voices._normalize(rng.normal(size=192))
+        voice = lambda: voices._normalize(base + 0.3 * voices._normalize(rng.normal(size=192)))
+        return child, added, voice
+
+    def test_a_first_voice_needs_three_clips_that_sound_alike(self):
+        from features.person_recognition import voices
+        child, added, voice = self.child()
+        for i in range(3):
+            child._result(voices.VoiceMatch("unknown", embedding=voice(), seconds=2.5), "final")
+            child._adopt("p_1", child.next_id)
+        self.assertEqual(added, [("p_1", 3, False)])
+        self.assertEqual([a.get("collected") for a in child.adopted], [1, 2, None])
+
+    def test_strangers_clips_are_not_saved_as_a_first_voice(self):
+        import numpy as np
+        from features.person_recognition import voices
+        child, added, voice = self.child()
+        rng = np.random.default_rng(1)
+        for embedding in (voice(), voices._normalize(rng.normal(size=192)), voices._normalize(rng.normal(size=192))):
+            child._result(voices.VoiceMatch("unknown", embedding=embedding, seconds=2.5), "final")
+            child._adopt("p_1", child.next_id)
+        self.assertEqual(added, [])
+        self.assertIn("don't sound like one person", child.adopted[-1]["note"])
+
+    def test_later_clips_go_through_the_voice_check(self):
+        from features.person_recognition import voices
+        child, added, voice = self.child(has_voice=True)
+        child._result(voices.VoiceMatch("maybe", embedding=voice(), seconds=2.5), "final")
+        child._adopt("p_1", child.next_id)
+        child._adopt("p_1", 999)                          # unknown id: nothing
+        self.assertEqual(added, [("p_1", 1, True)])
+
+    def test_only_final_results_are_kept_for_learning(self):
+        from features.person_recognition import voices
+        child, added, voice = self.child()
+        child._result(voices.VoiceMatch("unknown", embedding=voice(), seconds=2.1), "early")
+        self.assertEqual(list(child.recent), [])
+
+    def test_ember_adopts_only_with_one_known_face_in_view(self):
+        from types import SimpleNamespace
+        people = People(clock=Clock())
+        people.identifier = FakeIdentifier()
+        people.voice = SimpleNamespace(adopt=lambda pid, rid: adopted.append((pid, rid)))
+        adopted = []
+        result = {"level": "unknown", "person_id": None, "name": None, "score": 0.1, "stage": "final",
+                  "seconds": 3.0, "ms": 800, "id": 7}
+        cases = [([SimpleNamespace(person_id="p_1")], result, [("p_1", 7)]),
+                 ([SimpleNamespace(person_id="p_1"), SimpleNamespace(person_id=None)], result, []),   # two faces
+                 ([SimpleNamespace(person_id=None)], result, []),                                    # a stranger
+                 ([SimpleNamespace(person_id="p_1")], {**result, "seconds": 1.2}, []),               # too short
+                 ([SimpleNamespace(person_id="p_1")], {**result, "stage": "early"}, []),
+                 ([SimpleNamespace(person_id="p_1")], {**result, "level": "maybe", "person_id": "p_2"}, [])]
+        for tracks, case, expected in cases:
+            with self.subTest(tracks=len(tracks), case=case), patch("builtins.print"):
+                adopted.clear()
+                people.identifier.tracks = tracks
+                people._voice_result(case)
+                self.assertEqual(adopted, expected)
+        with patch.dict(os.environ, {"BAYMAX_VOICE_LEARNING": "0"}), patch("builtins.print"):
+            adopted.clear()
+            people.identifier.tracks = [SimpleNamespace(person_id="p_1")]
+            people._voice_result(result)
+            self.assertEqual(adopted, [])
+
 class FakeIdentifier:
     def __init__(self, known=None, in_view=()):
         self.known = known or {}
-        self.in_view = list(in_view)
+        self.names_in_view = list(in_view)
         self.tool_calls = []
+        self.tracks = []
+        self.store = FakeStore(self.known)
         self.arrivals = []
         self.introductions = []
 
     def describe_in_view(self):
-        return "Stella is in front of you." if self.in_view else "Nobody is in front of your camera right now."
+        return "Stella is in front of you." if self.names_in_view else "Nobody is in front of your camera right now."
 
     def describe_visits(self):
         return None
 
     def present_names(self):
-        return list(self.in_view)
+        return list(self.names_in_view)
 
     def find_person(self, name):
         return self.known.get(name)
+
+    def in_view(self):
+        return [track for track in self.tracks]
 
     def handle_tool_call(self, name, args):
         self.tool_calls.append((name, args))
@@ -220,6 +309,21 @@ class FakeIdentifier:
 
     def pending_introduction(self):
         return self.introductions.pop(0) if self.introductions else None
+
+
+class FakeStore:
+    def __init__(self, known):
+        self.known = known
+
+    def get(self, person_id):
+        return next((p for p in self.known.values() if p.get("id") == person_id), None)
+
+    def _update(self, change):
+        data = {"people": list(self.known.values())}
+        result = change(data)
+        self.known.clear()
+        self.known.update({p["name"]: p for p in data["people"]})
+        return result
 
 
 class FakeVoice:
@@ -262,11 +366,11 @@ class ToolTests(unittest.TestCase):
         self.people.voice = voice = FakeVoice()
         self.assertEqual(self.people.execute("remember_voice", {"name": "Bob"})["status"], "not_saved")
         self.assertEqual(self.people.execute("remember_voice", {"name": "Stella"})["status"], "not_saved")
-        self.people.identifier.in_view = ["Stella"]
+        self.people.identifier.names_in_view = ["Stella"]
         self.assertEqual(self.people.execute("remember_voice", {"name": "Stella"})["status"], "listening")
         self.assertEqual(voice.learning, ["Stella"])
         stella["voice_embeddings"] = [[0.1]]            # adding to a known voice: no face needed
-        self.people.identifier.in_view = []
+        self.people.identifier.names_in_view = []
         self.assertEqual(self.people.execute("remember_voice", {"name": "Stella"})["status"], "listening")
 
     def test_no_saving_under_a_placeholder_name(self):
@@ -281,6 +385,39 @@ class ToolTests(unittest.TestCase):
         self.assertEqual(voice.learning, [])
         self.people.execute("remember_person", {"name": "Useria"})       # a real name that starts like one
         self.assertEqual(identifier.tool_calls, [("remember_person", {"name": "Useria"})])
+
+    def test_a_placeholder_named_face_gets_its_real_name(self):
+        from types import SimpleNamespace
+        self.people.identifier = identifier = FakeIdentifier(known={"User": {"id": "p_9", "name": "User"}})
+        identifier.tracks = [SimpleNamespace(person_id="p_9")]
+        with patch("builtins.print"):
+            result = self.people.execute("remember_person", {"name": "Joe"})
+        self.assertEqual(result["status"], "remembered")
+        self.assertEqual(identifier.store.get("p_9")["name"], "Joe")
+        self.assertEqual(identifier.tool_calls, [])       # renamed, not saved a second time
+
+    def test_a_known_voice_after_a_while_is_an_arrival_once(self):
+        clock = Clock()
+        people = People(clock=clock)
+        people.identifier = FakeIdentifier()
+        sure = {"level": "sure", "person_id": "p_1", "name": "Stella", "score": 0.6, "stage": "final",
+                "seconds": 2.0, "ms": 700}
+        with patch("builtins.print"):
+            people._voice_result(sure)
+            people._voice_result(sure)                    # same visit: still one arrival
+        self.assertEqual([a["by"] for a in people.voice_arrivals], ["voice"])
+        people.voice_arrivals.clear()
+        clock.now += 30
+        with patch("builtins.print"):
+            people._voice_result(sure)                    # heard 30 s ago: not "back"
+            people._voice_result({**sure, "level": "maybe"})
+        self.assertEqual(people.voice_arrivals, [])
+        clock.now += people_module.GREET_AFTER_S + 1
+        with patch("builtins.print"):
+            people._voice_result(sure)
+        self.assertEqual(len(people.voice_arrivals), 1)
+        self.assertTrue(arrival_prompt(people.voice_arrivals[0]).startswith(
+            "[ARRIVED] Stella is here: you recognized their voice."))
 
     def test_face_tools_go_to_the_identifier(self):
         self.people.identifier = identifier = FakeIdentifier()
@@ -340,7 +477,7 @@ class SpokenPromptTests(unittest.TestCase):
     def test_arrival_waits_for_a_free_moment_and_is_spoken(self):
         people = People(clock=Clock())
         people.identifier = FakeIdentifier()
-        people.identifier.arrivals = [{"name": "Stella", "label": "Stella", "away": None, "last_seen": None}]
+        people.identifier.arrivals = [{"person_id": "p_1", "name": "Stella", "label": "Stella", "away": None, "last_seen": None}]
         allowed = {"now": False}
         sent = []
 
@@ -366,7 +503,7 @@ class SpokenPromptTests(unittest.TestCase):
         clock = Clock()
         people = People(clock=clock)
         people.identifier = FakeIdentifier()
-        people.identifier.arrivals = [{"name": "Stella", "label": "Stella", "away": None, "last_seen": None}]
+        people.identifier.arrivals = [{"person_id": "p_1", "name": "Stella", "label": "Stella", "away": None, "last_seen": None}]
 
         def can_speak():
             clock.now += people_module.ARRIVAL_WAIT_S + 1   # time passes while Ember is busy

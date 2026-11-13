@@ -80,7 +80,7 @@ SAME_VISITOR = 0.45           # similarity to treat a returning stranger as the 
 # face — otherwise someone who steps into the spot another person just left
 # would inherit their name. (LFW: 0.44% same-person splits, 0.88% merges.)
 TRACK_CONTINUITY = 0.30
-LAST_SEEN_SAVE_INTERVAL = 600.0
+LAST_SEEN_SAVE_INTERVAL = 60.0   # Orange Pi port: Ember restarts often; was 600
 # A new sample must resemble the person's stored face (best cosine >= this),
 # so one wrong sample can't creep in; and claiming an existing name requires
 # actually looking like that person.
@@ -98,7 +98,8 @@ STEADY_LOOK = 0.85            # …and a 16x16 thumbnail of it still looks the s
                               # the same face frame to frame ~0.97
 DOWNLOAD_TIMEOUT = 30         # seconds without data before a model download gives up
 AWAY_PRIMARY = 3 * 3600       # greet the person Ember lives with after this long apart
-AWAY_OTHERS = 20 * 60         # greet anyone else Ember knows after this long apart
+AWAY_OTHERS = 2 * 60          # greet anyone else Ember knows after this long apart (PR #8: 20 min;
+                              # people.GREET_AFTER_S sets it, BAYMAX_PEOPLE_GREET_AFTER_S)
 GREET_COOLDOWN = 30.0         # seconds between greetings
 ARRIVAL_MAX_AGE = 60.0        # a greeting not given within this long is dropped
 VISIT_GAP = 10 * 60           # away this long = a new visit (for "here for ..." / "just arrived")

@@ -58,6 +58,29 @@ The voice models are PR #36's own, on ONNX Runtime (already installed for memory
 
 Voice recognition stays off (logged once) until `.models/voice/` has both files.
 
+## Changes from the PRs after testing on the board (2026-11-13)
+
+- **Voices are learned from conversation.** When exactly one face is in view and it is
+  someone Ember knows, each of their finished utterances of 2 s or more becomes a voice
+  sample. The first voice needs three clips that sound like one person (PR #36's
+  `_consistent_set`); later clips must sound like the stored voice (`add_samples`
+  check). On the board the first voice was saved after a few sentences, and the next
+  ones were named "sure" at 0.57-0.61. PR #36 only learned voices through
+  `remember_voice`, which never happened in practice, so voices were never recognized.
+  Remembering someone's face (with consent) now includes their voice;
+  `BAYMAX_VOICE_LEARNING=0` restores remember_voice-only.
+- **Placeholder names.** Gemini saved a face as "User" while asking the person's name.
+  `remember_person`/`remember_voice` now refuse placeholder names, and a face in view
+  stored under one is renamed when the person gives their name.
+- **Greeting on return.** Known people are greeted again after
+  `BAYMAX_PEOPLE_GREET_AFTER_S` (120 s) away instead of PR #8's 20 minutes, by face or by
+  voice (a "sure" voice of someone not seen or heard for that long), once per return.
+  "Last seen" is saved every minute (PR #8: 10), so restarts don't lose it.
+- Gemini is told to call `who_is_here` before asking anyone's name or permission, and
+  that names from its own recognition may be used.
+- Logs: one `[FACE] track` line per face whose identity changes (score included), one
+  `[VOICE]` line per identification, and each people tool call with its result.
+
 ## Data, consent and forgetting
 
 - `ember_people.json` in `BAYMAX_DATA_DIR`: per person an id, name, optional

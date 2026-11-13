@@ -19,6 +19,7 @@ BATCH_S = 0.25            # how often queued audio goes to the child
 MAX_QUEUED = 1500         # mic blocks kept while the child is busy (30 s at 20 ms)
 RESTART_AFTER_S = 30.0    # a child that died is started again after this long
 CALL_TIMEOUT_S = 20.0     # learning a voice embeds several clips in one call
+ADOPT_FIRST = 3           # a first voice needs this many consistent clips before it is saved
 
 
 class VoiceChild:
@@ -31,14 +32,49 @@ class VoiceChild:
         from features.person_recognition import faces, voices
         store = faces.PeopleStore(people_path)
         identifier = voices.VoiceIdentifier(voices.VoiceModel(model_dir), store)
-        self.results, self.learned = [], []
+        self.identifier = identifier
+        self.results, self.learned, self.adopted = [], [], []
+        self.recent = collections.OrderedDict()   # result id -> embedding, newest last
+        self.pending = {}                          # person id -> [embeddings] for a first voice
+        self.next_id = 0
         self.listener = voices.VoiceListener(identifier, sample_rate, on_result=self._result,
                                              vad=voices.make_vad(model_dir))
 
     def _result(self, match, stage):
+        self.next_id += 1
+        if match.embedding is not None and stage == "final":
+            self.recent[self.next_id] = match.embedding
+            while len(self.recent) > 20:
+                self.recent.popitem(last=False)
         self.results.append({"level": match.level, "person_id": match.person_id, "name": match.name,
                              "score": round(match.score, 3), "seconds": round(match.seconds, 2),
-                             "ms": round(match.ms), "stage": stage})
+                             "ms": round(match.ms), "stage": stage, "id": self.next_id})
+
+    def _adopt(self, person_id, result_id):
+        """Learn from conversation: the utterance `result_id` was said by `person_id` (the only
+        face in view, recognised). A first voice needs ADOPT_FIRST clips that sound like one
+        person; later clips must sound like the stored voice (PR #36's add_samples check)."""
+        from features.person_recognition import voices
+        embedding = self.recent.pop(result_id, None)
+        if embedding is None:
+            return
+        if self.identifier.has_voice(person_id):
+            added = self.identifier.add_samples(person_id, [embedding])
+            self.adopted.append({"person_id": person_id, "added": added, "first": False})
+            return
+        clips = self.pending.setdefault(person_id, []) + [embedding]
+        self.pending[person_id] = clips[-ADOPT_FIRST * 2:]
+        if len(clips) < ADOPT_FIRST:
+            self.adopted.append({"person_id": person_id, "added": 0, "collected": len(clips), "first": True})
+            return
+        recent = clips[-ADOPT_FIRST:]
+        if voices._consistent_set(recent):
+            added = self.identifier.add_samples(person_id, recent, check_consistency=False)
+            self.pending.pop(person_id, None)
+            self.adopted.append({"person_id": person_id, "added": added, "first": True})
+        else:
+            self.adopted.append({"person_id": person_id, "added": 0, "collected": len(clips), "first": True,
+                                 "note": "clips don't sound like one person yet"})
 
     def detect(self, item):
         command = item[0]
@@ -48,21 +84,25 @@ class VoiceChild:
         elif command == "learn":
             _, name, allow_new = item
             self.listener.start_learning(name, self.learned.append, allow_new=allow_new)
+        elif command == "adopt":
+            _, person_id, result_id = item
+            self._adopt(person_id, result_id)
         elif command != "poll":
             raise ValueError(f"unknown command {command!r}")
-        reply = {"results": self.results, "learned": self.learned,
+        reply = {"results": self.results, "learned": self.learned, "adopted": self.adopted,
                  "in_speech": self.listener._in_speech, "learning": self.listener.learning()}
-        self.results, self.learned = [], []
+        self.results, self.learned, self.adopted = [], [], []
         return reply
 
 
 class VoiceFeed:
     """Ember's side: queue mic blocks, ship them to VoiceChild, keep the latest results."""
 
-    def __init__(self, factory, on_result=None, on_learned=None, clock=time.monotonic):
+    def __init__(self, factory, on_result=None, on_learned=None, clock=time.monotonic, on_adopted=None):
         self.factory = factory              # () -> Remote (tests pass a fake)
         self.on_result = on_result or (lambda result: None)
         self.on_learned = on_learned or (lambda result: None)
+        self.on_adopted = on_adopted or (lambda result: None)
         self.clock = clock
         self.queue = collections.deque(maxlen=MAX_QUEUED)   # append/popleft are thread-safe
         self.dropped = 0
@@ -85,6 +125,10 @@ class VoiceFeed:
     # ── Requests from tools ────────────────────────────────────────────────────
     def learn(self, name, allow_new=False):
         self.commands.append(("learn", name, allow_new))
+
+    def adopt(self, person_id, result_id):
+        """That utterance was this person's: learn their voice from it."""
+        self.commands.append(("adopt", person_id, result_id))
 
     def speaker(self, wait=1.5, max_age=15.0):
         """The latest result, waiting up to `wait` s for an utterance still in progress."""
@@ -155,3 +199,5 @@ class VoiceFeed:
                 self.on_result(result)
             for result in reply["learned"]:
                 self.on_learned(result)
+            for result in reply.get("adopted", []):
+                self.on_adopted(result)

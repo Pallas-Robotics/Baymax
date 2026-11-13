@@ -925,7 +925,7 @@ class ArrivalTests(Base):
         self.enroll("Sarah", s)
         self.visit(s)
         self.ident.pending_arrival()
-        self.clock.t += 10 * 60                                 # popped out for 10 min
+        self.clock.t += fi.AWAY_OTHERS / 2                      # popped out briefly (PR #8: 10 of 20 min)
         self.visit(s)
         self.assertIsNone(self.ident.pending_arrival())
         self.clock.t += fi.AWAY_OTHERS
@@ -951,11 +951,11 @@ class ArrivalTests(Base):
         self.enroll("Sarah", s)
         self.visit(s)
         self.ident.pending_arrival()
-        self.clock.t += fi.LAST_SEEN_SAVE_INTERVAL
+        self.clock.t += fi.LAST_SEEN_SAVE_INTERVAL + 5
         self.visit(s)                                           # last_seen saved to disk
         restarted = fi.FaceIdentifier(FakeModels(), fi.PeopleStore(self.path, clock=self.clock),
                                       clock=self.clock, profile=dict(PROFILE))
-        self.clock.t += 60
+        self.clock.t += fi.AWAY_OTHERS / 4                      # PR #8: a minute of 20
         for _ in range(3):
             restarted.process([face(sample(s, .7))])
             self.clock.t += .5

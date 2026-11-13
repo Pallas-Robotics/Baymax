@@ -34,6 +34,14 @@
   - PR #8's tools (`remember_person`, `decline_to_be_remembered`, `forget_person`) and
     PR #36's (`remember_voice`) keep their consent rules. Faces and voices are stored as
     numbers in `BAYMAX_DATA_DIR/ember_people.json`; forgetting a person removes both.
+  - After testing on the board:
+    - Voices are learned from conversation while the person's known face is the only
+      one in view. A first voice needs three clips that sound alike; afterwards the
+      board named the voice "sure" at 0.57-0.61.
+    - Placeholder names ("User") are refused, and a face saved under one is renamed.
+    - Known people are greeted again after 2 minutes away, by face or voice (PR #8: 20 min).
+    - "Last seen" is saved every minute.
+    - Tool calls and recognition scores are logged.
   - On by default in `run_mvp.py` (`BAYMAX_PEOPLE_RECOGNITION=1`).
     `BAYMAX_VOICE_RECOGNITION=0` keeps faces only; `BAYMAX_PEOPLE_GREETINGS=0` stops
     Ember starting those conversations. Voice stays off until `.models/voice/` has the

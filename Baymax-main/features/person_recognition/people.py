@@ -35,9 +35,14 @@ from features.person_recognition import faces, voices
 from features.vision_process import Remote, Stopped
 
 FACE_FPS = 2.0                 # PR #8's rate
+FACE_LOG_S = 15.0              # a face track's identity is logged when it changes, else this often
+ADOPT_MIN_S = 2.0              # utterances at least this long teach Ember a voice (face in view)
 FACE_RESTART_S = 60.0          # a face child that died is started again after this long
 OPENER_GAP_S = 15.0            # PR #8's OPENER_SETTLE_SECONDS: one spoken prompt at a time
 ARRIVAL_WAIT_S = 60.0          # an arrival not greeted within this long is dropped
+# A known person who comes back (face or voice) after this long away is greeted by name.
+GREET_AFTER_S = float(os.getenv("BAYMAX_PEOPLE_GREET_AFTER_S", "120"))
+faces.AWAY_OTHERS = GREET_AFTER_S
 LEARNED_WAIT_S = 60.0          # same for a [VOICE LEARNED] result
 
 DECLARATIONS = faces.PEOPLE_TOOLS + voices.VOICE_TOOLS + [{
@@ -52,16 +57,20 @@ INSTRUCTION = """
 You can recognize people you know by their face (your camera) and by their voice. When
 you need to know who is in front of you or who has been talking, call who_is_here. If
 someone asks who they are ("who am I?", "do you know who this is?"), call
-identify_speaker. Never guess a name you aren't sure of; ask instead. A "might be" or
-"not sure" result means check politely ("Is that you, Sarah?") before assuming; if they
-say yes, call remember_person with that name so you recognize them better.
-A message starting with [ARRIVED] means someone you know just came into view: greet them
-warmly by name, briefly. [NEW PERSON] means someone you don't recognize has been in front
-of you for a while: greet them, say you're Ember, ask their name, and ask whether it's
-okay to remember their face. Only if they clearly say yes, and only once they have told
-you their name, call remember_person with that name. If they
-say no, call decline_to_be_remembered and don't ask again (if they later say yes
-themselves, call remember_person with changed_mind true).
+identify_speaker. Before you ask anyone their name, or whether you may remember their face
+or voice, call who_is_here: you may already know them. Names from who_is_here,
+identify_speaker and [ARRIVED] come from your own recognition: use them naturally. Never
+guess a name you aren't sure of; ask instead. A "might be" or "not sure" result means
+check politely ("Is that you, Sarah?") before assuming; if they say yes, call
+remember_person with that name so you recognize them better.
+A message starting with [ARRIVED] means someone you know just came back (you saw their face
+or heard their voice): greet them warmly by name, briefly. [NEW PERSON] means someone you
+don't recognize has been in front of you for a while: greet them, say you're Ember, ask
+their name, and ask whether it's okay to remember their face. Only if they clearly say
+yes, and only once they have told you their name, call remember_person with that name. If
+it says you already remember that face, tell them you know them already. If they say no,
+call decline_to_be_remembered and don't ask again (if they later say yes themselves, call
+remember_person with changed_mind true).
 If someone asks you to learn their voice, first ask whether it's okay. Only if they
 clearly say yes, call remember_voice with their name, then ask them to talk naturally for
 about ten seconds. A message starting with [VOICE LEARNED] tells you how it went: tell
@@ -78,6 +87,12 @@ def enabled():
 
 def voice_enabled():
     return enabled() and os.getenv("BAYMAX_VOICE_RECOGNITION", "1") != "0" and voices.models_present()
+
+
+def voice_learning_enabled():
+    """Learn a known person's voice from conversation (their face in view). Off with
+    BAYMAX_VOICE_LEARNING=0; then only remember_voice ("learn my voice") does."""
+    return os.getenv("BAYMAX_VOICE_LEARNING", "1") != "0"
 
 
 def greetings_enabled():
@@ -112,6 +127,9 @@ def arrival_prompt(arrival):
     """PR #8's [ARRIVED] message, without the per-person memories (not ported yet)."""
     name = arrival.get("name") or "them"
     label = arrival.get("label") or name
+    if arrival.get("by") == "voice":
+        return (f"[ARRIVED] {label} is here: you recognized their voice. Greet {name} warmly by name; "
+                "keep it short and natural, and answer what they said if they asked something.")
     away = describe_away(arrival.get("away"))
     last = (f"You last saw {name} {away}." if away and arrival.get("last_seen")
             else f"This is the first time you've seen {name} since you learned their face.")
@@ -162,6 +180,10 @@ class People:
         self.learned = []              # [(result, when)] waiting to be spoken
         self.last_opener = -1e9
         self.sample_rate = 48000
+        self._face_log = {}
+        self.greeted = {}              # person id -> when Ember last greeted them (face or voice)
+        self.heard = {}                # person id -> when their voice was last recognised
+        self.voice_arrivals = []
 
     # ── Camera (the capture loop's thread): store the reference only ───────────
     def observe(self, frame):
@@ -190,7 +212,8 @@ class People:
         if voice_enabled():
             from features.person_recognition.voice_process import VoiceFeed
             self.voice = VoiceFeed(functools.partial(_voice_remote, self.sample_rate),
-                                   on_result=log_voice_result, on_learned=self._voice_learned).start()
+                                   on_result=self._voice_result, on_learned=self._voice_learned,
+                                   on_adopted=self._voice_adopted).start()
             print("[PEOPLE] Voice recognition started (own process, slow cores)", flush=True)
         elif enabled() and os.getenv("BAYMAX_VOICE_RECOGNITION", "1") != "0":
             print(f"[PEOPLE] Voice recognition off: no models in {voices.MODEL_DIR}", flush=True)
@@ -216,6 +239,7 @@ class People:
                     if frame is not None and frame_id != seen:
                         seen = frame_id
                         self.identifier.process(frame)
+                        self._log_faces()
                     else:
                         self.identifier.no_new_frame()
                     time.sleep(max(0.0, 1.0 / FACE_FPS - (self.clock() - started)))
@@ -227,15 +251,117 @@ class People:
             models.close()
             time.sleep(FACE_RESTART_S)
 
+    def _log_faces(self):
+        """One line per face track when who it is changes, else every FACE_LOG_S: the
+        track, who it is (or might be), and its last match score."""
+        now = self.clock()
+        names = {}
+        for track in list(getattr(self.identifier, "_tracks", [])):
+            last = track.votes[-1] if track.votes else (None, 0.0)
+            pid = track.person_id or track.maybe_id or last[0]
+            if pid not in names:
+                person = self.identifier.store.get(pid) if pid else None
+                names[pid] = person["name"] if person else None
+            state = ("known" if track.person_id else "maybe" if track.maybe_id else "unknown",
+                     track.person_id or track.maybe_id)
+            previous = self._face_log.get(track.id)
+            if previous and previous[0] == state and now - previous[1] < FACE_LOG_S:
+                continue
+            self._face_log[track.id] = (state, now)
+            best = f"{names[pid]} {last[1]:.2f}" if names.get(pid) else f"no match {last[1]:.2f}"
+            print(f"[FACE] track {track.id}: {state[0]} ({best}, {len(track.votes)} checks)", flush=True)
+        live = {t.id for t in getattr(self.identifier, "_tracks", [])}
+        self._face_log = {k: v for k, v in self._face_log.items() if k in live}
+
+    def last_present(self, person_id):
+        """When this person was last seen (face) or heard (voice), monotonic, or None."""
+        seen = getattr(self.identifier, "_last_present", {}).get(person_id)
+        heard = self.heard.get(person_id)
+        return max((t for t in (seen, heard) if t is not None), default=None)
+
+    def speaker_by_face(self):
+        """The person whose voice this must be: the only face in view, recognised, or None."""
+        identifier = self.identifier
+        if identifier is None:
+            return None
+        tracks = identifier.in_view()
+        if len(tracks) != 1 or not tracks[0].person_id:
+            return None
+        return tracks[0].person_id
+
+    def _voice_result(self, result):
+        log_voice_result(result)
+        if (result.get("stage") == "final" and result.get("seconds", 0) >= ADOPT_MIN_S and self.voice is not None
+                and result["level"] != "sure" and voice_learning_enabled()):
+            # Learn their voice from conversation: one known face in view and a voice
+            # Ember doesn't know yet (or only "might be") is that person talking.
+            face = self.speaker_by_face()
+            if face and (result["level"] == "unknown" or result.get("person_id") == face):
+                self.voice.adopt(face, result["id"])
+        pid = result.get("person_id")
+        if result["level"] != "sure" or not pid:
+            return
+        now = self.clock()
+        last = self.last_present(pid)
+        self.heard[pid] = now
+        if (last is None or now - last >= GREET_AFTER_S) and now - self.greeted.get(pid, -1e9) >= GREET_AFTER_S:
+            with self.lock:
+                if not any(a["person_id"] == pid for a in self.voice_arrivals):
+                    self.voice_arrivals.append({"person_id": pid, "name": result.get("name"), "by": "voice",
+                                                "away": None if last is None else now - last,
+                                                "last_seen": None, "t": now})
+
+    def _rename_placeholder(self, identifier, new_name):
+        """remember_person(name) for a face in view that was saved under a placeholder
+        ("User", from before the placeholder check): rename that person."""
+        new_name = faces.clean_name(new_name)
+        if placeholder_name(new_name) or identifier.find_person(new_name):
+            return None
+        for track in identifier.in_view():
+            person = identifier.store.get(track.person_id) if track.person_id else None
+            if person and placeholder_name(person["name"]):
+                def change(data):
+                    for p in data["people"]:
+                        if p["id"] == person["id"]:
+                            p["name"] = new_name
+                            return True
+                    return False
+                if identifier.store._update(change):
+                    print(f"[FACE] Renamed {person['name']} to {new_name}", flush=True)
+                    return {"status": "remembered", "name": new_name,
+                            "note": "You already knew this face under a placeholder; it now has their name."}
+        return None
+
+    def _voice_adopted(self, result):
+        person = self.identifier.store.get(result["person_id"]) if self.identifier else None
+        name = person["name"] if person else result["person_id"]
+        if result.get("added"):
+            what = "first voice saved" if result.get("first") else "voice sample added"
+            print(f"[VOICE] Learning {name}'s voice from conversation: {what}", flush=True)
+        elif result.get("first"):
+            print(f"[VOICE] Learning {name}'s voice from conversation: {result.get('collected', 0)} of "
+                  f"3 clips{'; ' + result['note'] if result.get('note') else ''}", flush=True)
+
     def _voice_learned(self, result):
         with self.lock:
             self.learned.append((result, self.clock()))
 
     # ── Tools (asyncio.to_thread from gemini_tools) ─────────────────────────────
     def execute(self, name, args):
+        result = self._execute(name, args)
+        shown = {k: v for k, v in result.items() if k in ("status", "name", "speaker", "confidence",
+                                                           "in_front_of_you", "error", "reason")}
+        print(f"[PEOPLE] tool {name}({(args or {}).get('name', '')}) -> {shown}", flush=True)
+        return result
+
+    def _execute(self, name, args):
         identifier = self.identifier
         if identifier is None:
             return {"error": "Recognizing people isn't ready yet. Ask who they are."}
+        if name == "remember_person" and not placeholder_name((args or {}).get("name")):
+            renamed = self._rename_placeholder(identifier, (args or {}).get("name"))
+            if renamed:
+                return renamed
         if name in ("remember_person", "remember_voice") and placeholder_name((args or {}).get("name")):
             # Seen on the board: "Can you remember my face?" -> remember_person(name="User")
             # in the same breath as "What is your name?".
@@ -297,12 +423,18 @@ class People:
                     message = learned_message(result)
             if message is None:
                 if arrival is None:
+                    with self.lock:
+                        arrival = self.voice_arrivals.pop(0) if self.voice_arrivals else None
+                if arrival is None:
                     arrival = await asyncio.to_thread(identifier.pending_arrival)
-                    if arrival is not None:
-                        arrival["waiting_since"] = now
+                if arrival is not None and "waiting_since" not in arrival:
+                    arrival["waiting_since"] = now
+                    if now - self.greeted.get(arrival["person_id"], -1e9) < GREET_AFTER_S:
+                        arrival = None          # just greeted (by voice or face): once is enough
                 if arrival is not None and now - arrival["waiting_since"] > ARRIVAL_WAIT_S:
                     arrival = None
                 if arrival is not None and self._can_speak():
+                    self.greeted[arrival["person_id"]] = now
                     message, arrival = arrival_prompt(arrival), None
             if message is None and self._can_speak():
                 message = await asyncio.to_thread(identifier.pending_introduction)
