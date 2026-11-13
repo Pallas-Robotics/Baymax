@@ -549,6 +549,10 @@ from features.conversational_ability.processing import create as create_audio_en
 _audio_enhancer = create_audio_enhancer(SEND_SAMPLE_RATE)
 from features.conversational_ability.waiting import create as create_waiting_cue
 from features.conversational_ability.volume import voice_volume
+# "Louder"/"quieter" move the speaker's own volume where it is an ALSA card PortAudio opens
+# directly (the Orange Pi's USB speaker); elsewhere Ember's voice is scaled (volume.py).
+from pc_hardware import speaker_mixer
+voice_volume.use_mixer(speaker_mixer(sd.query_devices()[target_device_speaker]["name"]))
 _waiting_cue = create_waiting_cue(_audio_enhancer is not None and _audio_enhancer.full_duplex)
 monitor.waiting_audio = _waiting_cue
 
@@ -963,6 +967,11 @@ def _reselect_audio_devices():
     sd._initialize()
     mic, spk = get_default_device_id()
     sd.default.device = [mic, spk]
+    try:  # the speaker's card may have moved; the devices above are chosen either way
+        from pc_hardware import speaker_mixer
+        voice_volume.use_mixer(speaker_mixer(sd.query_devices()[spk]["name"]))
+    except Exception as error:
+        print(f"[VOLUME] Speaker volume not refreshed ({error}).", flush=True)
     return mic, spk
 
 

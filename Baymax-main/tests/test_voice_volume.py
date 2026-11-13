@@ -129,6 +129,88 @@ class VoiceVolumeTests(unittest.TestCase):
         self.assertTrue(np.all(np.diff(out.astype(np.int32)) <= 0))
 
 
+class FakeMixer:
+    """The USB speaker on the Orange Pi 5 Max: PCM, -28.37 to -0.94 dB, at -17.37 dB."""
+    card, control = 4, "PCM"
+
+    def __init__(self, db=-17.37, low=-28.37, loud=-0.94, fail=None):
+        self.db, self.low_db, self.loud_db, self.fail, self.sets = db, low, loud, fail, []
+
+    def get_db(self):
+        if self.fail == "get":
+            raise RuntimeError("amixer: no such device")
+        return self.db
+
+    def set_db(self, db):
+        if self.fail == "set":
+            raise RuntimeError("amixer: no such device")
+        self.db = min(self.loud_db, max(self.low_db, db))
+        self.sets.append(round(self.db, 2))
+        return self.db
+
+
+class SpeakerVolumeTests(VoiceVolumeTests.__base__):
+    """With the speaker's own volume (pc_hardware.speaker_mixer) the level moves it."""
+    setUp = VoiceVolumeTests.setUp
+    vv = VoiceVolumeTests.vv
+
+    def test_its_present_volume_is_the_starting_level_and_nothing_changes(self):
+        vv, mixer = self.vv(), FakeMixer()
+        vv.use_mixer(mixer)
+        self.assertEqual((vv.level, mixer.sets), (5, []))  # -17.37 dB is nearest level 5
+        self.assertFalse(self.file.exists())
+
+    def test_levels_move_the_speaker_3_db_each_up_to_its_loudest(self):
+        vv, mixer = self.vv(), FakeMixer()
+        vv.use_mixer(mixer)
+        result = vv.execute({"change": "louder"})
+        self.assertEqual((vv.level, mixer.sets[-1], result["speaker_db"]), (6, -12.94, -12.9))
+        self.assertEqual(json.loads(self.file.read_text())["level"], 6)
+        result = vv.execute({"level": 10})
+        self.assertEqual((mixer.sets[-1], result["loudest"]), (-0.94, True))
+        self.assertEqual(vv.execute({"change": "louder"})["changed"], False)  # already the loudest
+        vv.execute({"change": "default"})
+        self.assertEqual(mixer.sets[-1], -9.94)
+
+    def test_the_voice_itself_is_not_scaled_or_limited(self):
+        vv = self.vv()
+        vv.use_mixer(FakeMixer())
+        vv.execute({"level": 10})
+        block = pcm(30000, -30000, 1000)
+        self.assertEqual(vv.apply(block), block)
+
+    def test_a_saved_or_configured_level_is_set_on_the_speaker_at_start(self):
+        self.file.write_text(json.dumps({"level": 8}))
+        mixer = FakeMixer()
+        self.vv().use_mixer(mixer)
+        self.assertEqual(mixer.sets, [-6.94])  # a reboot restores the card's own setting
+        self.file.unlink()
+        os.environ["BAYMAX_VOICE_VOLUME"] = "9"
+        mixer = FakeMixer()
+        self.vv().use_mixer(mixer)
+        self.assertEqual(mixer.sets, [-3.94])
+
+    def test_the_quietest_level_stays_within_the_speakers_range(self):
+        vv, mixer = self.vv(), FakeMixer(low=-20.0)
+        vv.use_mixer(mixer)
+        vv.execute({"level": 1})
+        self.assertEqual(mixer.sets[-1], -20.0)  # never below the card's lowest, never muted
+
+    def test_a_speaker_that_fails_falls_back_to_scaling_the_voice(self):
+        vv = self.vv()
+        vv.use_mixer(FakeMixer(fail="get"))
+        self.assertIsNone(vv.mixer)
+        mixer = FakeMixer()
+        vv.use_mixer(mixer)
+        mixer.fail = "set"
+        result = vv.execute({"level": 10})
+        self.assertIsNone(vv.mixer)
+        self.assertNotIn("speaker_db", result)
+        self.assertEqual(vv.level, 10)
+        vv.apply(pcm(1000, 1000))  # ramps to the new gain over one block
+        self.assertEqual(vv.apply(pcm(1000)), pcm(2000))  # Ember's voice gain does it now (level 10: x2)
+
+
 class VoiceVolumeWiringTests(unittest.TestCase):
     def test_the_speaker_scales_embers_voice_before_mixing_and_the_echo_reference(self):
         calls = []
@@ -169,7 +251,7 @@ class VoiceVolumeWiringTests(unittest.TestCase):
         self.assertLessEqual({volume.NAME, "audiobook", "listen"}, names)
         self.assertIn("radio station or recording plays", volume.INSTRUCTION)
         self.assertIn("audiobook or listen tool", volume.INSTRUCTION)
-        self.assertIn("radio's", volume.DECLARATION["description"])
+        self.assertIn("radio station or recording keeps its own level", volume.DECLARATION["description"])
 
     def test_tool_can_be_switched_off(self):
         with patch.dict(os.environ, {"BAYMAX_VOICE_VOLUME_TOOL": "0"}):

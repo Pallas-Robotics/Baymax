@@ -6,13 +6,20 @@ the new level. Level 7 is the original loudness, so nothing changes until someon
 asks. Levels above 7 add gain with a soft limiter instead of hard clipping; the
 lowest level is 1, never mute, so a fall check-in can't be silenced by accident.
 
-Only Ember's voice (Gemini's replies and the waiting cue) is scaled, before the
-echo canceller's reference, so echo cancellation keeps matching what is played.
-Audiobooks, radio and recordings keep their own volume (the audiobook and listen
-tools). The level is saved on the robot (voice_volume.json in BAYMAX_DATA_DIR) and
-survives restarts; BAYMAX_VOICE_VOLUME (1-10) sets the level before anyone has
-changed it. Nothing is sent anywhere and no device is opened: the speaker stream is
-the existing one.
+Where the speaker is an ALSA card PortAudio opens directly (the Orange Pi's USB
+speaker), the level moves the speaker's own hardware volume instead
+(pc_hardware.speaker_mixer, through amixer): 3 dB a level, 10 the speaker's loudest,
+and Ember's voice is not scaled, so nothing is limited or clipped. That turns up
+everything the speaker plays; audiobooks, radio and recordings still keep their own
+level within it (the audiobook and listen tools). Without one (macOS, Windows,
+PipeWire/Pulse devices) only Ember's voice (Gemini's replies and the waiting cue) is
+scaled, before the echo canceller's reference, so echo cancellation keeps matching
+what is played. The level is saved on the robot (voice_volume.json in
+BAYMAX_DATA_DIR) and survives restarts, and a saved level is set on the speaker again
+at start (a reboot restores the card's own setting); BAYMAX_VOICE_VOLUME (1-10) sets
+the level before anyone has changed it. With neither, a speaker's own volume is read
+as the starting level, so nothing changes until someone asks. Nothing is sent
+anywhere and no audio device is opened: the speaker stream is the existing one.
 """
 import copy
 import json
@@ -29,10 +36,11 @@ LEVELS = range(1, 11)
 # Gain per level: 7 is unchanged; each step is clearly audible (about 1.5-3.5 dB).
 GAINS = {1: 0.2, 2: 0.3, 3: 0.4, 4: 0.55, 5: 0.7, 6: 0.85, 7: 1.0, 8: 1.25, 9: 1.5, 10: 2.0}
 LIMIT = 0.7 * 32767  # The soft limiter starts here; it never reaches full scale.
+STEP_DB = 3.0  # per level on a speaker's own volume; 10 is the speaker's loudest
 
 DECLARATION = {
     "name": NAME,
-    "description": "Change how loud Ember's own voice is (not an audiobook's, radio's or recording's), or report it.",
+    "description": "Change how loud Ember speaks (the speaker's own volume where the robot has one; an audiobook, radio station or recording keeps its own level within it), or report it.",
     "parameters": {"type": "OBJECT", "properties": {
         "change": {"type": "STRING", "enum": ["louder", "quieter", "default", "status"],
                    "description": "Relative change, back to the usual level, or just report it."},
@@ -70,22 +78,47 @@ class VoiceVolume:
     def __init__(self, path=None):
         self.path = Path(path) if path else _path()
         self.lock = threading.Lock()
-        self.level = self._load()
+        self.level, self.chosen = self._load()  # chosen: saved or BAYMAX_VOICE_VOLUME, not the default
+        self.mixer = None  # the speaker's own volume (use_mixer), or None to scale the voice
         self._applied = GAINS[self.level]  # gain at the end of the last block played
 
     def _load(self):
         try:
             data = json.loads(self.path.read_text(encoding="utf-8"))
-            return _level(data["level"])
+            return _level(data["level"]), True
         except FileNotFoundError:
             pass
         except (OSError, ValueError, TypeError, KeyError) as error:
             print(f"[VOLUME] Ignoring unreadable {self.path.name} ({error}).", flush=True)
         try:
-            return _level(os.getenv("BAYMAX_VOICE_VOLUME", DEFAULT_LEVEL))
+            return _level(os.getenv("BAYMAX_VOICE_VOLUME", DEFAULT_LEVEL)), "BAYMAX_VOICE_VOLUME" in os.environ
         except (TypeError, ValueError):
             print("[VOLUME] Invalid BAYMAX_VOICE_VOLUME; using 7.", flush=True)
-            return DEFAULT_LEVEL
+            return DEFAULT_LEVEL, False
+
+    def _db(self, level):
+        return self.mixer.loud_db - STEP_DB * (10 - level)
+
+    def use_mixer(self, mixer):
+        """Move the speaker's own volume (a pc_hardware.SpeakerMixer) instead of scaling
+        Ember's voice. A saved or configured level is set on it; otherwise its present
+        volume becomes the level, so nothing changes until someone asks. None, or a mixer
+        that fails, keeps scaling the voice."""
+        if mixer is None:
+            return
+        with self.lock:
+            previous, self.mixer = self.mixer, mixer
+            try:
+                if self.chosen:
+                    mixer.set_db(self._db(self.level))
+                else:
+                    self.level = int(min(10, max(1, round(10 - (mixer.loud_db - mixer.get_db()) / STEP_DB))))
+            except RuntimeError as error:
+                self.mixer = previous
+                print(f"[VOLUME] The speaker's own volume is unavailable ({error}); scaling Ember's voice.", flush=True)
+                return
+        print(f"[VOLUME] Ember's volume is the speaker's own (card {mixer.card}, {mixer.control}): "
+              f"level {self.level} of 10, {self._db(self.level):.1f} dB.", flush=True)
 
     def _save(self):
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -122,7 +155,14 @@ class VoiceVolume:
             elif change != "status":
                 return {"error": "Expected change (louder, quieter, default or status) or a level"}
             result = {**self.status(), "changed": self.level != before}
+            if self.level != before and self.mixer is not None:
+                try:
+                    result["speaker_db"] = round(self.mixer.set_db(self._db(self.level)), 1)
+                except RuntimeError as error:  # scale the voice from now on instead
+                    print(f"[VOLUME] Could not set the speaker's volume ({error}); scaling Ember's voice.", flush=True)
+                    self.mixer = None
             if self.level != before:
+                self.chosen = True
                 try:
                     self._save()
                 except OSError as error:
@@ -132,8 +172,9 @@ class VoiceVolume:
             return result
 
     def apply(self, chunk):
-        """Scale one block of Ember's int16 voice. Runs on the speaker callback."""
-        target = GAINS[self.level]
+        """Scale one block of Ember's int16 voice. Runs on the speaker callback. With the
+        speaker's own volume in use the voice is left as it is."""
+        target = 1.0 if self.mixer is not None else GAINS[self.level]
         start = self._applied
         self._applied = target
         if start == target == 1.0 or not chunk:

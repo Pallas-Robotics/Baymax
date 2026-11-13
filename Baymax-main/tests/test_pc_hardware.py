@@ -511,3 +511,86 @@ class BigLittleCpuTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+CONTROLS = """numid=2,iface=MIXER,name='PCM Playback Switch'
+numid=3,iface=MIXER,name='PCM Playback Volume'
+numid=1,iface=PCM,name='Playback Channel Map'
+"""
+CGET = """numid=3,iface=MIXER,name='PCM Playback Volume'
+  ; type=INTEGER,access=rw---R--,values=2,min=0,max=147,step=0
+  : values=59,59
+  | dBminmax-min=-28.37dB,max=-0.94dB
+"""
+SGET = """Simple mixer control 'PCM',0
+  Capabilities: pvolume pswitch pswitch-joined
+  Playback channels: Front Left - Front Right
+  Limits: Playback 0 - 147
+  Mono:
+  Front Left: Playback 59 [40%] [-17.37dB] [on]
+  Front Right: Playback 59 [40%] [-17.37dB] [on]
+"""
+
+
+class SpeakerMixerTests(unittest.TestCase):
+    """The speaker's own volume through amixer, from the Orange Pi 5 Max's USB speaker."""
+
+    def setUp(self):
+        env = patch.dict(os.environ, {}, clear=False)
+        env.start()
+        self.addCleanup(env.stop)
+        os.environ.pop("BAYMAX_SPEAKER_MIXER", None)
+        self.calls = []
+        printed = patch("builtins.print")
+        printed.start()
+        self.addCleanup(printed.stop)
+
+    def amixer(self, args):
+        self.calls.append(args)
+        if args[-1] == "controls":
+            return CONTROLS
+        if args[2] == "cget":
+            return CGET
+        if args[2] == "sget":
+            return SGET
+        return ""
+
+    def mixer(self, name="UACDemoV1.0: USB Audio (hw:4,0)", platform="linux"):
+        with patch.object(pc_hardware.sys, "platform", platform):
+            return pc_hardware.speaker_mixer(name, run=self.amixer)
+
+    def test_finds_the_cards_playback_volume_and_its_db_range(self):
+        mixer = self.mixer()
+        self.assertEqual((mixer.card, mixer.control, mixer.low_db, mixer.loud_db, mixer.switch),
+                         (4, "PCM", -28.37, -0.94, True))
+        self.assertEqual(mixer.get_db(), -17.37)
+        self.assertEqual(mixer.set_db(-9.94), -9.94)
+        self.assertEqual(self.calls[-1], ["-q", "-c", "4", "sset", "PCM", "--", "-9.94dB", "unmute"])
+        self.assertEqual(mixer.set_db(5), -0.94)  # never past the card's range
+        self.assertEqual(mixer.set_db(-90), -28.37)
+
+    def test_none_where_portaudio_does_not_open_an_alsa_card(self):
+        self.assertIsNone(self.mixer(platform="darwin"))
+        self.assertIsNone(self.mixer("pipewire"))  # PipeWire/Pulse: no (hw:N,M)
+        self.assertIsNone(self.mixer("Speakers (Realtek(R) Audio)", platform="linux"))
+        os.environ["BAYMAX_SPEAKER_MIXER"] = "off"
+        self.assertIsNone(self.mixer())
+        self.assertEqual(self.calls, [])  # nothing is run then
+
+    def test_none_when_amixer_fails_or_the_control_has_no_db_scale(self):
+        def missing(args):
+            raise RuntimeError("amixer: [Errno 2] No such file or directory")
+        with patch.object(pc_hardware.sys, "platform", "linux"):
+            self.assertIsNone(pc_hardware.speaker_mixer("X (hw:4,0)", run=missing))
+            no_scale = lambda args: CONTROLS if args[-1] == "controls" else "  : values=59,59\n"
+            self.assertIsNone(pc_hardware.speaker_mixer("X (hw:4,0)", run=no_scale))
+
+    def test_a_named_control_and_a_db_step_scale(self):
+        controls = "numid=5,iface=MIXER,name='Master Playback Volume'\nnumid=3,iface=MIXER,name='PCM Playback Volume'\n"
+        cget = "  ; type=INTEGER,access=rw---R--,values=2,min=0,max=30,step=0\n  | dBscale-min=-12.00dB,step=1.50dB,mute=0\n"
+        run = lambda args: controls if args[-1] == "controls" else cget
+        os.environ["BAYMAX_SPEAKER_MIXER"] = "Master"
+        with patch.object(pc_hardware.sys, "platform", "linux"):
+            mixer = pc_hardware.speaker_mixer("X (hw:2,0)", run=run)
+        self.assertEqual((mixer.card, mixer.control, mixer.low_db, mixer.loud_db, mixer.switch),
+                         (2, "Master", -12.0, 33.0, False))

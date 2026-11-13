@@ -391,3 +391,89 @@ def select_audio_devices(sd):
                             samplerate=48000, dtype="int16")
     sd.check_output_settings(device=chosen[1], channels=1, samplerate=48000, dtype="int16")
     return tuple(chosen)
+
+
+# ─── The speaker's own volume (Linux/ALSA) ────────────────────────────────────
+# Playback volume controls tried in this order; others on the card come after them.
+SPEAKER_CONTROLS = ("PCM", "Master", "Speaker", "Headphone")
+
+
+def _amixer(args, timeout=2.0):
+    """amixer's output; RuntimeError when amixer is missing, fails or hangs."""
+    import subprocess
+    try:
+        done = subprocess.run(["amixer", *args], capture_output=True, text=True, timeout=timeout)
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise RuntimeError(f"amixer: {error}") from None
+    if done.returncode != 0:
+        raise RuntimeError(f"amixer {' '.join(args)}: {(done.stderr or done.stdout).strip()[:200]}")
+    return done.stdout
+
+
+def _db_range(cget):
+    """(lowest, loudest) dB of a volume control, from `amixer cget` of it, or None."""
+    span = re.search(r"dB(?:minmax|linear)-min=(-?[\d.]+)dB,max=(-?[\d.]+)dB", cget)
+    if span:
+        return float(span.group(1)), float(span.group(2))
+    scale = re.search(r"dBscale-min=(-?[\d.]+)dB,step=([\d.]+)dB", cget)
+    steps = re.search(r"min=(-?\d+),max=(-?\d+)", cget)
+    if scale and steps:
+        low, step = float(scale.group(1)), float(scale.group(2))
+        return low, low + step * (int(steps.group(2)) - int(steps.group(1)))
+    return None
+
+
+class SpeakerMixer:
+    """The playback volume of the ALSA card Ember's speaker is on, set through amixer: no
+    root, no extra audio stream. Made by speaker_mixer()."""
+
+    def __init__(self, card, control, low_db, loud_db, switch=False, run=None):
+        self.card, self.control = card, control
+        self.low_db, self.loud_db = low_db, loud_db
+        self.switch = switch  # the control has an on/off switch: set_db turns it on
+        self._run = run or _amixer
+
+    def get_db(self):
+        values = re.findall(r"\[(-?\d+(?:\.\d+)?)dB\]", self._run(["-c", str(self.card), "sget", self.control]))
+        if not values:
+            raise RuntimeError(f"no dB reading for {self.control} on card {self.card}")
+        return max(float(v) for v in values)  # the louder channel
+
+    def set_db(self, db):
+        """Set every channel to `db`, within the control's range; returns what was set."""
+        db = min(self.loud_db, max(self.low_db, db))
+        self._run(["-q", "-c", str(self.card), "sset", self.control, "--", f"{db:.2f}dB",
+                   *(["unmute"] if self.switch else [])])
+        return db
+
+
+def speaker_mixer(device_name, run=None):
+    """The hardware volume of the speaker PortAudio names `device_name`, e.g. "UACDemoV1.0:
+    USB Audio (hw:4,0)", as a SpeakerMixer, or None: not Linux, not a card PortAudio opens
+    directly (PipeWire/Pulse devices, macOS, Windows), BAYMAX_SPEAKER_MIXER=off, or no
+    playback volume with a dB scale of at least 6 dB. BAYMAX_SPEAKER_MIXER=<name> picks the
+    control by its simple name ("PCM", "Master", ...)."""
+    setting = os.getenv("BAYMAX_SPEAKER_MIXER", "").strip()
+    if not sys.platform.startswith("linux") or setting.lower() in ("0", "off", "no", "false"):
+        return None
+    card = re.search(r"\(hw:(\d+),\d+\)$", device_name or "")
+    if not card:
+        return None
+    card = card.group(1)
+    run = run or _amixer
+    try:
+        controls = run(["-c", card, "controls"])
+        names = re.findall(r"name='(.+?) Playback Volume'", controls)
+        wanted = [setting] if setting else (
+            [c for c in SPEAKER_CONTROLS if c in names] + [n for n in names if n not in SPEAKER_CONTROLS])
+        for control in wanted:
+            if control not in names:
+                continue
+            span = _db_range(run(["-c", card, "cget", f"name={control} Playback Volume"]))
+            if span is None or span[1] - span[0] < 6:
+                continue
+            return SpeakerMixer(int(card), control, *span, run=run,
+                                switch=f"name='{control} Playback Switch'" in controls)
+    except RuntimeError as error:
+        print(f"[VOLUME] The speaker's own volume is unavailable ({error}).", flush=True)
+    return None
