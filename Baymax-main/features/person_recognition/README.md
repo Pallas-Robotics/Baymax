@@ -11,7 +11,7 @@ costs the conversation nothing.
 |---|---|---|
 | Face models (YuNet detection, SFace 128-d embeddings; OpenCV DNN) | `face_process.FaceChild`, a child process on the slow cores (cpu0-3 on the RK3588), nice 10, one OpenCV thread | none: the capture loop only stores a frame reference (`frame_observers`) |
 | Face tracking, voting, learning, the people file | `faces.FaceIdentifier` in Ember's process, 2 frames a second, its own thread | small numpy work; a frame crosses the pipe once per cycle (4.1 ms round trip on a Mac vs 3.9 ms in process) |
-| Voice models (Silero VAD, ECAPA-TDNN 192-d embeddings; ONNX Runtime, 2 threads) | `voice_process.VoiceChild`, a child process on the slow cores, nice 10 | the mic callback appends each 20 ms block to a bounded deque (~34 µs on a Mac); a feeder thread ships batches every 0.25 s |
+| Voice models (Silero VAD, ECAPA-TDNN 192-d embeddings; ONNX Runtime, 3 threads) | `voice_process.VoiceChild`, a child process on the slow cores, nice 10 | the mic callback appends each 20 ms block to a bounded deque (~34 µs on a Mac); a feeder thread ships batches every 0.25 s |
 | Telling Gemini | tools (`who_is_here`, `identify_speaker`) answered from the latest results without waiting on a model; spoken prompts (`[ARRIVED]`, `[NEW PERSON]`, `[VOICE LEARNED]`) only when Ember is free to talk | no mid-turn notes |
 
 Why not as the PRs did it: both ran their models in Ember's own process (a face thread,
@@ -39,9 +39,13 @@ The voice models are PR #36's own, on ONNX Runtime (already installed for memory
   (`voices.power_spectrogram`). Our Silero port matched the package frame for frame.
 - 8-bit quantisation was tried and dropped: slower on ARM with ONNX Runtime's
   ConvInteger, and it moved scores by up to 0.025.
-- Identification uses at most `MAX_ID_SECONDS` (5 s) of an utterance, bounding the
-  work on the slow cores; PR #36 calibrated on 3-4 s clips. Speed on an M-series Mac,
-  2 threads: about 45 ms per second of speech.
+- Identification uses at most `MAX_ID_SECONDS` (4 s) of an utterance, bounding the
+  work on the slow cores; PR #36 calibrated on 3-4 s clips.
+- Measured on the Orange Pi 5 Max's slow cores (cpu0-3, nice 10), 2026-11-13: ECAPA 3 s
+  of speech 2.73 s on 1 thread, 1.35 s on 2, 0.93 s on 3 (used), 0.73 s on 4; Silero VAD
+  1.4 ms per 32 ms frame (~4% of one core while listening); YuNet 55 ms per frame at
+  half scale (2 frames a second: ~11% of one core); SFace 234 ms per face, only for a
+  new face or a recheck every 3 s.
 
 ## Models
 

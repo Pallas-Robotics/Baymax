@@ -30,7 +30,7 @@ MODEL_DIR = os.path.join(ROOT, ".models", "voice")
 MODEL_SOURCE = "speechbrain/spkrec-ecapa-voxceleb"
 ECAPA_FILE = "ecapa_voxceleb.onnx"
 VAD_FILE = "silero_vad.onnx"
-ONNX_THREADS = 2              # on the slow cores: leave the other two for the face child
+ONNX_THREADS = 3              # on the slow cores (board: 3 s of speech 2.7 s on 1, 0.93 s on 3)
 
 SAMPLE_RATE = 16000           # what the model expects
 EMBED_DIM = 192
@@ -41,7 +41,7 @@ N_FFT, HOP = 400, 160         # SpeechBrain's Fbank: 25 ms window, 10 ms hop, ce
 SURE_THRESHOLD = 0.40         # confident: "Stella is speaking"
 MAYBE_THRESHOLD = 0.25        # "might be Stella" — ask before assuming
 MIN_SECONDS = 1.0             # shorter speech is too little to go on
-MAX_ID_SECONDS = 5.0          # identify on at most this much of an utterance (speed)
+MAX_ID_SECONDS = 4.0          # identify on at most this much of an utterance (speed)
 ENROLL_MIN_SECONDS = 2.0      # enrollment clips must be at least this long
 MAX_VOICE_SAMPLES = 20        # per person; the most redundant sample is dropped
 # A new sample must resemble the person's existing voiceprint, so one wrong
