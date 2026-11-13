@@ -274,6 +274,15 @@ class ToolTests(unittest.TestCase):
         self.people.execute("remember_person", {"name": "Stella"})
         self.assertEqual(identifier.tool_calls, [("remember_person", {"name": "Stella"})])
 
+    def test_voice_results_are_logged_without_words(self):
+        from io import StringIO
+        out = StringIO()
+        with patch("sys.stdout", out):
+            people_module.log_voice_result({"level": "maybe", "name": "Stella", "score": 0.31, "stage": "final",
+                                            "seconds": 3.2, "ms": 950})
+        self.assertEqual(out.getvalue().strip(),
+                         "[VOICE] might be Stella (score 0.31, final, 3.2 s of speech, 950 ms)")
+
     def test_answers_and_prompts(self):
         self.assertEqual(speaker_answer(None)["speaker"], None)
         self.assertEqual(speaker_answer({"level": "unknown"})["speaker"], None)

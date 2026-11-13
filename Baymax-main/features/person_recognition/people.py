@@ -126,6 +126,14 @@ def speaker_answer(result):
     return {"speaker": None, "note": "You don't recognize this voice. If it matters, ask who they are."}
 
 
+def log_voice_result(result):
+    """One log line per identification, as PR #36 printed (who and timing, never words)."""
+    who = result.get("name") if result["level"] == "sure" else (
+        f"might be {result.get('name')}" if result["level"] == "maybe" else result["level"])
+    print(f"[VOICE] {who} (score {result['score']:.2f}, {result['stage']}, {result['seconds']:.1f} s of speech, "
+          f"{result['ms']} ms)", flush=True)
+
+
 def _voice_remote(sample_rate):
     from features.person_recognition.voice_process import CALL_TIMEOUT_S, VoiceChild
     return Remote(functools.partial(VoiceChild, sample_rate, faces.PEOPLE_PATH), timeout=CALL_TIMEOUT_S)
@@ -171,7 +179,7 @@ class People:
         if voice_enabled():
             from features.person_recognition.voice_process import VoiceFeed
             self.voice = VoiceFeed(functools.partial(_voice_remote, self.sample_rate),
-                                   on_learned=self._voice_learned).start()
+                                   on_result=log_voice_result, on_learned=self._voice_learned).start()
             print("[PEOPLE] Voice recognition started (own process, slow cores)", flush=True)
         elif enabled() and os.getenv("BAYMAX_VOICE_RECOGNITION", "1") != "0":
             print(f"[PEOPLE] Voice recognition off: no models in {voices.MODEL_DIR}", flush=True)
