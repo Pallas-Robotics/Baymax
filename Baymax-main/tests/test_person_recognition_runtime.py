@@ -269,6 +269,19 @@ class ToolTests(unittest.TestCase):
         self.people.identifier.in_view = []
         self.assertEqual(self.people.execute("remember_voice", {"name": "Stella"})["status"], "listening")
 
+    def test_no_saving_under_a_placeholder_name(self):
+        self.people.identifier = identifier = FakeIdentifier(known={"Stella": {"id": "p_1", "name": "Stella"}},
+                                                             in_view=["Stella"])
+        self.people.voice = voice = FakeVoice()
+        for name in ("User", "the user", " someone ", "Unknown.", "", None, "me"):
+            with self.subTest(name=name):
+                self.assertEqual(self.people.execute("remember_person", {"name": name})["status"], "not_saved")
+                self.assertEqual(self.people.execute("remember_voice", {"name": name})["status"], "not_saved")
+        self.assertEqual(identifier.tool_calls, [])
+        self.assertEqual(voice.learning, [])
+        self.people.execute("remember_person", {"name": "Useria"})       # a real name that starts like one
+        self.assertEqual(identifier.tool_calls, [("remember_person", {"name": "Useria"})])
+
     def test_face_tools_go_to_the_identifier(self):
         self.people.identifier = identifier = FakeIdentifier()
         self.people.execute("remember_person", {"name": "Stella"})

@@ -58,7 +58,8 @@ say yes, call remember_person with that name so you recognize them better.
 A message starting with [ARRIVED] means someone you know just came into view: greet them
 warmly by name, briefly. [NEW PERSON] means someone you don't recognize has been in front
 of you for a while: greet them, say you're Ember, ask their name, and ask whether it's
-okay to remember their face. Only if they clearly say yes, call remember_person. If they
+okay to remember their face. Only if they clearly say yes, and only once they have told
+you their name, call remember_person with that name. If they
 say no, call decline_to_be_remembered and don't ask again (if they later say yes
 themselves, call remember_person with changed_mind true).
 If someone asks you to learn their voice, first ask whether it's okay. Only if they
@@ -81,6 +82,16 @@ def voice_enabled():
 
 def greetings_enabled():
     return os.getenv("BAYMAX_PEOPLE_GREETINGS", "1") != "0"
+
+
+PLACEHOLDER_NAMES = {"", "user", "the user", "person", "the person", "someone", "somebody", "unknown",
+                     "unknown person", "stranger", "guest", "friend", "visitor", "me", "you", "them",
+                     "him", "her", "name", "their name", "your name", "ember", "human", "new person"}
+
+
+def placeholder_name(name):
+    """A name Gemini used without being told one ("User", "the person", ...)."""
+    return " ".join(str(name or "").lower().strip(" .,!?'\"").split()) in PLACEHOLDER_NAMES
 
 
 def describe_away(seconds):
@@ -225,6 +236,12 @@ class People:
         identifier = self.identifier
         if identifier is None:
             return {"error": "Recognizing people isn't ready yet. Ask who they are."}
+        if name in ("remember_person", "remember_voice") and placeholder_name((args or {}).get("name")):
+            # Seen on the board: "Can you remember my face?" -> remember_person(name="User")
+            # in the same breath as "What is your name?".
+            return {"status": "not_saved",
+                    "reason": "You don't know their name yet. Ask their name, then call this again "
+                              "with the name they tell you."}
         if name == "who_is_here":
             speaker = self.voice.speaker(wait=0.0) if self.voice else None
             return {"in_front_of_you": identifier.describe_in_view(),
