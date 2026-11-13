@@ -200,13 +200,15 @@ class VoiceLearningFromConversationTests(unittest.TestCase):
         from features.person_recognition import voices
         child = voice_process.VoiceChild.__new__(voice_process.VoiceChild)
         added = []
+        thresholds = self.thresholds = []
 
         class Identifier:
             def has_voice(self, person_id):
                 return has_voice
 
-            def add_samples(self, person_id, embeddings, check_consistency=True):
+            def add_samples(self, person_id, embeddings, check_consistency=True, threshold=None):
                 added.append((person_id, len(embeddings), check_consistency))
+                thresholds.append(threshold)
                 return len(embeddings)
         child.identifier, child.results, child.learned, child.adopted = Identifier(), [], [], []
         child.recent, child.pending, child.next_id = __import__("collections").OrderedDict(), {}, 0
@@ -235,13 +237,31 @@ class VoiceLearningFromConversationTests(unittest.TestCase):
         self.assertEqual(added, [])
         self.assertIn("don't sound like one person", child.adopted[-1]["note"])
 
-    def test_later_clips_go_through_the_voice_check(self):
+    def test_later_clips_go_through_the_stricter_voice_check(self):
         from features.person_recognition import voices
         child, added, voice = self.child(has_voice=True)
         child._result(voices.VoiceMatch("maybe", embedding=voice(), seconds=2.5), "final")
         child._adopt("p_1", child.next_id)
         child._adopt("p_1", 999)                          # unknown id: nothing
         self.assertEqual(added, [("p_1", 1, True)])
+        self.assertEqual(self.thresholds, [voices.ADOPT_MATCH])
+
+    def test_a_first_voice_is_found_among_other_peoples_clips(self):
+        """A group conversation: the person in view and two others off camera take turns.
+        Only the clips of the one speaker heard most are saved."""
+        import numpy as np
+        from features.person_recognition import voices
+        child, added, voice = self.child()
+        rng = np.random.default_rng(2)
+        stranger = lambda: voices._normalize(rng.normal(size=192))
+        saved = []
+        child.identifier.add_samples = lambda pid, embeddings, check_consistency=True, threshold=None: (
+            saved.extend(embeddings) or len(embeddings))
+        for embedding in (voice(), stranger(), voice(), stranger(), voice()):
+            child._result(voices.VoiceMatch("unknown", embedding=embedding, seconds=2.5), "final")
+            child._adopt("p_1", child.next_id)
+        self.assertEqual(len(saved), 3)
+        self.assertTrue(all(float(e @ saved[0]) > 0.8 for e in saved))
 
     def test_only_final_results_are_kept_for_learning(self):
         from features.person_recognition import voices
@@ -269,6 +289,17 @@ class VoiceLearningFromConversationTests(unittest.TestCase):
                 people.identifier.tracks = tracks
                 people._voice_result(case)
                 self.assertEqual(adopted, expected)
+        sure = {**result, "level": "sure", "person_id": "p_1", "name": "Joe", "score": 0.5}
+        with patch("builtins.print"):
+            adopted.clear()
+            people.identifier.tracks = [SimpleNamespace(person_id="p_1")]
+            people.clock.now += 61                         # the cases above offered a clip just now
+            people._voice_result({**sure, "id": 8})
+            people.clock.now += 30
+            people._voice_result({**sure, "id": 9})       # sampled at most once a minute
+            people.clock.now += 31
+            people._voice_result({**sure, "id": 10})
+            self.assertEqual(adopted, [("p_1", 8), ("p_1", 10)])
         with patch.dict(os.environ, {"BAYMAX_VOICE_LEARNING": "0"}), patch("builtins.print"):
             adopted.clear()
             people.identifier.tracks = [SimpleNamespace(person_id="p_1")]
@@ -432,6 +463,27 @@ class ToolTests(unittest.TestCase):
                                             "seconds": 3.2, "ms": 950})
         self.assertEqual(out.getvalue().strip(),
                          "[VOICE] might be Stella (score 0.31, final, 3.2 s of speech, 950 ms)")
+
+    def test_a_maybe_voice_with_the_same_face_in_view_is_sure(self):
+        maybe = {"level": "maybe", "person_id": "p_1", "name": "Joe", "score": 0.3}
+        self.assertEqual(speaker_answer(maybe)["confidence"], "not sure")
+        self.assertEqual(speaker_answer(maybe, face="p_2")["confidence"], "not sure")
+        self.assertEqual(speaker_answer(maybe, face="p_1"),
+                         {"speaker": "Joe", "confidence": "sure", "by": "voice and face"})
+
+    def test_memories_that_say_who_the_user_is_are_left_out(self):
+        lines = ["The user's name is Nadi.", "User's name is Nadi.", "The user is called Joe.",
+                 "The speaker introduced himself as Joe."]
+        kept = ["Joe is preparing a demo for tomorrow.", "The user is tired tonight.",
+                "The user's friend's name is James."]
+        with patch.dict(os.environ, {"BAYMAX_PEOPLE_RECOGNITION": "1"}):
+            self.assertEqual([t for t in lines + kept if not people_module.identity_memory(t)], kept)
+        with patch.dict(os.environ, {"BAYMAX_PEOPLE_RECOGNITION": "0"}):
+            self.assertFalse(any(people_module.identity_memory(t) for t in lines))
+        source = (ROOT / "realtime_gemini_10.py").read_text()
+        self.assertEqual(source.count("person_recognition.identity_memory("), 3)   # prompt, recall, summary
+        self.assertIn("person_recognition.SUMMARY_NOTE", source)
+        self.assertIn("person_recognition.MEMORY_NOTE", source)
 
     def test_answers_and_prompts(self):
         self.assertEqual(speaker_answer(None)["speaker"], None)

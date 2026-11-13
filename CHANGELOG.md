@@ -1,5 +1,19 @@
 # MVP (unreleased)
 
+- People recognition keeps names straight in a group (board test, 2026-11-13: Ember
+  stopped recognising Joe's voice and called him and others "Nadi").
+  - Learning a voice from conversation now keeps only clips that clearly sound like the
+    person in view (first voice: three clips agreeing by 0.45; later: 0.38 against their
+    stored voice). At PR #36's 0.25, Joe's voice had taken in other people's clips.
+    Voices saved under the old rules are rechecked once at start; on the board Joe's
+    kept 4 of 11 clips.
+  - Memory lines such as "The user's name is Nadi" are left out of Gemini's prompt and
+    recalls, and not saved again, while people are recognised: they made Gemini call
+    whoever was talking Nadi.
+  - `identify_speaker` is "sure" when a "might be" voice belongs to the only face in
+    view; `remember_person` for someone already in view answers `already_known`.
+  - Tests in `tests/test_person_recognition_*.py`.
+
 - Ember keeps hearing people when its USB mic's stream slips a byte. On the Orange
   Pi 5 Max on 2026-11-13, after a mic input overflow, every 16-bit sample read was half
   of one sample and half of the next. A quiet room read as constant near-full-scale hiss
@@ -26,7 +40,7 @@
     `convert_voice_model.py` makes the files on a computer with PyTorch and checked them
     against SpeechBrain: cosine 1.000000 at 1-15 s, so PR #36's thresholds hold. Silero
     matched frame for frame. 8-bit quantisation was slower on ARM and moved scores, so
-    it isn't used. Identification uses at most 5 s of an utterance.
+    it isn't used. Identification uses at most 4 s of an utterance.
   - Gemini is never sent notes mid-turn: the PRs' `[SELF]`, `[MEMORY CONTEXT]` and
     `[SPEAKER]` notes are replaced by tools (`who_is_here`, `identify_speaker`) answered
     from the latest results. `[ARRIVED]`, `[NEW PERSON]` and `[VOICE LEARNED]` are spoken

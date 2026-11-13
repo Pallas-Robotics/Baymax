@@ -488,6 +488,18 @@ class ToolTests(Base):
         self.assertEqual(self.ident.describe_in_view(), "Dave (Margaret's neighbor) is in front of you.")
         self.assertIsNone(self.ident.pending_introduction())
 
+    def test_remember_someone_already_known_and_in_view(self):
+        """Board, 2026-11-13: Gemini asked to remember Nadi (with changed_mind) while Nadi
+        was recognised in view, and was told about someone who had said no."""
+        x = identity()
+        self.meet(x)
+        self.ident.handle_tool_call("remember_person", {"name": "Dave"})
+        for changed_mind in (False, True):
+            result = self.ident.handle_tool_call("remember_person",
+                                                 {"name": "dave", "changed_mind": changed_mind})
+            self.assertEqual((result["status"], result["name"]), ("already_known", "Dave"))
+        self.assertEqual(len(self.store.people()), 1)
+
     def test_household_name_links_relationship(self):
         self.enroll("Margaret", identity())
         self.meet(identity())

@@ -48,6 +48,15 @@ MAX_VOICE_SAMPLES = 20        # per person; the most redundant sample is dropped
 # sample (someone else talking) can't creep in. Placeholder, not calibrated
 # yet: set at the "maybe" threshold.
 VOICE_CONSISTENCY = 0.25
+# Learning from conversation (the person's face is the only one in view, but anyone in
+# the room may be the one talking) needs more than that. Measured on the Orange Pi 5
+# Max's USB mic, 2026-11-13: clips of one speaker resembled the average of the others
+# by 0.43-0.46; other people's clips scored 0.08-0.28 against that speaker. At 0.25 a
+# profile learned during a group conversation took in several voices (pairwise
+# similarity down to -0.03) and then matched nobody well.
+ADOPT_CONSISTENCY = 0.45      # a first voice: clips that agree this well (leave one out)
+ADOPT_MATCH = 0.38            # a later clip: this close to their stored voice
+VOICE_RULES = 2               # stored as "voice_rules": voices kept under the rules above
 MAX_NAME = 60
 
 
@@ -236,7 +245,7 @@ class VoiceIdentifier:
         person_id = self._create_person(name, embeddings, relationship)
         return {"status": "saved", "person_id": person_id, "added": len(embeddings), "created": True}
 
-    def add_samples(self, person_id, embeddings, check_consistency=True):
+    def add_samples(self, person_id, embeddings, check_consistency=True, threshold=VOICE_CONSISTENCY):
         """Add voice samples to an existing person (by id; never creates one,
         so a person deleted meanwhile stays deleted). With check_consistency,
         only samples that sound like their stored voice are kept. Also used for
@@ -252,12 +261,14 @@ class VoiceIdentifier:
             stored = [np.asarray(e, np.float32) for e in person.get(VOICE_KEY) or []]
             voiceprint = _normalize(np.mean(stored, axis=0)) if stored else None
             keep = [e for e in embeddings if not check_consistency or voiceprint is None
-                    or float(voiceprint @ e) >= VOICE_CONSISTENCY]
+                    or float(voiceprint @ e) >= threshold]
             if keep:
                 person[VOICE_KEY] = [[round(float(v), 5) for v in e]
                                      for e in _keep_diverse(stored + keep, MAX_VOICE_SAMPLES)]
                 person["voice_consent"] = True
                 person["voice_updated"] = now
+                if threshold >= ADOPT_MATCH or not stored:
+                    person.setdefault("voice_rules", VOICE_RULES)
             return len(keep)
 
         return self.store._update(change)
@@ -282,6 +293,31 @@ class VoiceIdentifier:
             return person["id"]
 
         return self.store._update(change)
+
+    def recheck_voices(self):
+        """Voices saved before VOICE_RULES (learned from conversation under the loose 0.25
+        check) are checked once: only the clips of one speaker are kept
+        (consistent_core); a voice with no such core is removed, to be learned again.
+        Returns [(name, kept, before)] for each voice checked."""
+        report = []
+
+        def change(data):
+            for p in data["people"]:
+                samples = p.get(VOICE_KEY) or []
+                if not samples or p.get("voice_rules", 0) >= VOICE_RULES:
+                    continue
+                core = consistent_core(samples) if len(samples) >= 3 else []
+                report.append((p["name"], len(core), len(samples)))
+                if core:
+                    p[VOICE_KEY] = [samples[i] for i in core]
+                    p["voice_rules"] = VOICE_RULES
+                else:
+                    for key in (VOICE_KEY, "voice_consent", "voice_updated", "voice_rules"):
+                        p.pop(key, None)
+            return bool(report)
+
+        self.store._update(change)
+        return report
 
     # ── Forget ───────────────────────────────────────────────────────────────
     def forget_voice(self, person_id):
@@ -320,6 +356,23 @@ def _consistent_set(embeddings):
         if float(others @ m[i]) < VOICE_CONSISTENCY:
             return False
     return True
+
+
+def consistent_core(embeddings, threshold=ADOPT_CONSISTENCY, min_size=3):
+    """Indices of the clips that sound like one speaker: the clip least like the average
+    of the others is dropped until every clip resembles that average by `threshold`.
+    [] when fewer than `min_size` clips are left."""
+    m = np.array([_normalize(e) for e in embeddings])
+    idx = list(range(len(m)))
+    while len(idx) >= min_size:
+        part = m[idx]
+        scores = [float(_normalize(np.delete(part, j, axis=0).mean(axis=0)) @ part[j])
+                  for j in range(len(idx))]
+        worst = int(np.argmin(scores))
+        if scores[worst] >= threshold:
+            return idx
+        idx.pop(worst)
+    return []
 
 
 def _keep_diverse(samples, limit):

@@ -1104,6 +1104,14 @@ class FaceIdentifier:
         name = clean_name(self._canonical_name(name))
         now = self._clock()
         with self._lock:
+            # Already known and in view (Gemini sometimes asks again, even with
+            # changed_mind): say so instead of a refusal about someone saying no.
+            existing = self.store.find_by_name(name)
+            if existing and any(t.person_id == existing["id"] and now - t.last_seen <= IN_VIEW_SECONDS
+                                for t in self._tracks):
+                return {"status": "already_known", "name": existing["name"],
+                        "note": f"You already know {existing['name']}: their face is remembered "
+                                "and they are in front of you."}
             track, problem = self._target_for_remember(name, now, changed_mind)
             if problem:
                 return {"status": "not_saved", "reason": problem}

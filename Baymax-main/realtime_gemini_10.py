@@ -69,6 +69,7 @@ from features import persona
 # MVP (#15) toolkits: location/weather, everyday tasks, audiobooks, eyes, public tools.
 from features.toolkits import gemini_tools as public_toolkit
 from features.person_recognition.people import people as _people  # faces + voices
+from features.person_recognition import people as person_recognition
 
 # Load API Key
 load_dotenv()
@@ -519,7 +520,7 @@ def _build_config() -> dict:
         try:
             # The newest stored memories — facts already summarised and vetted by
             # Gemini Flash from earlier conversations.
-            docs = _newest_memories()
+            docs = [d for d in _newest_memories() if not person_recognition.identity_memory(d)]
             if docs:
                 in_prompt = set(docs)
                 mem_block = "\n".join(f"- {d}" for d in docs)
@@ -527,6 +528,7 @@ def _build_config() -> dict:
                     "What you know about this user from previous conversations "
                     "(treat these as established facts — do NOT second-guess or "
                     "contradict them):\n"
+                    + (person_recognition.MEMORY_NOTE + "\n" if person_recognition.enabled() else "")
                     + mem_block
                     + "\n\n"
                     + system_instruction
@@ -2019,7 +2021,8 @@ async def between_turns(session):
         if _recalled is None:
             continue
         (turn, memories), _recalled = _recalled, None
-        new = [m for m in memories if m["document"] not in _memories_given]
+        new = [m for m in memories if m["document"] not in _memories_given
+               and not person_recognition.identity_memory(m["document"])]
         if turn is not _user_turn or not new or not notes:
             continue
         try:
@@ -2571,6 +2574,7 @@ def _summarise_claimed(context, new, end, deadline):
             "or observation.  Write each line in English, whatever language "
             "the conversation was in.  If there is nothing meaningful to extract, "
             "output exactly: NOTHING_TO_REMEMBER\n\n"
+            + (person_recognition.SUMMARY_NOTE + "\n\n" if person_recognition.enabled() else "")
             + earlier +
             "--- TRANSCRIPT START ---\n"
             f"{full_transcript}\n"
@@ -2594,8 +2598,13 @@ def _summarise_claimed(context, new, end, deadline):
         return True
 
     summary_lines = [
-        line.strip() for line in summary_text.splitlines() if line.strip()
+        line.strip() for line in summary_text.splitlines()
+        if line.strip() and not person_recognition.identity_memory(line)
     ]
+    if not summary_lines:
+        print("[SUMMARY] Nothing worth remembering was found.")
+        _mark_transcript_saved(end)
+        return True
     print(f"[SUMMARY] Extracted {len(summary_lines)} memory lines:")
     for i, line in enumerate(summary_lines):
         print(f"  {i+1}. {line}")

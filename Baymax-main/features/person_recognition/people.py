@@ -27,6 +27,7 @@ conversations by itself.
 import asyncio
 import functools
 import os
+import re
 import threading
 import time
 
@@ -36,6 +37,7 @@ from features.vision_process import Remote, Stopped
 
 FACE_FPS = 2.0                 # PR #8's rate
 FACE_LOG_S = 15.0              # a face track's identity is logged when it changes, else this often
+ADOPT_SURE_EVERY_S = 60.0      # a voice already recognised "sure" is sampled at most this often
 ADOPT_MIN_S = 2.0              # utterances at least this long teach Ember a voice (face in view)
 FACE_RESTART_S = 60.0          # a face child that died is started again after this long
 OPENER_GAP_S = 15.0            # PR #8's OPENER_SETTLE_SECONDS: one spoken prompt at a time
@@ -109,6 +111,26 @@ def placeholder_name(name):
     return " ".join(str(name or "").lower().strip(" .,!?'\"").split()) in PLACEHOLDER_NAMES
 
 
+# Memory notes from earlier conversations assume one user. With several people,
+# "The user's name is Nadi" (saved twice on the board, 2026-11-13) made Gemini call
+# everyone Nadi, whoever its own recognition said was there.
+IDENTITY_MEMORY = re.compile(
+    r"\b(?:user|speaker)(?:'s|s)?\s+(?:full\s+|first\s+|real\s+|preferred\s+)?name\s+is\b"
+    r"|\b(?:user|speaker)\s+(?:is\s+called|is\s+named|goes\s+by|wants\s+to\s+be\s+called"
+    r"|introduced\s+(?:himself|herself|themselves|themself)\s+as)\b", re.I)
+MEMORY_NOTE = ("Several people may talk to you, so these notes don't tell you who is talking now: "
+               "go by your face and voice recognition (who_is_here, identify_speaker), not by these notes.")
+SUMMARY_NOTE = ("Several people may talk to the assistant, and the transcript doesn't say which of them "
+                "spoke. Don't write what the user's name is (no \"the user's name is ...\"): the robot "
+                "recognizes people by face and voice itself. Facts about a person named in the "
+                "conversation are fine.")
+
+
+def identity_memory(text):
+    """A memory line saying who "the user" is: left out while people are recognized."""
+    return enabled() and bool(IDENTITY_MEMORY.search(text or ""))
+
+
 def describe_away(seconds):
     if seconds is None:
         return None
@@ -142,8 +164,12 @@ def learned_message(result):
     return voices.learned_message(result)
 
 
-def speaker_answer(result):
-    """identify_speaker's reply from the latest voice result (PR #36's speaker_report)."""
+def speaker_answer(result, face=None):
+    """identify_speaker's reply from the latest voice result (PR #36's speaker_report).
+    `face`: the person id of the only face in view, if recognised. A voice that "might be"
+    that same person is answered as sure: face and voice agree."""
+    if result is not None and result["level"] == "maybe" and face and result.get("person_id") == face:
+        return {"speaker": result["name"], "confidence": "sure", "by": "voice and face"}
     if result is None:
         return {"speaker": None, "note": "You haven't heard enough of their voice yet. If you need "
                                          "to know who it is, ask them."}
@@ -183,6 +209,7 @@ class People:
         self._face_log = {}
         self.greeted = {}              # person id -> when Ember last greeted them (face or voice)
         self.heard = {}                # person id -> when their voice was last recognised
+        self.adopted_at = {}           # person id -> when a clip of theirs was last offered for learning
         self.voice_arrivals = []
 
     # ── Camera (the capture loop's thread): store the reference only ───────────
@@ -292,11 +319,16 @@ class People:
     def _voice_result(self, result):
         log_voice_result(result)
         if (result.get("stage") == "final" and result.get("seconds", 0) >= ADOPT_MIN_S and self.voice is not None
-                and result["level"] != "sure" and voice_learning_enabled()):
-            # Learn their voice from conversation: one known face in view and a voice
-            # Ember doesn't know yet (or only "might be") is that person talking.
+                and voice_learning_enabled()):
+            # Learn their voice from conversation: one known face in view, and a voice that
+            # is theirs or nobody's Ember knows. The child keeps a clip only if it sounds
+            # like their stored voice (or, for a first voice, like their other clips):
+            # someone off camera may be the one talking.
             face = self.speaker_by_face()
-            if face and (result["level"] == "unknown" or result.get("person_id") == face):
+            now = self.clock()
+            if face and (result["level"] == "unknown" or result.get("person_id") == face) and (
+                    result["level"] != "sure" or now - self.adopted_at.get(face, -1e9) >= ADOPT_SURE_EVERY_S):
+                self.adopted_at[face] = now
                 self.voice.adopt(face, result["id"])
         pid = result.get("person_id")
         if result["level"] != "sure" or not pid:
@@ -339,8 +371,8 @@ class People:
             what = "first voice saved" if result.get("first") else "voice sample added"
             print(f"[VOICE] Learning {name}'s voice from conversation: {what}", flush=True)
         elif result.get("first"):
-            print(f"[VOICE] Learning {name}'s voice from conversation: {result.get('collected', 0)} of "
-                  f"3 clips{'; ' + result['note'] if result.get('note') else ''}", flush=True)
+            print(f"[VOICE] Learning {name}'s voice from conversation: {result.get('collected', 0)} clips "
+                  f"so far{'; ' + result['note'] if result.get('note') else ''}", flush=True)
 
     def _voice_learned(self, result):
         with self.lock:
@@ -372,12 +404,13 @@ class People:
             speaker = self.voice.speaker(wait=0.0) if self.voice else None
             return {"in_front_of_you": identifier.describe_in_view(),
                     "visits": identifier.describe_visits(),
-                    "talking": speaker_answer(speaker) if self.voice else "voice recognition is off"}
+                    "talking": speaker_answer(speaker, self.speaker_by_face()) if self.voice
+                    else "voice recognition is off"}
         if name == "identify_speaker":
             if self.voice is None:
                 return {"speaker": None, "in_front_of_you": identifier.describe_in_view(),
                         "note": "Voice recognition is off; only faces are known."}
-            return speaker_answer(self.voice.speaker())
+            return speaker_answer(self.voice.speaker(), self.speaker_by_face())
         if name == "remember_voice":
             if self.voice is None:
                 return {"error": "Voice recognition isn't available right now."}

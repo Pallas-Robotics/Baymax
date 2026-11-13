@@ -201,6 +201,47 @@ def test_describe():
 import unittest  # noqa: E402
 
 
+def test_consistent_core_keeps_the_one_speaker():
+    model = FakeModel(noise=0.3)
+    joe = [model.embed(voice(1)) for _ in range(4)]
+    others = [model.embed(voice(s)) for s in (2, 3, 4)]
+    clips = [joe[0], others[0], joe[1], others[1], joe[2], others[2], joe[3]]
+    assert voice_id.consistent_core(clips) == [0, 2, 4, 6]
+    assert voice_id.consistent_core(others) == []          # three different people
+
+
+def test_voices_learned_under_the_old_rules_are_rechecked_once():
+    """Board, 2026-11-13: a voice learned during a group conversation held several
+    people's clips; it is cut to the one speaker's, or removed when there is none."""
+    model = FakeModel(noise=0.3)
+    mixed = [model.embed(voice(s)) for s in (1, 2, 1, 3, 1, 4, 1)]
+    strangers = [model.embed(voice(s)) for s in (5, 6, 7)]
+    ident = make([
+        {"id": "p_1", "name": "Joe", "embeddings": [], VOICE_KEY: [list(map(float, e)) for e in mixed]},
+        {"id": "p_2", "name": "Ann", "embeddings": [], VOICE_KEY: [list(map(float, e)) for e in strangers]},
+        {"id": "p_3", "name": "Bo", "embeddings": [], "voice_rules": voice_id.VOICE_RULES,
+         VOICE_KEY: [list(map(float, e)) for e in strangers]},
+    ])
+    store = ident.store
+    assert ident.recheck_voices() == [("Joe", 4, 7), ("Ann", 0, 3)]
+    assert len(store.get("p_1")[VOICE_KEY]) == 4
+    assert VOICE_KEY not in store.get("p_2")
+    assert len(store.get("p_3")[VOICE_KEY]) == 3          # already checked: untouched
+    assert ident.recheck_voices() == []
+    assert ident.identify(voice(1)).name == "Joe"
+
+
+def test_learning_from_conversation_needs_a_closer_match():
+    model = FakeModel(noise=0.3)
+    ident = make([{"id": "p_1", "name": "Joe", "embeddings": []}])
+    store = ident.store
+    assert ident.add_samples("p_1", [model.embed(voice(1)) for _ in range(3)], check_consistency=False) == 3
+    assert store.get("p_1")["voice_rules"] == voice_id.VOICE_RULES
+    other = model.embed(voice(2))
+    joe = model.embed(voice(1))
+    assert ident.add_samples("p_1", [other, joe], threshold=voice_id.ADOPT_MATCH) == 1
+
+
 class PR36Tests(unittest.TestCase):
     pass
 

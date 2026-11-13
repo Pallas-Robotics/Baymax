@@ -20,6 +20,7 @@ MAX_QUEUED = 1500         # mic blocks kept while the child is busy (30 s at 20 
 RESTART_AFTER_S = 30.0    # a child that died is started again after this long
 CALL_TIMEOUT_S = 20.0     # learning a voice embeds several clips in one call
 ADOPT_FIRST = 3           # a first voice needs this many consistent clips before it is saved
+ADOPT_POOL = 8            # ...found among this person's last this-many clips
 
 
 class VoiceChild:
@@ -33,6 +34,11 @@ class VoiceChild:
         store = faces.PeopleStore(people_path)
         identifier = voices.VoiceIdentifier(voices.VoiceModel(model_dir), store)
         self.identifier = identifier
+        for name, kept, before in identifier.recheck_voices():
+            print(f"[VOICE] Rechecked {name}'s voice under the stricter learning rules: "
+                  + (f"kept {kept} of {before} clips" if kept else
+                     f"none of {before} clips sound like one speaker; it will be learned again"),
+                  flush=True)
         self.results, self.learned, self.adopted = [], [], []
         self.recent = collections.OrderedDict()   # result id -> embedding, newest last
         self.pending = {}                          # person id -> [embeddings] for a first voice
@@ -51,30 +57,31 @@ class VoiceChild:
                              "ms": round(match.ms), "stage": stage, "id": self.next_id})
 
     def _adopt(self, person_id, result_id):
-        """Learn from conversation: the utterance `result_id` was said by `person_id` (the only
-        face in view, recognised). A first voice needs ADOPT_FIRST clips that sound like one
-        person; later clips must sound like the stored voice (PR #36's add_samples check)."""
+        """Learn from conversation: the utterance `result_id` was probably said by `person_id`
+        (the only face in view, recognised), though anyone in the room may have been talking.
+        A first voice needs ADOPT_FIRST clips that clearly sound like one speaker
+        (voices.consistent_core, ADOPT_CONSISTENCY); a later clip must sound like their
+        stored voice (ADOPT_MATCH)."""
         from features.person_recognition import voices
         embedding = self.recent.pop(result_id, None)
         if embedding is None:
             return
         if self.identifier.has_voice(person_id):
-            added = self.identifier.add_samples(person_id, [embedding])
+            added = self.identifier.add_samples(person_id, [embedding], threshold=voices.ADOPT_MATCH)
             self.adopted.append({"person_id": person_id, "added": added, "first": False})
             return
-        clips = self.pending.setdefault(person_id, []) + [embedding]
-        self.pending[person_id] = clips[-ADOPT_FIRST * 2:]
-        if len(clips) < ADOPT_FIRST:
-            self.adopted.append({"person_id": person_id, "added": 0, "collected": len(clips), "first": True})
-            return
-        recent = clips[-ADOPT_FIRST:]
-        if voices._consistent_set(recent):
-            added = self.identifier.add_samples(person_id, recent, check_consistency=False)
+        clips = (self.pending.get(person_id, []) + [embedding])[-ADOPT_POOL:]
+        self.pending[person_id] = clips
+        core = voices.consistent_core(clips, min_size=ADOPT_FIRST) if len(clips) >= ADOPT_FIRST else []
+        if core:
+            added = self.identifier.add_samples(person_id, [clips[i] for i in core],
+                                                check_consistency=False)
             self.pending.pop(person_id, None)
             self.adopted.append({"person_id": person_id, "added": added, "first": True})
         else:
             self.adopted.append({"person_id": person_id, "added": 0, "collected": len(clips), "first": True,
-                                 "note": "clips don't sound like one person yet"})
+                                 "note": "clips don't sound like one person yet" if len(clips) >= ADOPT_FIRST
+                                 else None})
 
     def detect(self, item):
         command = item[0]

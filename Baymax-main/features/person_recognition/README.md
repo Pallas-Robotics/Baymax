@@ -61,14 +61,27 @@ Voice recognition stays off (logged once) until `.models/voice/` has both files.
 ## Changes from the PRs after testing on the board (2026-11-13)
 
 - **Voices are learned from conversation.** When exactly one face is in view and it is
-  someone Ember knows, each of their finished utterances of 2 s or more becomes a voice
-  sample. The first voice needs three clips that sound like one person (PR #36's
-  `_consistent_set`); later clips must sound like the stored voice (`add_samples`
-  check). On the board the first voice was saved after a few sentences, and the next
-  ones were named "sure" at 0.57-0.61. PR #36 only learned voices through
-  `remember_voice`, which never happened in practice, so voices were never recognized.
-  Remembering someone's face (with consent) now includes their voice;
-  `BAYMAX_VOICE_LEARNING=0` restores remember_voice-only.
+  someone Ember knows, their finished utterances of 2 s or more are offered as voice
+  samples. Anyone in the room may be the one talking, so a clip is kept only if it
+  clearly sounds like them: a first voice needs three clips (among their last eight)
+  that agree with each other by 0.45 (`voices.consistent_core`), and a later clip must
+  score 0.38 against the stored voice (`ADOPT_MATCH`). A voice already recognised "sure"
+  is sampled at most once a minute. On the board's USB mic, clips of one speaker agreed
+  by 0.43-0.46 and other people's clips scored 0.08-0.28 against them. A first version
+  used PR #36's 0.25 check: during a group conversation Joe's voice took in other
+  people's clips (pairwise similarity down to -0.03) and then matched nobody well.
+  Voices saved before these rules are rechecked once at start (`recheck_voices`): only
+  the clips of one speaker are kept, or the voice is removed to be learned again.
+  PR #36 only learned voices through `remember_voice`, which never happened in
+  practice. `BAYMAX_VOICE_LEARNING=0` restores remember_voice-only.
+- **Voice and face together.** `identify_speaker` answers "sure" when the voice "might
+  be" the person whose face is the only one in view.
+- **Memories don't name "the user".** Memory lines saved by the summariser assume one
+  user; "The user's name is Nadi" made Gemini call everyone Nadi. With recognition on,
+  such lines are left out of the prompt, recalled memories and new summaries, and the
+  summariser and the memory block say that several people may be talking.
+- **Already known.** `remember_person` for someone recognised in view answers
+  `already_known` (it used to refuse with a message about someone who had said no).
 - **Placeholder names.** Gemini saved a face as "User" while asking the person's name.
   `remember_person`/`remember_voice` now refuse placeholder names, and a face in view
   stored under one is renamed when the person gives their name.
