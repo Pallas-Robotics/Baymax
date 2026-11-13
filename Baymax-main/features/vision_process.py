@@ -14,6 +14,8 @@ face landmarks go to the slow cores at nice 10.
 
     model = Remote(FaceLandmarks)      # any picklable factory with .detect(frame)
     landmarks = model.detect(frame)    # list[Point] or None, as the local model
+    result = model.call(item)          # a model with raw_results = True: whatever its
+                                       # detect(item) returned, pickled (face/voice recognition)
     model.device                       # the model's .device after its last frame
                                        # ("NPU"/"CPU"), or None if it has none
 
@@ -140,6 +142,11 @@ class Remote:
         landmarks, self.device = self._call(frame)
         return landmarks
 
+    def call(self, item, timeout=None):
+        """For a model with raw_results = True: its detect(item) result as returned."""
+        result, self.device = self._call(item, timeout)
+        return result
+
     def cancel(self):
         """Kill the child now (the watchdog's way out of a hung call)."""
         if self.child.poll() is None:
@@ -176,7 +183,8 @@ def _place(factory):
     both): pc_hardware.place_vision_child, which changes nothing unless Ember runs on the fast
     cores. A model class with vision_role = "face" (FaceLandmarks) is placed as face
     landmarks, anything else as pose. Placement only saves time: an error never stops the model."""
-    role = "face" if getattr(getattr(factory, "func", factory), "vision_role", None) == "face" else "pose"
+    role = getattr(getattr(factory, "func", factory), "vision_role", None)
+    role = role if role in ("face", "voice") else "pose"
     try:
         import pc_hardware
         if pc_hardware.place_vision_child(role):
@@ -219,7 +227,10 @@ def main():
             except EOFError:
                 return
             try:
-                landmarks = points(model.detect(frame))
+                result = model.detect(frame)
+                # Landmark models reply with plain Points; a model with raw_results replies
+                # with its own (small, picklable) results.
+                landmarks = result if getattr(model, "raw_results", False) else points(result)
                 # Read after detect: an NPU failure switches to the CPU inside it.
                 reply("ok", (landmarks, getattr(model, "device", None)))
             except Exception as error:

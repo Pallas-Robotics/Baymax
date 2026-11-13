@@ -1113,6 +1113,7 @@ class RealTimeThreadTests(unittest.TestCase):
                 pass
         ns = {"asyncio": asyncio, "np": np, "queue": queue, "time": time, "_audio_enhancer": None,
               "_waiting_cue": None, "INPUT_CHANNELS": 1, "_audio_record_queue": queue.Queue(),
+              "_people": SimpleNamespace(feed_audio=lambda *a: None), "_gemini_speaking": False,
               "audio_queue_mic": asyncio.Queue(), "INTERRUPT_RMS_THRESHOLD": 1000,
               "_initiation_ts_lock": threading.Lock(), "_last_loud_mic_ts": 0.0,
               "sd": SimpleNamespace(InputStream=Stream), "SEND_SAMPLE_RATE": 48000, "CHUNK_SIZE": 960,
@@ -1163,6 +1164,7 @@ class RealTimeThreadTests(unittest.TestCase):
                 pass
         ns = {"asyncio": asyncio, "np": np, "queue": queue, "time": time, "_audio_enhancer": None,
               "_waiting_cue": None, "INPUT_CHANNELS": 1, "_audio_record_queue": queue.Queue(),
+              "_people": SimpleNamespace(feed_audio=lambda *a: None), "_gemini_speaking": False,
               "audio_queue_mic": asyncio.Queue(), "INTERRUPT_RMS_THRESHOLD": 1000,
               "_initiation_ts_lock": threading.Lock(), "_last_loud_mic_ts": 0.0, "_mic_level": None,
               "_mic_statuses": 0, "_mic_status": "", "_mic_statuses_shown": 0,

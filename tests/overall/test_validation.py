@@ -42,7 +42,8 @@ class SuiteSelectionTests(unittest.TestCase):
         # suites' test modules they import.
         for path, owners in [
                 ('Baymax-main/features/toolkits/fall_detection.py',
-                 ['conversational_ability', 'everyday', 'eyes', 'family', 'information', 'media', 'pose']),
+                 ['conversational_ability', 'everyday', 'eyes', 'family', 'information', 'media',
+                  'person_recognition', 'pose']),
                 # test_toolkit_vision_process (pose) runs the eye-contact face model.
                 ('Baymax-main/features/toolkits/proactive.py', ['conversational_ability', 'information', 'pose']),
                 ('Baymax-main/features/conversational_ability/processing.py', ['conversational_ability', 'eyes', 'media']),
@@ -60,10 +61,12 @@ class SuiteSelectionTests(unittest.TestCase):
                 ('Baymax-main/evals/live_eval.py', ['languages', 'runtime']),
                 ('Baymax-main/tests/test_live_eval.py', ['languages', 'runtime']),
                 # test_bootstrap patches pc_hardware.arm_linux; the runtime's camera thread imports it.
-                ('Baymax-main/pc_hardware.py', ['device_settings', 'pose', 'runtime', 'startup']),
+                # test_person_recognition_runtime checks the face/voice children's places.
+                ('Baymax-main/pc_hardware.py', ['device_settings', 'person_recognition', 'pose', 'runtime', 'startup']),
                 # test_v10_runtime's OpenPoseTests run the real _open_pose and vision process;
                 # test_toolkit_proactive patches its Remote.
-                ('Baymax-main/features/vision_process.py', ['information', 'pose', 'runtime']),
+                # test_person_recognition_runtime runs a raw_results child.
+                ('Baymax-main/features/vision_process.py', ['information', 'person_recognition', 'pose', 'runtime']),
                 ('Baymax-main/features/pose/backend.py', ['pose', 'runtime']),
                 # test_memory_saving reads the service's stop timeout and the eyes' join.
                 ('devops/mvp/install_autostart.py', ['memory_palace', 'startup']),

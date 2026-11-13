@@ -122,6 +122,9 @@ def main(argv=None):
                 # With interruptions off the mic is muted while Ember speaks; Gemini gets
                 # room-level noise then, not digital zeros, which held up its next turn.
                 os.environ.setdefault("BAYMAX_COMFORT_NOISE", "1")
+                # Who is in front of Ember (face) and who is talking (voice), models in their
+                # own processes on the slow cores (features/person_recognition/README.md).
+                os.environ.setdefault("BAYMAX_PEOPLE_RECOGNITION", "1")
                 os.environ.setdefault("BAYMAX_TURN_END_SILENCE_MS", "400")
                 os.environ.setdefault("BAYMAX_VOICE_ANALYSIS", "0")
                 # The service stops in 15 s (TimeoutStopSec); memory gets 10 of them.

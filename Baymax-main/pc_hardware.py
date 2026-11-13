@@ -129,7 +129,8 @@ LIBRARY_THREADS = {"OPENBLAS_NUM_THREADS": "1", "OPENCV_FOR_THREADS_NUM": "1",
 # the mic and speaker callbacks' timing unchanged. A value already set (.env, the shell) wins.
 SPEAKER_STREAM = {"BAYMAX_OUTPUT_BLOCKSIZE": "512", "BAYMAX_OUTPUT_LATENCY": "low"}
 # Where each vision child runs while Ember is on the fast cores: which cores, and its nice value.
-VISION_PLACES = {"pose": ("fast", 5), "face": ("slow", 10)}
+# face: face landmarks and face recognition; voice: speaker recognition (person_recognition)
+VISION_PLACES = {"pose": ("fast", 5), "face": ("slow", 10), "voice": ("slow", 10)}
 
 
 def _cpu_text(cpus):

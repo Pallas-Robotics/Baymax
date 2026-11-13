@@ -12,6 +12,7 @@ from . import web_search
 from .everyday import tools as everyday
 from .family import tools as family
 from features import persona
+from features.person_recognition import people
 from features.conversational_ability import engage, session, volume
 from features.eyes import tools as eye_tools
 
@@ -125,12 +126,15 @@ def extend_config(config):
         result["system_instruction"] += look_closely.INSTRUCTION
     if listen.enabled():
         result["system_instruction"] += listen.INSTRUCTION
+    if people.enabled():
+        result["system_instruction"] += people.INSTRUCTION
     tools = result.setdefault("tools", [])
     existing = {d["name"] for tool in tools for d in tool.get("function_declarations", [])}
     declarations = (DECLARATIONS + (everyday.DECLARATIONS if everyday.enabled() else [])
                     + (family.DECLARATIONS if family.enabled() else [])
                     + ([look_closely.DECLARATION] if look_closely.enabled() else [])
                     + ([listen.DECLARATION] if listen.enabled() else [])
+                    + (people.DECLARATIONS if people.enabled() else [])
                     + ([web_search.DECLARATION] if search_enabled() else []))
     additions = [d for d in declarations if d["name"] not in existing]
     if additions:
@@ -154,6 +158,8 @@ def execute(name, args):
             return everyday.execute(name, args)
         if name in family.NAMES:
             return family.execute(name, args)
+        if name in people.NAMES and people.enabled():
+            return people.people.execute(name, args)
         if name == "get_location":
             # Gemini sometimes stopped here and invented the weather; point it at get_weather.
             return {**location.get(), "note": WEATHER_NOTE}
@@ -179,7 +185,7 @@ async def handle_tool_call(session, tool_call):
     replies = []
     for index, call in enumerate(tool_call.function_calls or []):
         # Record declaration names only, never arguments or service results.
-        name = call.name if call.name in {d['name'] for d in DECLARATIONS + experimental.DECLARATIONS + everyday.DECLARATIONS + family.DECLARATIONS} | {eye_tools.NAME, look_closely.DECLARATION['name'], listen.NAME, volume.NAME, web_search.NAME} else 'unknown_tool'
+        name = call.name if call.name in {d['name'] for d in DECLARATIONS + experimental.DECLARATIONS + everyday.DECLARATIONS + family.DECLARATIONS} | {eye_tools.NAME, look_closely.DECLARATION['name'], listen.NAME, volume.NAME, web_search.NAME} | people.NAMES else 'unknown_tool'
         # Silent eye commands happen mid-reply: no thinking state, no spoken follow-up.
         quiet = call.name == eye_tools.NAME and eye_tools.silent()
         if not quiet:

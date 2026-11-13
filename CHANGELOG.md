@@ -1,5 +1,35 @@
 # MVP (unreleased)
 
+- Ember recognizes people by face and by voice: PR #8 (people awareness, face
+  recognition) and PR #36 (voice recognition), ported to the Orange Pi build so that
+  they cost the conversation nothing (`features/person_recognition/README.md`).
+  - Their models run in child processes on the RK3588's slow cores (cpu0-3, nice 10):
+    YuNet/SFace for faces, Silero VAD + ECAPA-TDNN for voices. The capture loop only
+    hands over a frame reference; the mic callback appends each 20 ms block to a bounded
+    queue (~34 µs on a Mac).
+  - No PyTorch: PR #36's own SpeechBrain ECAPA model and Silero VAD run on ONNX Runtime.
+    `convert_voice_model.py` makes the files on a computer with PyTorch and checked them
+    against SpeechBrain: cosine 1.000000 at 1-15 s, so PR #36's thresholds hold. Silero
+    matched frame for frame. 8-bit quantisation was slower on ARM and moved scores, so
+    it isn't used. Identification uses at most 5 s of an utterance.
+  - Gemini is never sent notes mid-turn: the PRs' `[SELF]`, `[MEMORY CONTEXT]` and
+    `[SPEAKER]` notes are replaced by tools (`who_is_here`, `identify_speaker`) answered
+    from the latest results. `[ARRIVED]`, `[NEW PERSON]` and `[VOICE LEARNED]` are spoken
+    only when Ember is free to talk, one per 15 s.
+  - PR #8's tools (`remember_person`, `decline_to_be_remembered`, `forget_person`) and
+    PR #36's (`remember_voice`) keep their consent rules. Faces and voices are stored as
+    numbers in `BAYMAX_DATA_DIR/ember_people.json`; forgetting a person removes both.
+  - On by default in `run_mvp.py` (`BAYMAX_PEOPLE_RECOGNITION=1`).
+    `BAYMAX_VOICE_RECOGNITION=0` keeps faces only; `BAYMAX_PEOPLE_GREETINGS=0` stops
+    Ember starting those conversations. Voice stays off until `.models/voice/` has the
+    converted files.
+  - Not ported yet: per-person conversation memory, appearance notes, the dashboard's
+    People page, `ember_self`/`ember_identity.md`.
+  - Tests: PR #8's 88 face tests, PR #36's 17 + 25 voice tests, and 23 new runtime tests
+    (`tests/features/person_recognition`). Voice was checked end to end on a Mac, with a
+    real child process and macOS voices: the enrolled voice was named "sure" (0.81) 2.3 s
+    into the sentence, and another voice came out "unknown". The board check is pending.
+
 - Faster, surer replies on the Orange Pi 5 Max. With interruptions off (MVP), the mic
   is muted while Ember speaks, and Gemini got digital zeros for each reply. Gemini 2.5 then
   committed the person's next question seconds late or not at all. On the robot answers

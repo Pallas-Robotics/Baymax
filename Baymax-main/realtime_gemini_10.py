@@ -68,6 +68,7 @@ import device_config
 from features import persona
 # MVP (#15) toolkits: location/weather, everyday tasks, audiobooks, eyes, public tools.
 from features.toolkits import gemini_tools as public_toolkit
+from features.person_recognition.people import people as _people  # faces + voices
 
 # Load API Key
 load_dotenv()
@@ -1737,6 +1738,8 @@ async def listen_audio():
             _audio_record_queue.put_nowait(raw_bytes)
         except queue.Full:
             pass
+        # ── Who is speaking: a copy for voice recognition's own process (one deque append) ──
+        _people.feed_audio(raw_bytes, _gemini_speaking or bool(_playback_buffer))
 
         # NOISE SUPPRESSION DISABLED (v10) — Gemini gets the raw mic stream.
         # # ── Static / crackle suppression on the Gemini-bound stream only ──

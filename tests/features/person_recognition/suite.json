@@ -1,8 +1,24 @@
 {
   "name": "person_recognition",
   "sources": [
-    "Baymax-main/features/person_recognition/**"
+    "Baymax-main/features/person_recognition/**",
+    "Baymax-main/features/vision_process.py",
+    "Baymax-main/features/toolkits/gemini_tools.py",
+    "Baymax-main/features/toolkits/fall_detection.py",
+    "Baymax-main/pc_hardware.py",
+    "Baymax-main/realtime_gemini_10.py",
+    "Baymax-main/run_mvp.py"
   ],
-  "python": [],
-  "note": "Reserved integration namespace; run overall checks. Add dedicated tests when an identity engine is implemented."
+  "python": [
+    {
+      "directory": "Baymax-main/tests",
+      "patterns": [
+        "test_person_recognition_faces.py",
+        "test_person_recognition_voice_id.py",
+        "test_person_recognition_voice_live.py",
+        "test_person_recognition_runtime.py"
+      ]
+    }
+  ],
+  "note": "Face (PR #8) and voice (PR #36) recognition. The models run in child processes on the slow cores; tests use fake models and sessions. Voice parity with SpeechBrain is checked by convert_voice_model.py on a computer with PyTorch."
 }

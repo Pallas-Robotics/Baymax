@@ -164,6 +164,7 @@ class WaitingCueTests(unittest.TestCase):
         namespace = {'asyncio': asyncio, 'np': np, 'queue': queue, 'time': time,
                      '_audio_enhancer': enhancer, '_waiting_cue': cue, 'INPUT_CHANNELS': 1,
                      '_audio_record_queue': recordings, 'audio_queue_mic': microphone,
+                     '_people': SimpleNamespace(feed_audio=lambda *a: None), '_gemini_speaking': False, '_playback_buffer': b'',
                      'INTERRUPT_RMS_THRESHOLD': 1000, 'sd': SimpleNamespace(InputStream=Stream),
                      'SEND_SAMPLE_RATE': 48000, 'CHUNK_SIZE': 1024}
         with patch('test_public_core_integration.CORE', CORE):
