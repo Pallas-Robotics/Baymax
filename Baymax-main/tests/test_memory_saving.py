@@ -18,6 +18,12 @@ import uuid
 
 from features.conversational_ability import live_models
 from test_public_core_integration import CORE, load_function
+from features.person_recognition import people as person_recognition
+
+# People recognition off (test_mvp leaves BAYMAX_PEOPLE_RECOGNITION=1 set for later tests).
+RECOGNITION_OFF = SimpleNamespace(enabled=lambda: False, identity_memory=lambda text: False,
+                                  MEMORY_NOTE=person_recognition.MEMORY_NOTE,
+                                  SUMMARY_NOTE=person_recognition.SUMMARY_NOTE)
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -34,6 +40,7 @@ def runtime(*names, **overrides):
     """The named runtime functions sharing one namespace of transcript state."""
     ns = {
         "time": time, "threading": threading, "uuid": uuid, "os": os,
+        "person_recognition": RECOGNITION_OFF,
         "_transcript": [], "_transcript_saved": 0, "_transcript_claimed": 0,
         "_transcript_unsaved_chars": 0, "_transcript_last_ts": 0.0,
         "_transcript_lock": threading.Lock(), "_transcript_user": [],
@@ -604,6 +611,33 @@ def memory_rows():
     return rows
 
 
+class PeopleRecognitionMemoryTests(unittest.TestCase):
+    """With people recognised, "the user's name is ..." lines are neither saved nor given:
+    on the board they made Gemini call everyone by one name (2026-11-13)."""
+
+    def test_summary_leaves_out_who_the_user_is(self):
+        store, gemini = FakeStore(), FakeGemini("User's name is Nadi\nJoe has a demo tomorrow")
+        ns = saving(gemini, store, person_recognition=person_recognition)
+        self.addCleanup(shutil.rmtree, ns["tmp"])
+        say(ns, ("user", "Hi, I'm Joe, demo tomorrow."), ("gemini", "Good luck!"))
+        with patch.dict(os.environ, {"BAYMAX_PEOPLE_RECOGNITION": "1"}), patch("builtins.print"):
+            self.assertTrue(ns["_summarise_and_embed"](time.monotonic() + 20))
+        self.assertEqual(store.saved[0][0], ["Joe has a demo tomorrow"])
+        self.assertIn(person_recognition.SUMMARY_NOTE, gemini.prompts[0])
+
+    def test_prompt_leaves_out_who_the_user_is(self):
+        ns = {"_BASE_CONFIG": {}, "_BASE_SYSTEM_INSTRUCTION": "base", "_memories_given": set(),
+              "person_recognition": person_recognition, "_memory_embedder": object(),
+              "_newest_memories": lambda: ["The user's name is Nadi.", "Joe has a demo tomorrow"],
+              "public_toolkit": SimpleNamespace(extend_config=lambda config: config)}
+        load_function("_build_config", ns)
+        with patch.dict(os.environ, {"BAYMAX_PEOPLE_RECOGNITION": "1"}), patch("builtins.print"):
+            text = ns["_build_config"]()["system_instruction"]
+        self.assertNotIn("Nadi", text)
+        self.assertIn("- Joe has a demo tomorrow", text)
+        self.assertIn(person_recognition.MEMORY_NOTE, text)
+
+
 class NewestMemoriesTests(unittest.TestCase):
     def newest(self, collection, limit=50):
         ns = {"_memory_embedder": SimpleNamespace(_collection=collection), "MEMORY_PROMPT_COUNT": limit}
@@ -624,6 +658,7 @@ class NewestMemoriesTests(unittest.TestCase):
 
     def test_system_instruction_lists_the_newest(self):
         ns = {"_BASE_CONFIG": {"speech_config": "unchanged"}, "_BASE_SYSTEM_INSTRUCTION": "base",
+              "person_recognition": RECOGNITION_OFF,
               "_memory_embedder": SimpleNamespace(_collection=FakeCollection(memory_rows())),
               "MEMORY_PROMPT_COUNT": 50, "public_toolkit": SimpleNamespace(extend_config=lambda c: c)}
         for name in ("_newest_memories", "_build_config"):
@@ -646,6 +681,7 @@ class NewestMemoriesTests(unittest.TestCase):
     def test_a_connection_resuming_the_conversation_keeps_the_memories_given_on_it(self):
         resuming = [False]
         ns = {"_BASE_CONFIG": {}, "_BASE_SYSTEM_INSTRUCTION": "base", "_memories_given": set(),
+              "person_recognition": RECOGNITION_OFF,
               "_memory_embedder": SimpleNamespace(_collection=FakeCollection(memory_rows()[:2])),
               "MEMORY_PROMPT_COUNT": 50, "public_toolkit": SimpleNamespace(extend_config=lambda c: {
                   **c, "session_resumption": {"handle": "h1"} if resuming[0] else {}})}  # as session.py adds it
@@ -791,7 +827,7 @@ class RecalledMemoryTests(unittest.TestCase):
             self.searched.append((time.monotonic(), query))
             return found(query)
         ns = {
-            "asyncio": asyncio, "time": time, "np": np,
+            "asyncio": asyncio, "time": time, "np": np, "person_recognition": RECOGNITION_OFF,
             "monitor": SimpleNamespace(emit=Mock(), transcribe=Mock(), finish_transcripts=Mock(), timing=Mock()),
             "_address_gate": AddressGate(enabled=False, log=Mock()), "public_toolkit": SimpleNamespace(),
             "_transcript_add": Mock(), "_TurnTranscript": lambda *a: SimpleNamespace(add=Mock(), flush=Mock()),
