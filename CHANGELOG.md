@@ -1,5 +1,20 @@
 # MVP (unreleased)
 
+- Ember keeps hearing people when its USB mic's stream slips a byte. On the Orange
+  Pi 5 Max on 2026-11-13, after a mic input overflow, every 16-bit sample read was half
+  of one sample and half of the next. A quiet room read as constant near-full-scale hiss
+  (rms ~18,900, 45% of the energy above 8 kHz); the same recording re-read one byte
+  later was ordinary audio (rms ~2,300, nothing above 8 kHz). Gemini heard no speech and
+  stopped answering until Ember was restarted.
+  - `pc_hardware.MicByteAlignment` checks each 20 ms block in the mic callback (8 µs on
+    the board). Misaligned audio is loud and has no correlation between neighbouring
+    samples, which real sound at 48 kHz always has.
+  - After about a second of such blocks the stream is shifted back by one byte; a
+    mistaken shift is undone the same way. Each shift is logged as `[MIC STATUS] Mic
+    stream was one byte out of step`.
+  - Run over the board's broken recordings, it realigned within about a second each time.
+  - Tests: `MicByteAlignmentTests`.
+
 - Ember recognizes people by face and by voice: PR #8 (people awareness, face
   recognition) and PR #36 (voice recognition), ported to the Orange Pi build so that
   they cost the conversation nothing (`features/person_recognition/README.md`).

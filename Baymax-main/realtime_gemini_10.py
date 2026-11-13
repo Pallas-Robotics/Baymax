@@ -552,6 +552,7 @@ from features.conversational_ability.waiting import create as create_waiting_cue
 from features.conversational_ability.volume import voice_volume
 # "Louder"/"quieter" move the speaker's own volume where it is an ALSA card PortAudio opens
 # directly (the Orange Pi's USB speaker); elsewhere Ember's voice is scaled (volume.py).
+import pc_hardware
 from pc_hardware import speaker_mixer
 voice_volume.use_mixer(speaker_mixer(sd.query_devices()[target_device_speaker]["name"]))
 _waiting_cue = create_waiting_cue(_audio_enhancer is not None and _audio_enhancer.full_duplex)
@@ -655,6 +656,8 @@ _mic_level = None                         # (rms, peak) of the latest mic block;
 _mic_statuses = 0                         # PortAudio input statuses so far (e.g. input overflow)
 _mic_status = ""                          # the latest one; monitor_queues prints them
 _mic_statuses_shown = 0                   # how many of them monitor_queues has reported
+_mic_alignment = pc_hardware.MicByteAlignment()   # realigns a mic stream that slipped a byte
+_mic_alignment_shown = 0                  # its shifts monitor_queues has reported
 _initiation_ts_lock = threading.Lock()
 
 # ─── Audio recording for voice biomarker analysis ───────────────────────────
@@ -1084,7 +1087,7 @@ def start_output_stream() -> sd.OutputStream:
 
 # ─── Queue monitor ────────────────────────────────────────────────────────────
 async def monitor_queues(interval: float = 3.0):
-    global _mic_statuses_shown
+    global _mic_statuses_shown, _mic_alignment_shown
     while True:
         await asyncio.sleep(interval)
         with _playback_lock:
@@ -1105,6 +1108,11 @@ async def monitor_queues(interval: float = 3.0):
         if statuses != _mic_statuses_shown:
             print(f"[MIC STATUS] {_mic_status} ({statuses - _mic_statuses_shown} since the last report)", flush=True)
             _mic_statuses_shown = statuses
+        flips = _mic_alignment.flips
+        if flips != _mic_alignment_shown:
+            state = "realigned" if _mic_alignment.shifted else "back to normal"
+            print(f"[MIC STATUS] Mic stream was one byte out of step; {state} ({flips} so far)", flush=True)
+            _mic_alignment_shown = flips
 
 # ─── Audio Writer Thread (records user speech to WAV) ────────────────────────
 def _audio_writer_thread():
@@ -1729,6 +1737,8 @@ async def listen_audio():
             mono_data = np.mean(indata, axis=1).astype(np.int16)
         else:
             mono_data = indata.flatten().astype(np.int16)
+        # A USB mic whose stream slipped a byte reads as loud hiss: put it back together.
+        mono_data = _mic_alignment.fix(mono_data)
         raw_bytes = mono_data.tobytes()
 
         # ── Record RAW audio for voice biomarker analysis ──

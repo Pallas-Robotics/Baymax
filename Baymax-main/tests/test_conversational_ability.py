@@ -398,7 +398,7 @@ class AudioInputTests(unittest.TestCase):
         listen = load_function('listen_audio', {'asyncio': asyncio, 'np': np, 'queue': queue,
             'time': time, '_audio_enhancer': enhancer, '_waiting_cue': None, 'INPUT_CHANNELS': 1,
             '_audio_record_queue': raw_recording, 'audio_queue_mic': microphone,
-            '_people': SimpleNamespace(feed_audio=lambda *a: None), '_gemini_speaking': False, '_playback_buffer': b'',
+            '_people': SimpleNamespace(feed_audio=lambda *a: None), '_mic_alignment': SimpleNamespace(fix=lambda block: block), '_gemini_speaking': False, '_playback_buffer': b'',
             'INTERRUPT_RMS_THRESHOLD': 1000, 'sd': SimpleNamespace(InputStream=Stream),
             'SEND_SAMPLE_RATE': 48000, 'CHUNK_SIZE': 1024})
         async def run():

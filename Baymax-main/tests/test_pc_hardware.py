@@ -509,6 +509,61 @@ class BigLittleCpuTests(unittest.TestCase):
             self.assertEqual([c.args for c in cv2.setNumThreads.call_args_list], calls, env)
 
 
+
+class MicByteAlignmentTests(unittest.TestCase):
+    """A USB mic stream that slipped one byte (Orange Pi 5 Max, 2026-11-13) is realigned."""
+
+    @staticmethod
+    def speech(seconds=4.0, seed=0):
+        import numpy as np
+        rng = np.random.default_rng(seed)
+        t = np.arange(int(48000 * seconds)) / 48000
+        x = 3000 * np.sin(2 * np.pi * 180 * t) * (0.5 + 0.5 * np.sin(2 * np.pi * 3 * t)) + rng.normal(0, 150, len(t))
+        return x.astype(np.int16)
+
+    def run_blocks(self, align, samples):
+        return [align.fix(samples[i:i + 960]) for i in range(0, len(samples) - 960 + 1, 960)]
+
+    def test_a_slipped_stream_is_put_back_within_about_a_second(self):
+        import numpy as np
+        speech = self.speech()
+        slipped = np.frombuffer(speech.tobytes()[1:-1], np.int16)
+        align = pc_hardware.MicByteAlignment()
+        out = self.run_blocks(align, slipped)
+        self.assertEqual((align.flips, align.shifted), (1, True))
+        flipped_at = next(i for i, block in enumerate(out) if not align.looks_misaligned(block))
+        self.assertLessEqual(flipped_at, align.WINDOW)              # about a second of 20 ms blocks
+        realigned = np.concatenate(out[flipped_at + 1:])
+        start = (flipped_at + 1) * 960
+        np.testing.assert_array_equal(realigned, speech[start:start + len(realigned)])
+
+    def test_normal_audio_is_never_touched(self):
+        import numpy as np
+        align = pc_hardware.MicByteAlignment()
+        speech = self.speech(seed=1)
+        out = self.run_blocks(align, speech)
+        self.assertEqual(align.flips, 0)
+        np.testing.assert_array_equal(np.concatenate(out), speech[:len(out) * 960])
+        quiet = np.zeros(48000, np.int16)
+        self.run_blocks(align, quiet)
+        self.assertEqual(align.flips, 0)
+
+    def test_a_mistaken_shift_is_undone(self):
+        import numpy as np
+        align = pc_hardware.MicByteAlignment()
+        align.shifted = True                    # e.g. after a burst of loud noise
+        self.run_blocks(align, self.speech(seed=2))
+        self.assertEqual((align.flips, align.shifted), (1, False))
+
+    def test_a_brief_glitch_does_not_shift(self):
+        import numpy as np
+        speech = self.speech(seed=3)
+        slipped = np.frombuffer(speech.tobytes()[1:-1], np.int16)
+        glitchy = np.concatenate([speech[:48000], slipped[:960 * 10], speech[48000:]])
+        align = pc_hardware.MicByteAlignment()
+        self.run_blocks(align, glitchy)
+        self.assertEqual(align.flips, 0)
+
 if __name__ == "__main__":
     unittest.main()
 

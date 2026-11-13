@@ -424,6 +424,70 @@ def _db_range(cget):
     return None
 
 
+class MicByteAlignment:
+    """Puts a USB microphone's samples back together after its stream slips by one byte.
+
+    Seen on the Orange Pi 5 Max's USB mic (2026-11-13): after an input overflow every
+    16-bit sample Ember read was half of one sample and half of the next. A quiet room
+    then reads as constant near-full-scale hiss (rms ~18,900, 45% of its energy above
+    8 kHz; re-read one byte later it was rms ~2,300 with nothing above 8 kHz), Gemini
+    hears no speech and stops answering until the mic is opened again.
+
+    Misaligned blocks are unmistakable: loud (the high byte of each value is a random low
+    byte) and with no correlation between neighbouring samples, which real sound at 48 kHz
+    always has. After TRIGGER of the last WINDOW blocks look like that (about a second),
+    fix() shifts the stream by one byte (the previous block's last byte goes in front);
+    a mistaken shift looks misaligned in turn and is undone the same way. Runs in the mic
+    callback: a few numpy operations on one 20 ms block, no allocation beyond them, no
+    locks, no printing (flips counts the shifts for the queue monitor)."""
+    WINDOW = 50          # blocks (20 ms each): about a second
+    TRIGGER = 40         # misaligned blocks in WINDOW before shifting
+    LOUD_RMS = 4000.0    # misaligned audio sits near 18,000 even in a quiet room
+    MAX_NEIGHBOUR_CORRELATION = 0.3
+
+    def __init__(self):
+        self.shifted = False
+        self.flips = 0
+        self._carry = b"\x00"
+        self._recent = [False] * self.WINDOW
+        self._index = 0
+        self._bad = 0
+
+    @classmethod
+    def looks_misaligned(cls, samples):
+        import numpy as np
+        x = np.asarray(samples, dtype=np.float32)
+        if len(x) < 16:
+            return False
+        energy = float(np.dot(x, x))
+        if energy < cls.LOUD_RMS ** 2 * len(x):
+            return False
+        x = x - x.mean()
+        energy = float(np.dot(x, x)) or 1.0
+        return float(np.dot(x[1:], x[:-1])) / energy < cls.MAX_NEIGHBOUR_CORRELATION
+
+    def fix(self, mono):
+        """mono: one block of int16 samples; returns it, realigned while shifted."""
+        import numpy as np
+        raw = mono.tobytes()
+        if self.shifted and raw:
+            out = np.frombuffer(self._carry + raw[:-1], dtype=np.int16)
+        else:
+            out = mono
+        if raw:
+            self._carry = raw[-1:]
+        bad = self.looks_misaligned(out)
+        self._bad += bad - self._recent[self._index]
+        self._recent[self._index] = bad
+        self._index = (self._index + 1) % self.WINDOW
+        if self._bad >= self.TRIGGER:
+            self.shifted = not self.shifted
+            self.flips += 1
+            self._recent = [False] * self.WINDOW
+            self._bad = 0
+        return out
+
+
 class SpeakerMixer:
     """The playback volume of the ALSA card Ember's speaker is on, set through amixer: no
     root, no extra audio stream. Made by speaker_mixer()."""
