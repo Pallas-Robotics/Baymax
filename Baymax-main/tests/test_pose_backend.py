@@ -507,7 +507,7 @@ class DefaultOffRk3588Tests(unittest.TestCase):
                 (drivers / name).mkdir(parents=True)
             self.assertEqual(pc_hardware.npu_drivers(str(drivers)), ["RKNPU"])
 
-    def test_rknnlite_is_imported_only_by_the_engine(self):
+    def test_rknnlite_is_imported_only_by_the_npu_engines(self):
         offenders = []
         sources = []
         for folder, dirs, files in os.walk(ROOT):
@@ -522,11 +522,13 @@ class DefaultOffRk3588Tests(unittest.TestCase):
                          [node.module or ""] if isinstance(node, ast.ImportFrom) else [])
                 if any(name.split(".")[0] == "rknnlite" for name in names):
                     offenders.append(path.relative_to(ROOT).as_posix())   # "/" on Windows too
-        self.assertEqual(sorted(offenders), ["features/pose/engines.py"])
-        engine = (ROOT / "features/pose/engines.py").read_text(encoding="utf-8")
-        tree = ast.parse(engine)
-        top_level = [n for n in tree.body if isinstance(n, (ast.Import, ast.ImportFrom))]
-        self.assertFalse(any("rknnlite" in ast.dump(n) for n in top_level))   # lazily, inside a function
+        # Pose's engine and the face recognizer's NPU model (person_recognition/face_npu.py)
+        engines = ["features/person_recognition/face_npu.py", "features/pose/engines.py"]
+        self.assertEqual(sorted(offenders), engines)
+        for engine in engines:
+            tree = ast.parse((ROOT / engine).read_text(encoding="utf-8"))
+            top_level = [n for n in tree.body if isinstance(n, (ast.Import, ast.ImportFrom))]
+            self.assertFalse(any("rknnlite" in ast.dump(n) for n in top_level), engine)   # lazily
 
     def test_importing_the_feature_loads_no_runtime(self):
         code = ("import sys; import features.pose.backend, features.pose.pipeline, features.pose.engines, "

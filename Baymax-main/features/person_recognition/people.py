@@ -250,6 +250,12 @@ class People:
         except Exception as error:
             print(f"[PEOPLE] Face recognition unavailable (model download: {error})", flush=True)
             return
+        from features.person_recognition import face_npu
+        if face_npu.ready():
+            faces.use_recognizer(faces.FUSED)
+            paths = dict(paths, npu=face_npu.model_path())
+            print(f"[PEOPLE] Face recognizer: SFace + AuraFace on the NPU (core "
+                  f"{os.getenv('BAYMAX_FACE_NPU_CORE', '1')})", flush=True)
         store = faces.PeopleStore()
         if voice_enabled():
             from features.person_recognition.voice_process import VoiceFeed
@@ -265,6 +271,14 @@ class People:
                 from features.person_recognition.face_process import RemoteFaceModels
                 models = RemoteFaceModels(paths)
             except Exception as error:
+                if paths.get("npu") and self.identifier is None:
+                    # The NPU model wouldn't load: SFace on the CPU for this run, at once
+                    print(f"[PEOPLE] AuraFace on the NPU could not start ({error}); using SFace alone",
+                          flush=True)
+                    paths = {k: v for k, v in paths.items() if k != "npu"}
+                    faces.use_recognizer("sface")
+                    store = faces.PeopleStore()
+                    continue
                 print(f"[PEOPLE] Face process could not start: {error}", flush=True)
                 time.sleep(FACE_RESTART_S)
                 continue

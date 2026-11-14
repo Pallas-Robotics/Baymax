@@ -1,5 +1,17 @@
 # MVP (unreleased)
 
+- A stronger face recognizer on the Orange Pi 5 Max: SFace plus AuraFace (Apache-2.0,
+  ArcFace ResNet100) on NPU core 1, combined into one embedding
+  (features/person_recognition/README.md, "A stronger face model").
+  - On LFW at Ember's thresholds, people recognised at the MATCH bar: 92.3% -> 96.3%
+    (full-size faces), 89.5% -> 95.5% (faces 43 px wide), with no more false matches.
+    AuraFace alone was no better than SFace; the two together are.
+  - `convert_face_rknn.py` converts it on the board (FP16) and checks the NPU against
+    ONNX Runtime on real faces; until that passes, or off the Orange Pi, SFace alone.
+  - People saved with SFace are still recognised and learn fused samples as they are
+    seen; SFace samples are kept for going back.
+  - Tests: `tests/test_person_recognition_face_npu.py`.
+
 - Ember tells people talking to each other from people talking to it, and recognises
   people more reliably (features/person_recognition/README.md).
   - Every utterance gets a session voice ("voice 1", "voice 2", or a known name) in the

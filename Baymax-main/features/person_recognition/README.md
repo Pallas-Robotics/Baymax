@@ -53,6 +53,7 @@ The voice models are PR #36's own, on ONNX Runtime (already installed for memory
 |---|---|---|---|
 | YuNet | `.models/faces/face_detection_yunet_2023mar.onnx` | OpenCV Zoo, downloaded at first start, SHA-256 checked | ~0.2 MB |
 | SFace | `.models/faces/face_recognition_sface_2021dec.onnx` | OpenCV Zoo, the same | ~39 MB |
+| AuraFace (Orange Pi NPU) | `.models/faces_npu/auraface_fp16.rknn` | `convert_face_rknn.py` on the board, from fal/AuraFace-v1 `glintr100.onnx` (Apache-2.0, sha256 `a7933ea5…`) | ~250 MB ONNX |
 | ECAPA-TDNN | `.models/voice/ecapa_voxceleb.onnx` | `convert_voice_model.py`, then copied to the robot | 83 MB (sha256 `9df89cb3…`) |
 | Silero VAD | `.models/voice/silero_vad.onnx` | the same | 2.3 MB |
 
@@ -136,6 +137,52 @@ Voice recognition stays off (logged once) until `.models/voice/` has both files.
 - **Backups.** Before a change, `ember_people.json` is copied to
   `ember_people.json.backup-<time>` at most every 6 hours; the last 4 are kept.
 
+## A stronger face model (SFace + AuraFace on the NPU)
+
+On the Orange Pi 5 Max, each face is embedded twice: SFace on the CPU as before, and
+AuraFace (an ArcFace ResNet100, 512-d, Apache-2.0) on NPU core 1. The two are joined into
+one 640-d vector (`face_npu.fuse`) whose similarity is 0.39 x SFace's + 0.61 x AuraFace's.
+
+Why both: AuraFace alone is no better than SFace, but they make different mistakes
+(different-person scores correlate only 0.37). LFW, 6000 pairs (3000 same person), on
+a Mac, with faces as LFW has them (median 96 px wide) and shrunk to 43 px (Ember at
+2-3 m):
+
+| Same people recognised at the "recognised" bar | SFace | AuraFace | SFace + AuraFace |
+|---|---|---|---|
+| Full-size faces, no false match | 97.3% | 96.9% | 98.7% |
+| Small faces, no false match | 97.5% | 95.5% | 97.7% |
+| Full-size, 1 in 1000 false | 98.7% | 98.3% | 99.1% |
+| Small, 1 in 1000 false | 98.1% | 98.5% | 99.0% |
+| Full-size, at Ember's MATCH 0.50 (fused: 0.395) | 92.3% | | 96.3% |
+| Small, at Ember's MATCH 0.50 (fused: 0.395) | 89.5% | | 95.5% |
+| Turned faces (yaw > 0.25), at MATCH: full-size / small | 91.2% / 86.5% | | 96.0% / 92.9% |
+
+At Ember's own thresholds the combination misses about half as many people with no more
+wrong names (no different-person pair reaches the fused MATCH or 0.45-equivalent in
+either set; at MAYBE, 2 of 3000 small-face pairs, "might be", which Ember asks about).
+Thresholds are SFace's mapped onto the fused scale with one formula
+(`faces._sface_to_fused`: the same share of different people above each), except the
+near-duplicate end of `AUTO_LEARN_RANGE` (0.82, same share of same-person pairs).
+
+- **Nobody is forgotten in the switch.** People saved with SFace alone are still matched
+  by the SFace part of each fused embedding (`PeopleStore.match_all`); once recognised
+  on a confirmed track, three fused samples are stored for them, 2 s apart (log:
+  `[FACE] Learning Joe's face for sface+auraface: 1 of 3 samples`). SFace samples are
+  kept. With SFace alone again (NPU model removed or failing), people met meanwhile are
+  matched by the SFace part of their fused samples.
+- **Only after a check on the board.** `convert_face_rknn.py all --images <dir of face
+  photos>` (in pose's `venv-rknn`) downloads the ONNX (SHA-256 checked), builds an FP16
+  RKNN with the normalisation built in, and compares NPU and ONNX embeddings on real
+  faces (cosine >= 0.99 each). Only then does `manifest.json` say `"check": "passed"`,
+  and only then (Linux aarch64) is it used; otherwise SFace alone, as before.
+- If the NPU model won't load at start, Ember logs it and uses SFace alone at once.
+- InsightFace's own ArcFace models score higher but are licensed for non-commercial
+  research only; EdgeFace's weights likewise. AuraFace was trained on data its authors
+  describe as commercially usable.
+- Mac reference speed: SFace 18-30 ms, AuraFace 307-700 ms per face on CPU. NPU time
+  on the board: to be measured by `convert_face_rknn.py check`.
+
 ## Data, consent and forgetting
 
 - `ember_people.json` in `BAYMAX_DATA_DIR`: per person an id, name, optional
@@ -158,6 +205,9 @@ Voice recognition stays off (logged once) until `.models/voice/` has both files.
 | `BAYMAX_VOICE_RECOGNITION` | `1` | `0`: faces only |
 | `BAYMAX_PEOPLE_GREETINGS` | `1` | `0`: no `[ARRIVED]`/`[NEW PERSON]` conversations started by Ember |
 | `BAYMAX_GROUP_AWARE` | `1` | `0`: replies aren't held while people talk to each other |
+| `BAYMAX_FACE_NPU` | `1` | `0`: SFace alone even with the NPU model converted |
+| `BAYMAX_FACE_NPU_CORE` | `1` | NPU core for AuraFace (`0`, `1`, `2`, `auto`; pose uses 0) |
+| `BAYMAX_FACE_NPU_DIR` | `.models/faces_npu` | where the converted model and manifest are |
 
 ## Not ported yet
 
@@ -171,7 +221,8 @@ the dashboard's People page and photo enrolment, and `ember_self`/`ember_identit
 `tests/test_person_recognition_faces.py` (PR #8's 88 tests), `..._voice_id.py` and
 `..._voice_live.py` (PR #36's 17 and 25), `..._runtime.py` (children, the mic feed,
 tools, spoken prompts, registration), `..._conversation.py` (session voices, turn
-taking, the reply gate's hold, facing, backups). Suite: `tests/features/person_recognition`.
+taking, the reply gate's hold, facing, backups), `..._face_npu.py` (alignment, fusion,
+fused thresholds, moving people saved with SFace over, falling back). Suite: `tests/features/person_recognition`.
 Hardware checks pending: on the Orange Pi 5 Max, CPU per core with both children
 running, conversation latency unchanged, a face learned and recognised, a voice learned
 and recognised, `[ARRIVED]` spoken only between turns. The board's camera frames were

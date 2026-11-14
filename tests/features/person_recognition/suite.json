@@ -18,7 +18,8 @@
         "test_person_recognition_voice_id.py",
         "test_person_recognition_voice_live.py",
         "test_person_recognition_runtime.py",
-        "test_person_recognition_conversation.py"
+        "test_person_recognition_conversation.py",
+        "test_person_recognition_face_npu.py"
       ]
     }
   ],

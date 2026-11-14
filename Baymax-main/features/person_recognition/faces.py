@@ -108,6 +108,7 @@ STEADY_GAP = 1.0              # …and was seen in the previous frame (seconds)
 STEADY_LOOK = 0.85            # …and a 16x16 thumbnail of it still looks the same: a
                               # different person in the same spot scores < 0.79 (LFW),
                               # the same face frame to frame ~0.97
+REFIND_TRACK = 0.50           # a face this close to a recent track's samples is that track again
 DOWNLOAD_TIMEOUT = 30         # seconds without data before a model download gives up
 AWAY_PRIMARY = 3 * 3600       # greet the person Ember lives with after this long apart
 AWAY_OTHERS = 2 * 60          # greet anyone else Ember knows after this long apart (PR #8: 20 min;
@@ -259,6 +260,11 @@ class FaceModels:
                                                    DETECTION_SCORE, 0.3, 50)
         self._recognizer = cv2.FaceRecognizerSF.create(paths["recognizer"], "")
         self._lock = threading.Lock()   # the OpenCV objects aren't thread-safe
+        self._npu = None
+        if paths.get("npu"):            # AuraFace on the NPU, used with SFace (face_npu.py)
+            from features.person_recognition import face_npu
+            self._fuse = face_npu.fuse
+            self._npu = face_npu.NpuEmbedder(paths["npu"])
 
     def detect(self, frame, scale=1.0):
         """Faces in `frame`. With scale < 1 the detector runs on a smaller copy
@@ -316,10 +322,78 @@ class FaceModels:
         return g / n if n > 1e-6 else None
 
     def embed(self, frame, det):
+        """SFace's embedding, or with AuraFace on the NPU both joined into one (face_npu.fuse)."""
         with self._lock:
             aligned = self._recognizer.alignCrop(frame, det.row)
             feat = self._recognizer.feature(aligned).flatten().astype(np.float32)
-        return feat / (np.linalg.norm(feat) + 1e-9)
+        feat = feat / (np.linalg.norm(feat) + 1e-9)
+        if self._npu is not None:
+            return self._fuse(feat, self._npu.embed(frame, det.landmarks))
+        return feat
+
+
+# ─── Recognizers ─────────────────────────────────────────────────────────────
+# Similarity thresholds belong to the embeddings they compare. SFace's are PR #8's (above).
+# With AuraFace on the NPU, embeddings are SFace + AuraFace joined (face_npu.fuse), whose
+# scores are SFace's scale squeezed: on LFW a fused score f behaves like an SFace score of
+# s = f / (2 * SFACE_WEIGHT) + FUSED_OFFSET for telling people apart (same share of
+# different-person pairs above it), while far more same-person pairs reach it. So each
+# threshold maps over with that formula, and Ember is at least as careful about wrong
+# names as before while recognising more (README, "A stronger face model"). The one
+# exception is the "near-duplicate" end of AUTO_LEARN_RANGE, an upper bound on how alike
+# the same person's photos are: mapped where as many same-person LFW pairs lie above it.
+THRESHOLD_NAMES = ("MATCH_THRESHOLD", "MAYBE_THRESHOLD", "AUTO_LEARN_RANGE", "ANGLE_LEARN_RANGE",
+                   "INTRO_MAX_SCORE", "TRACK_CONTINUITY", "SAMPLE_CONSISTENCY", "SAME_VISITOR",
+                   "REFIND_TRACK")
+FUSED = "sface+auraface"
+FUSED_SFACE_WEIGHT = 0.39     # face_npu.SFACE_WEIGHT (not imported: no numpy-only module needs it)
+FUSED_OFFSET = -0.006
+FUSED_NEAR_DUPLICATE = 0.82   # SFace's 0.85 (97.5% of same-person LFW pairs score below either)
+SFACE_DIM, FUSED_DIM = 128, 640
+
+
+def _sface_to_fused(score):
+    """An SFace score on the fused scale (the same share of different people above it)."""
+    return (score - FUSED_OFFSET) * 2 * FUSED_SFACE_WEIGHT
+
+
+def _fused_thresholds(sface):
+    table = {}
+    for name in THRESHOLD_NAMES:
+        value = sface[name]
+        table[name] = (tuple(round(_sface_to_fused(v), 3) for v in value)
+                       if isinstance(value, tuple) else round(_sface_to_fused(value), 3))
+    table["AUTO_LEARN_RANGE"] = (table["AUTO_LEARN_RANGE"][0], FUSED_NEAR_DUPLICATE)
+    return table
+
+
+_SFACE = {name: globals()[name] for name in THRESHOLD_NAMES}
+RECOGNIZERS = {
+    "sface": {"key": "embeddings", "dim": SFACE_DIM, **_SFACE},
+    FUSED: {"key": "embeddings_sface_auraface", "dim": FUSED_DIM, **_fused_thresholds(_SFACE)},
+}
+KEY_DIMS = {table["key"]: table["dim"] for table in RECOGNIZERS.values()}
+RECOGNIZER = "sface"
+EMBEDDINGS_KEY = "embeddings"
+MIGRATE_SAMPLES = 3           # a person with fewer fused samples is also looked for by their
+                              # SFace samples (saved before AuraFace), so nobody is forgotten
+MIGRATE_INTERVAL = 2.0        # seconds between migration samples per person
+
+
+def use_recognizer(name):
+    """Switch thresholds and the stored-embedding key to recognizer `name` (before making
+    the PeopleStore and FaceIdentifier). Ember's process calls this once at start."""
+    global RECOGNIZER, EMBEDDINGS_KEY
+    table = RECOGNIZERS[name]
+    for key in THRESHOLD_NAMES:
+        globals()[key] = table[key]
+    RECOGNIZER, EMBEDDINGS_KEY = name, table["key"]
+
+
+def _sface_part(fused):
+    """The SFace embedding inside a fused one (face_npu.sface_part, without importing it)."""
+    v = np.asarray(fused, np.float32)[..., :SFACE_DIM]
+    return v / (np.linalg.norm(v, axis=-1, keepdims=True) + 1e-9)
 
 
 # ─── People store (shared with the dashboard) ───────────────────────────────
@@ -328,14 +402,18 @@ class PeopleStore:
     Writers (AI core, dashboard) take an exclusive file lock for every
     read-modify-write; readers pick up changes by checking the file's mtime."""
 
-    def __init__(self, path=None, clock=time.time):
+    def __init__(self, path=None, clock=time.time, key=None):
         self.path = path or PEOPLE_PATH
         self._clock = clock
+        self.key = key or EMBEDDINGS_KEY          # which model's samples this store matches
         self._lock = threading.RLock()
         self._data = {"version": 1, "people": []}
         self._mtime = None
         self._matrix = np.zeros((0, 128), np.float32)
         self._owners = []
+        self._legacy = np.zeros((0, SFACE_DIM), np.float32)   # SFace samples of people not migrated yet
+        self._legacy_owners = []
+        self._legacy_set = set()
         self.reload_if_changed(force=True)
 
     # ── File handling ────────────────────────────────────────────────────────
@@ -426,14 +504,33 @@ class PeopleStore:
     def _set(self, data, mtime):
         self._data = data
         self._mtime = mtime
-        rows, owners = [], []
+        rows, owners, legacy, legacy_owners = [], [], [], []
         for person in data["people"]:
-            for emb in person.get("embeddings", []):
+            for emb in self._samples(person):
                 rows.append(emb)
                 owners.append(person["id"])
+            if self.key != "embeddings" and len(person.get(self.key, [])) < MIGRATE_SAMPLES:
+                for emb in person.get("embeddings", []):
+                    legacy.append(emb)
+                    legacy_owners.append(person["id"])
         self._matrix = (np.array(rows, np.float32) if rows
-                        else np.zeros((0, 128), np.float32))
+                        else np.zeros((0, KEY_DIMS.get(self.key, SFACE_DIM)), np.float32))
         self._owners = owners
+        self._legacy = (np.array(legacy, np.float32) if legacy
+                        else np.zeros((0, SFACE_DIM), np.float32))
+        self._legacy_owners = legacy_owners
+        self._legacy_set = set(legacy_owners)
+
+    def _samples(self, person):
+        """The person's samples this store matches with. With SFace alone (no NPU, or the
+        dashboard), the SFace part of fused samples counts too: someone met while AuraFace
+        was running is still recognised if the NPU model ever stops working."""
+        samples = list(person.get(self.key, []))
+        if self.key == "embeddings":
+            fused = person.get(RECOGNIZERS[FUSED]["key"])
+            if fused:
+                samples += [list(map(float, v)) for v in _sface_part(fused)]
+        return samples
 
     def _update(self, change):
         """Locked read-modify-write; `change(data)` returns the call's result."""
@@ -481,10 +578,39 @@ class PeopleStore:
             i = int(np.argmax(scores))
             return self._owners[i], float(scores[i])
 
+    def unmigrated(self, person_id=None):
+        """Anyone (or this person) known only or mostly by SFace samples while the fused
+        recognizer is in use."""
+        with self._lock:
+            return person_id in self._legacy_set if person_id else bool(self._legacy_owners)
+
+    def match_legacy(self, embedding):
+        """Best (person_id, SFace score) among people not migrated yet, or (None, 0.0)."""
+        with self._lock:
+            if not len(self._legacy_owners):
+                return None, 0.0
+            scores = self._legacy @ embedding
+            i = int(np.argmax(scores))
+            return self._legacy_owners[i], float(scores[i])
+
+    def match_all(self, embedding):
+        """(person_id, score, legacy): the best match, also among people known only by
+        their SFace samples so far (legacy=True; score on the fused scale)."""
+        pid, score = self.match(embedding)
+        if self.key != "embeddings" and self.unmigrated():
+            lpid, lscore = self.match_legacy(_sface_part(embedding))
+            if lpid and _sface_to_fused(lscore) > score:
+                return lpid, _sface_to_fused(lscore), True
+        return pid, score, False
+
+    def samples_of(self, person_id):
+        person = self.get(person_id)
+        return len(person.get(self.key, [])) if person else 0
+
     def summary(self):
         """For the dashboard — no embeddings."""
         return [{k: p.get(k) for k in ("id", "name", "relationship", "source", "created",
-                                       "last_seen")} | {"samples": len(p.get("embeddings", []))}
+                                       "last_seen")} | {"samples": len(p.get(self.key, []))}
                 for p in self.people()]
 
     # ── Changes ──────────────────────────────────────────────────────────────
@@ -509,9 +635,9 @@ class PeopleStore:
                 data["people"].append(person)
             if relationship:
                 person["relationship"] = " ".join(str(relationship).split())[:60]
-            samples = [np.asarray(e, np.float32) for e in person["embeddings"]] + embeddings
-            person["embeddings"] = [[round(float(v), 5) for v in e]
-                                    for e in _keep_diverse(samples, MAX_SAMPLES)]
+            samples = [np.asarray(e, np.float32) for e in person.get(self.key, [])] + embeddings
+            person[self.key] = [[round(float(v), 5) for v in e]
+                                for e in _keep_diverse(samples, MAX_SAMPLES)]
             person["updated"] = now
             return person["id"], created
 
@@ -529,12 +655,13 @@ class PeopleStore:
                 return 0
             if relationship:
                 person["relationship"] = " ".join(str(relationship).split())[:60]
-            stored = [np.asarray(e, np.float32) for e in person["embeddings"]]
-            keep = [e for e in embeddings if not check_consistency or not stored
-                    or float(np.max(np.array(stored) @ e)) >= SAMPLE_CONSISTENCY]
+            stored = [np.asarray(e, np.float32) for e in person.get(self.key, [])]
+            known = bool(self._samples(person) or (self.key != "embeddings" and person.get("embeddings")))
+            keep = [e for e in embeddings if not check_consistency or not known
+                    or self._resemblance(person, [e]) >= SAMPLE_CONSISTENCY]
             if keep:
-                person["embeddings"] = [[round(float(v), 5) for v in e]
-                                        for e in _keep_diverse(stored + keep, MAX_SAMPLES)]
+                person[self.key] = [[round(float(v), 5) for v in e]
+                                    for e in _keep_diverse(stored + keep, MAX_SAMPLES)]
                 person["updated"] = self._clock()
             return len(keep)
 
@@ -543,10 +670,20 @@ class PeopleStore:
     def resemblance(self, person_id, embeddings):
         """Best cosine between any of `embeddings` and the person's stored face."""
         person = self.get(person_id)
-        if not person or not person.get("embeddings") or not len(embeddings):
+        return self._resemblance(person, embeddings) if person else 0.0
+
+    def _resemblance(self, person, embeddings):
+        if not len(embeddings):
             return 0.0
-        return float(np.max(np.array(person["embeddings"], np.float32)
-                            @ np.array(embeddings, np.float32).T))
+        embeddings = np.array(embeddings, np.float32)
+        samples = self._samples(person)
+        best = float(np.max(np.array(samples, np.float32) @ embeddings.T)) if samples else 0.0
+        if (self.key != "embeddings" and person.get("embeddings")
+                and len(person.get(self.key, [])) < MIGRATE_SAMPLES):
+            sface = float(np.max(np.array(person["embeddings"], np.float32)
+                                 @ _sface_part(embeddings).T))
+            best = max(best, _sface_to_fused(sface))      # saved before AuraFace
+        return best
 
     def set_appearance(self, person_id, description, when=None, today=None):
         """Remember how someone looks (text only): `description` is their usual
@@ -683,6 +820,7 @@ class FaceIdentifier:
         self._last_intro = -1e9
         self._last_asked_track = None
         self._last_learned = {}
+        self._last_migrated = {}
         self._seen = {}
         self._last_seen_saved = clock()
         self._last_present = {}      # person_id -> last time seen (for arrivals)
@@ -786,9 +924,13 @@ class FaceIdentifier:
                 continue
             if good:
                 track.samples.append(emb)
-            pid, score = self.store.match(emb)
+            # (legacy: someone saved before AuraFace, matched by their SFace samples)
+            pid, score, _ = self.store.match_all(emb)
             track.votes.append((pid if score >= MAYBE_THRESHOLD else None, score))
             self._resolve(track)
+            if (good and pid and track.person_id == pid and self.store.unmigrated(pid)
+                    and self._confirmed(track)):
+                self._migrate(pid, emb, now)
             if track.person_id:
                 self._seen[track.person_id] = self._wall()
                 self._note_presence(track, det, frame, good, now)
@@ -803,6 +945,18 @@ class FaceIdentifier:
                 track.visitor["last_seen"] = now        # still here: the visit continues
             elif track.samples and not (track.asked or track.declined):
                 self._inherit_visit(track, now)
+
+    def _migrate(self, person_id, emb, now):
+        """Store this model's sample of someone recognised from their SFace samples, so they
+        are known by the new model from now on (after MIGRATE_SAMPLES of them)."""
+        if now - self._last_migrated.get(person_id, -1e9) < MIGRATE_INTERVAL:
+            return
+        self._last_migrated[person_id] = now
+        if self.store.add_samples_to(person_id, [emb]):
+            done = self.store.samples_of(person_id)
+            name = (self.store.get(person_id) or {}).get("name", person_id)
+            print(f"[FACE] Learning {name}'s face for {RECOGNIZER}: {done} of {MIGRATE_SAMPLES} samples",
+                  flush=True)
 
     def _confirmed(self, track):
         """This track was named from clear matches of its own (not only followed)."""
@@ -829,7 +983,7 @@ class FaceIdentifier:
             if same_face:
                 return best
         for t in self._tracks:
-            if t.id not in used and t.samples and float(np.mean(t.samples, axis=0) @ emb) >= 0.5:
+            if t.id not in used and t.samples and float(np.mean(t.samples, axis=0) @ emb) >= REFIND_TRACK:
                 return t
         track = Track(id=self._next_track, first_seen=now, last_seen=now, box=det.box)
         self._next_track += 1
@@ -1099,7 +1253,7 @@ class FaceIdentifier:
         might be them (then it asks "Is that you, ...?"), wait for a clearer look."""
         if track.maybe_id:
             return False
-        _, score = self.store.match(_normalize(np.mean(track.samples, axis=0)))
+        _, score, _ = self.store.match_all(_normalize(np.mean(track.samples, axis=0)))
         return score >= INTRO_MAX_SCORE
 
     def facing_people(self, seconds=IN_VIEW_SECONDS):
@@ -1111,7 +1265,7 @@ class FaceIdentifier:
     def _looks_known(self, track):
         """A track not yet named whose face clearly matches someone stored
         (e.g. their first second in view)."""
-        pid, score = self.store.match(_normalize(np.mean(track.samples, axis=0)))
+        pid, score, _ = self.store.match_all(_normalize(np.mean(track.samples, axis=0)))
         return pid if score >= MATCH_THRESHOLD else None
 
     def _unfamiliar_in_view(self, now):
