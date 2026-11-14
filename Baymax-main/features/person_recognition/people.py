@@ -32,7 +32,7 @@ import threading
 import time
 
 import runtime_monitor as monitor
-from features.person_recognition import faces, voices
+from features.person_recognition import conversation, faces, voices
 from features.vision_process import Remote, Stopped
 
 FACE_FPS = 2.0                 # PR #8's rate
@@ -73,6 +73,9 @@ yes, and only once they have told you their name, call remember_person with that
 it says you already remember that face, tell them you know them already. If they say no,
 call decline_to_be_remembered and don't ask again (if they later say yes themselves, call
 remember_person with changed_mind true).
+Several people may be in the room. who_is_here also says how many people have been talking
+and whether they are talking to each other right now; when they are, stay out of it unless
+someone says your name or turns to you.
 If someone asks you to learn their voice, first ask whether it's okay. Only if they
 clearly say yes, call remember_voice with their name, then ask them to talk naturally for
 about ten seconds. A message starting with [VOICE LEARNED] tells you how it went: tell
@@ -99,6 +102,12 @@ def voice_learning_enabled():
 
 def greetings_enabled():
     return os.getenv("BAYMAX_PEOPLE_GREETINGS", "1") != "0"
+
+
+def group_aware():
+    """Hold Ember's replies while people talk to each other (conversation.py). Needs voice
+    recognition (who is talking); off with BAYMAX_GROUP_AWARE=0."""
+    return enabled() and os.getenv("BAYMAX_GROUP_AWARE", "1") != "0"
 
 
 PLACEHOLDER_NAMES = {"", "user", "the user", "person", "the person", "someone", "somebody", "unknown",
@@ -185,8 +194,11 @@ def log_voice_result(result):
     """One log line per identification, as PR #36 printed (who and timing, never words)."""
     who = result.get("name") if result["level"] == "sure" else (
         f"might be {result.get('name')}" if result["level"] == "maybe" else result["level"])
+    voice = ""
+    if result.get("speaker"):
+        voice = f", {result['speaker']}" + (" heard over several utterances" if result.get("by") else "")
     print(f"[VOICE] {who} (score {result['score']:.2f}, {result['stage']}, {result['seconds']:.1f} s of speech, "
-          f"{result['ms']} ms)", flush=True)
+          f"{result['ms']} ms{voice})", flush=True)
 
 
 def _voice_remote(sample_rate):
@@ -210,6 +222,7 @@ class People:
         self.greeted = {}              # person id -> when Ember last greeted them (face or voice)
         self.heard = {}                # person id -> when their voice was last recognised
         self.adopted_at = {}           # person id -> when a clip of theirs was last offered for learning
+        self.conversation = conversation.ConversationTracker(clock)
         self.voice_arrivals = []
 
     # ── Camera (the capture loop's thread): store the reference only ───────────
@@ -227,6 +240,8 @@ class People:
         voice = self.voice
         if voice is not None:
             voice.feed(chunk, ember_speaking)
+            if ember_speaking:
+                self.conversation.ember_audible(self.clock())
 
     # ── Face thread ────────────────────────────────────────────────────────────
     def _run(self):
@@ -240,7 +255,7 @@ class People:
             from features.person_recognition.voice_process import VoiceFeed
             self.voice = VoiceFeed(functools.partial(_voice_remote, self.sample_rate),
                                    on_result=self._voice_result, on_learned=self._voice_learned,
-                                   on_adopted=self._voice_adopted).start()
+                                   on_adopted=self._voice_adopted, on_turn=self._voice_turn).start()
             print("[PEOPLE] Voice recognition started (own process, slow cores)", flush=True)
         elif enabled() and os.getenv("BAYMAX_VOICE_RECOGNITION", "1") != "0":
             print(f"[PEOPLE] Voice recognition off: no models in {voices.MODEL_DIR}", flush=True)
@@ -267,6 +282,7 @@ class People:
                         seen = frame_id
                         self.identifier.process(frame)
                         self._log_faces()
+                        self.conversation.faces(len(self.identifier.facing_people()), self.clock())
                     else:
                         self.identifier.no_new_frame()
                     time.sleep(max(0.0, 1.0 / FACE_FPS - (self.clock() - started)))
@@ -343,6 +359,30 @@ class People:
                                                 "away": None if last is None else now - last,
                                                 "last_seen": None, "t": now})
 
+    def _voice_turn(self, turn):
+        """A finished utterance: whose, and were they facing Ember (conversation.py)."""
+        changed = self.conversation.add_turn(turn, self._facing(turn))
+        if changed is not None:
+            print(self.conversation.log_line(changed), flush=True)
+
+    def _facing(self, turn):
+        """Whether the speaker faced the camera while talking: their own face if their voice
+        is known and in view, else the only face in view; None when it can't be told."""
+        identifier = self.identifier
+        if identifier is None:
+            return None
+        faces_now = identifier.facing_people()
+        mine = [at for pid, at in faces_now if turn.get("person_id") and pid == turn["person_id"]]
+        if not mine and len(faces_now) == 1 and not turn.get("person_id"):
+            mine = [faces_now[0][1]]
+        if not mine:
+            return None
+        return max(mine) >= turn["start"] - conversation.FACING_LEAD_S
+
+    def side_conversation(self):
+        """People are talking to each other, not to Ember (AddressGate's `side` check)."""
+        return group_aware() and self.voice is not None and self.conversation.side_conversation()
+
     def _rename_placeholder(self, identifier, new_name):
         """remember_person(name) for a face in view that was saved under a placeholder
         ("User", from before the placeholder check): rename that person."""
@@ -405,6 +445,8 @@ class People:
             return {"in_front_of_you": identifier.describe_in_view(),
                     "visits": identifier.describe_visits(),
                     "talking": speaker_answer(speaker, self.speaker_by_face()) if self.voice
+                    else "voice recognition is off",
+                    "conversation": self.conversation.describe() if self.voice
                     else "voice recognition is off"}
         if name == "identify_speaker":
             if self.voice is None:
@@ -437,7 +479,7 @@ class People:
     def _can_speak(self):
         from features.conversational_ability.engage import engagement
         from features.toolkits.everyday.tools import available_to_speak
-        return (greetings_enabled() and not engagement.disengaged
+        return (greetings_enabled() and not engagement.disengaged and not self.side_conversation()
                 and self.clock() - self.last_opener >= OPENER_GAP_S and available_to_speak())
 
     async def session_task(self, session, shutdown_event):

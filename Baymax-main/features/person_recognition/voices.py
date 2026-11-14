@@ -395,6 +395,7 @@ VAD_RATE = 16000
 VAD_FRAME = 512               # Silero VAD takes 512-sample frames at 16 kHz (32 ms)
 SPEECH_PROB = 0.5             # VAD probability that counts as speech
 END_SILENCE_S = 0.5           # this much silence ends an utterance
+TURN_MIN_SPEECH_S = 0.3       # shorter sounds aren't counted as someone's turn
 PRE_ROLL_S = 0.3              # keep a little audio from just before speech started
 EARLY_ID_S = 2.0              # identify early once this much speech is heard
 MAX_UTTERANCE_S = 15.0        # cut very long utterances (identify them in pieces)
@@ -595,8 +596,12 @@ class VoiceListener:
     """Who is speaking, live. Give it mono audio chunks with feed()."""
 
     def __init__(self, identifier, sample_rate, is_ember_speaking=None, on_result=None,
-                 vad=None, clock=time.monotonic):
+                 vad=None, clock=time.monotonic, on_utterance=None):
         self.identifier = identifier
+        # on_utterance(start, end, speech_s, final_match or None): every finished utterance
+        # of TURN_MIN_SPEECH_S or more, identified or not (who talks when, for the
+        # conversation's turn taking). Times are the mic blocks' capture times.
+        self._on_utterance = on_utterance
         self.sample_rate = int(sample_rate)
         self._is_ember_speaking = is_ember_speaking or (lambda: False)
         self._on_result = on_result or print_result
@@ -740,6 +745,9 @@ class VoiceListener:
         self._silence_s = 0.0            # silence since the last speech frame
         self._in_speech = False
         self._early_done = False
+        self._utt_start = None           # capture time of the first speech block
+        self._utt_end = None             # ...and of the latest one
+        self._final = None               # this utterance's final VoiceMatch
 
     def process(self, chunk, ember_speaking=None, captured=None):
         audio = (np.frombuffer(chunk, np.int16) if isinstance(chunk, (bytes, bytearray))
@@ -774,6 +782,10 @@ class VoiceListener:
         frame_s = VAD_FRAME / VAD_RATE
         chunk_has_speech = speech_frames > 0
 
+        if chunk_has_speech:
+            if self._utt_start is None:
+                self._utt_start = now
+            self._utt_end = now + len(audio) / self.sample_rate
         if not self._in_speech:
             if chunk_has_speech:
                 self._in_speech = True
@@ -815,6 +827,9 @@ class VoiceListener:
             self._identify("final")
             if self._learning is not None:
                 self._collect_for_learning(np.concatenate(self._utt))
+        if self._on_utterance is not None and self._speech_s >= TURN_MIN_SPEECH_S \
+                and self._utt_start is not None:
+            self._on_utterance(self._utt_start, self._utt_end, self._speech_s, self._final)
         with self._cond:
             self._reset_utterance()
             self._cond.notify_all()
@@ -823,6 +838,8 @@ class VoiceListener:
     def _identify(self, stage):
         audio = np.concatenate(self._utt) if self._utt else np.zeros(0, np.float32)
         match = self.identifier.identify(audio, self.sample_rate)
+        if stage == "final":
+            self._final = match
         with self._cond:
             self._latest = (match, stage, self._clock())
             self._results += 1

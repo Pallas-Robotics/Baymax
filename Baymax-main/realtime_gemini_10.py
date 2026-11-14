@@ -479,7 +479,9 @@ if ONLY_WHEN_ADDRESSED:
 # direct questions after an ordinary pause. Gemini still judges conversational intent.
 from features.conversational_ability.addressing import AddressGate
 from features.conversational_ability.session import connection_lost, handle_received_at, not_tried
-_address_gate = AddressGate(enabled=bool(ONLY_WHEN_ADDRESSED) and os.getenv("BAYMAX_ADDRESS_GATE", "0") == "1")
+# People recognition also holds replies while people talk to each other (conversation.py).
+_address_gate = AddressGate(enabled=bool(ONLY_WHEN_ADDRESSED) and os.getenv("BAYMAX_ADDRESS_GATE", "0") == "1",
+                            side=lambda: bool(ONLY_WHEN_ADDRESSED) and _people.side_conversation())
 
 _BASE_CONFIG = {
     "response_modalities": ["AUDIO"],

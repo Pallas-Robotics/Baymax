@@ -30,7 +30,7 @@ class VoiceChild:
     device = "CPU"
 
     def __init__(self, sample_rate, people_path, model_dir=None):
-        from features.person_recognition import faces, voices
+        from features.person_recognition import faces, speakers, voices
         store = faces.PeopleStore(people_path)
         identifier = voices.VoiceIdentifier(voices.VoiceModel(model_dir), store)
         self.identifier = identifier
@@ -39,12 +39,14 @@ class VoiceChild:
                   + (f"kept {kept} of {before} clips" if kept else
                      f"none of {before} clips sound like one speaker; it will be learned again"),
                   flush=True)
-        self.results, self.learned, self.adopted = [], [], []
+        self.results, self.learned, self.adopted, self.turns = [], [], [], []
+        self.speakers = speakers.SessionSpeakers()
+        self._final_voice = None                   # (final VoiceMatch, its session voice)
         self.recent = collections.OrderedDict()   # result id -> embedding, newest last
         self.pending = {}                          # person id -> [embeddings] for a first voice
         self.next_id = 0
         self.listener = voices.VoiceListener(identifier, sample_rate, on_result=self._result,
-                                             vad=voices.make_vad(model_dir))
+                                             vad=voices.make_vad(model_dir), on_utterance=self._turn)
 
     def _result(self, match, stage):
         self.next_id += 1
@@ -52,9 +54,44 @@ class VoiceChild:
             self.recent[self.next_id] = match.embedding
             while len(self.recent) > 20:
                 self.recent.popitem(last=False)
-        self.results.append({"level": match.level, "person_id": match.person_id, "name": match.name,
-                             "score": round(match.score, 3), "seconds": round(match.seconds, 2),
-                             "ms": round(match.ms), "stage": stage, "id": self.next_id})
+        result = {"level": match.level, "person_id": match.person_id, "name": match.name,
+                  "score": round(match.score, 3), "seconds": round(match.seconds, 2),
+                  "ms": round(match.ms), "stage": stage, "id": self.next_id}
+        if match.embedding is not None and getattr(self, "speakers", None) is not None:
+            self._session_voice(match, stage, result)
+        self.results.append(result)
+
+    def _session_voice(self, match, stage, result):
+        """Give the utterance its session voice (speakers.py) and, when that voice's
+        average over several utterances is recognised "sure", count it as that person's."""
+        from features.person_recognition import speakers, voices
+        now = time.monotonic()
+        sure = match.level == "sure"
+        if stage == "final":
+            voice = self.speakers.assign(match.embedding, now, match.person_id, match.name, sure=sure)
+            self._final_voice = (match, voice)
+        else:          # an early look at an utterance still going: don't add it twice
+            voice = self.speakers._closest(speakers._normalize(match.embedding))
+        if voice is None:
+            return
+        result["speaker"], result["speaker_label"] = voice.id, voice.label
+        if sure:
+            return
+        found = (self.speakers.recognise(voice, self.identifier.voiceprints(), voices.SURE_THRESHOLD)
+                 if voice.person_id is None else (voice.person_id, voice.name, None))
+        if found and (match.person_id in (None, found[0])):
+            pid, name, _ = found
+            result.update(level="sure", person_id=pid, name=name, by="several utterances",
+                          speaker_label=name)
+
+    def _turn(self, start, end, speech_s, final):
+        """A finished utterance (listener on_utterance): who talked when."""
+        voice = self._final_voice[1] if self._final_voice and self._final_voice[0] is final else None
+        self.turns.append({"start": start, "end": end, "speech_s": round(speech_s, 2),
+                           "speaker": voice.id if voice else None,
+                           "person_id": voice.person_id if voice else None,
+                           "name": voice.name if voice else None})
+        self._final_voice = None
 
     def _adopt(self, person_id, result_id):
         """Learn from conversation: the utterance `result_id` was probably said by `person_id`
@@ -97,19 +134,22 @@ class VoiceChild:
         elif command != "poll":
             raise ValueError(f"unknown command {command!r}")
         reply = {"results": self.results, "learned": self.learned, "adopted": self.adopted,
-                 "in_speech": self.listener._in_speech, "learning": self.listener.learning()}
-        self.results, self.learned, self.adopted = [], [], []
+                 "turns": self.turns, "in_speech": self.listener._in_speech,
+                 "learning": self.listener.learning()}
+        self.results, self.learned, self.adopted, self.turns = [], [], [], []
         return reply
 
 
 class VoiceFeed:
     """Ember's side: queue mic blocks, ship them to VoiceChild, keep the latest results."""
 
-    def __init__(self, factory, on_result=None, on_learned=None, clock=time.monotonic, on_adopted=None):
+    def __init__(self, factory, on_result=None, on_learned=None, clock=time.monotonic, on_adopted=None,
+                 on_turn=None):
         self.factory = factory              # () -> Remote (tests pass a fake)
         self.on_result = on_result or (lambda result: None)
         self.on_learned = on_learned or (lambda result: None)
         self.on_adopted = on_adopted or (lambda result: None)
+        self.on_turn = on_turn or (lambda turn: None)
         self.clock = clock
         self.queue = collections.deque(maxlen=MAX_QUEUED)   # append/popleft are thread-safe
         self.dropped = 0
@@ -208,3 +248,5 @@ class VoiceFeed:
                 self.on_learned(result)
             for result in reply.get("adopted", []):
                 self.on_adopted(result)
+            for turn in reply.get("turns", []):
+                self.on_turn(turn)

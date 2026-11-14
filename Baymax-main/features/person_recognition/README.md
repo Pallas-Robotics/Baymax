@@ -94,6 +94,48 @@ Voice recognition stays off (logged once) until `.models/voice/` has both files.
 - Logs: one `[FACE] track` line per face whose identity changes (score included), one
   `[VOICE]` line per identification, and each people tool call with its result.
 
+## Who is talking, and to whom
+
+- **Session voices** (`speakers.py`, in the voice child). Every utterance of 1 s or more
+  gets a session voice: the one it sounds most like among those heard in the last 10
+  minutes (`SAME_SPEAKER` 0.32 against its average, 0.25 against a voice heard only once),
+  or a new one, "voice 1", "voice 2", .... Two voices whose averages agree by 0.50 are
+  merged (one person whose first utterances were unlike each other). Nothing is stored.
+  In a simulation matching the board's numbers, two people taking turns were two clean
+  voices after eight turns 85% of the time and never merged into one.
+- **Recognition from several utterances.** One utterance on this mic scores only
+  0.25-0.55 against the speaker's own stored voice. When a session voice's average is
+  "sure" for a stored voice, its utterances count as that person's (`by: several
+  utterances` in the log), even the ones that alone were "might be".
+- **Turn taking** (`conversation.py`, in Ember's process). Each finished utterance (also
+  the short ones) is a turn with its session voice and whether the speaker faced the
+  camera (their face, or the only face in view; YuNet's eyes and nose:
+  `Detection.facing`). People are **talking to each other** when, since Ember last
+  spoke, two established voices (heard twice, or recognised) have taken turns, two
+  people are evidently here (two faces in view in the last 30 s, or two known voices),
+  and the latest speaker isn't facing Ember. One person alone never counts, even if their
+  voice is split.
+- **What Ember does about it.** The reply gate (`addressing.AddressGate`, `side`) holds
+  Gemini's reply and drops it unless someone says "Ember" (or it answers one of Ember's
+  own messages); a held reply plays if the speaker turns out to be facing Ember. Ember
+  starts no conversation of its own ([ARRIVED], [NEW PERSON]) meanwhile. It ends when
+  Ember speaks again or someone turns to it. `who_is_here` reports how many people have
+  been talking and whether they are talking to each other. Logs: `[GROUP]` when this
+  changes, `[ADDRESS] Not spoken to (people talking to each other)` for a dropped reply.
+  `BAYMAX_GROUP_AWARE=0` turns it off; it is also off with
+  `conversation.only_when_addressed = false`.
+
+## Faces: fewer misses, less forgetting
+
+- **New angles are learned.** A face confirmed on its track (two clear matches) that
+  then scores 0.40-0.55 against the same person (turned, other light) is stored as a
+  sample, at most every 3 minutes per person (PR #8: only 0.55-0.85, every 15 minutes).
+- **No "who are you?" for a half-recognised face.** A face that scores 0.30 or more
+  against someone known isn't introduced as new: it waits for a clearer look (board:
+  Joe turned away, 0.33-0.38, was asked his name).
+- **Backups.** Before a change, `ember_people.json` is copied to
+  `ember_people.json.backup-<time>` at most every 6 hours; the last 4 are kept.
+
 ## Data, consent and forgetting
 
 - `ember_people.json` in `BAYMAX_DATA_DIR`: per person an id, name, optional
@@ -115,6 +157,7 @@ Voice recognition stays off (logged once) until `.models/voice/` has both files.
 | `BAYMAX_PEOPLE_RECOGNITION` | `0`; `run_mvp.py` sets `1` | faces (and voices when the models are present) |
 | `BAYMAX_VOICE_RECOGNITION` | `1` | `0`: faces only |
 | `BAYMAX_PEOPLE_GREETINGS` | `1` | `0`: no `[ARRIVED]`/`[NEW PERSON]` conversations started by Ember |
+| `BAYMAX_GROUP_AWARE` | `1` | `0`: replies aren't held while people talk to each other |
 
 ## Not ported yet
 
@@ -127,7 +170,8 @@ the dashboard's People page and photo enrolment, and `ember_self`/`ember_identit
 
 `tests/test_person_recognition_faces.py` (PR #8's 88 tests), `..._voice_id.py` and
 `..._voice_live.py` (PR #36's 17 and 25), `..._runtime.py` (children, the mic feed,
-tools, spoken prompts, registration: 23). Suite: `tests/features/person_recognition`.
+tools, spoken prompts, registration), `..._conversation.py` (session voices, turn
+taking, the reply gate's hold, facing, backups). Suite: `tests/features/person_recognition`.
 Hardware checks pending: on the Orange Pi 5 Max, CPU per core with both children
 running, conversation latency unchanged, a face learned and recognised, a voice learned
 and recognised, `[ARRIVED]` spoken only between turns. The board's camera frames were

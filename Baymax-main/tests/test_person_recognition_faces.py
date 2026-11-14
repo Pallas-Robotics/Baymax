@@ -8,6 +8,7 @@ import sys
 import tempfile
 import threading
 import unittest
+from unittest.mock import patch
 from unittest import mock
 
 import numpy as np
@@ -1098,6 +1099,50 @@ class ModelDownloadTests(unittest.TestCase):
         cfg = types.LiveConnectConfig(tools=[{"function_declarations": fi.PEOPLE_TOOLS}])
         self.assertEqual([f.name for f in cfg.tools[0].function_declarations],
                          ["remember_person", "decline_to_be_remembered", "forget_person"])
+
+
+# ─── Orange Pi board changes (2026-11-13) ────────────────────────────────────
+class AnglesAndIntroductionsTests(Base):
+    def matched(self, base, target):
+        """A live face scoring exactly `target` (Joe is enrolled as his true face)."""
+        return sample(base, target)
+
+    def test_a_confirmed_face_learns_how_it_looks_turned(self):
+        joe = identity()
+        self.enroll("Joe", joe, n=1, sim=1.0)
+        pid = self.store.find_by_name("Joe")["id"]
+        with patch.object(fi, "AUTO_LEARN_INTERVAL", 0):
+            self.frames(lambda: [face(sample(joe, .95))], 1.5)        # clearly Joe: confirmed
+            stored = len(self.store.get(pid)["embeddings"])
+            self.frames(lambda: [face(self.matched(joe, .47))], 1.5)  # turned: "maybe" alone
+        samples = np.array(self.store.get(pid)["embeddings"])
+        self.assertGreater(len(samples), stored)
+        self.assertLess(float(min(samples[stored:] @ joe)), 0.5)    # the turned look was stored
+
+    def test_a_maybe_face_is_not_learned_before_it_was_confirmed(self):
+        joe = identity()
+        self.enroll("Joe", joe, n=1, sim=1.0)
+        pid = self.store.find_by_name("Joe")["id"]
+        with patch.object(fi, "AUTO_LEARN_INTERVAL", 0):
+            self.frames(lambda: [face(self.matched(joe, .47))], 3)
+        self.assertEqual(len(self.store.get(pid)["embeddings"]), 1)
+
+    def test_a_face_close_to_someone_known_is_not_asked_its_name(self):
+        """Board: Joe turned away scored 0.33-0.38 and Ember asked who he was."""
+        joe = identity()
+        self.enroll("Joe", joe, n=1, sim=1.0)
+        self.frames(lambda: [face(self.matched(joe, .35))], 6)
+        self.assertIsNone(self.ident.pending_introduction())
+        stranger = identity()
+        self.clock.t += 20
+        self.frames(lambda: [face(sample(stranger, .9))], 6)
+        self.assertIn("[NEW PERSON]", self.ident.pending_introduction())
+
+    def test_who_is_facing_the_camera(self):
+        joe, natey = identity(), identity()
+        self.frames(lambda: [face(sample(joe, .9), x=100), face(sample(natey, .9), x=400, frontal=False)], 1)
+        facing = sorted(at > -1e9 for _, at in self.ident.facing_people())
+        self.assertEqual(facing, [False, True])
 
 
 if __name__ == "__main__":

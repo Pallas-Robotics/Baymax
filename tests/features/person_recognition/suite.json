@@ -5,6 +5,7 @@
     "Baymax-main/features/vision_process.py",
     "Baymax-main/features/toolkits/gemini_tools.py",
     "Baymax-main/features/toolkits/fall_detection.py",
+    "Baymax-main/features/conversational_ability/addressing.py",
     "Baymax-main/pc_hardware.py",
     "Baymax-main/realtime_gemini_10.py",
     "Baymax-main/run_mvp.py"
@@ -16,7 +17,8 @@
         "test_person_recognition_faces.py",
         "test_person_recognition_voice_id.py",
         "test_person_recognition_voice_live.py",
-        "test_person_recognition_runtime.py"
+        "test_person_recognition_runtime.py",
+        "test_person_recognition_conversation.py"
       ]
     }
   ],

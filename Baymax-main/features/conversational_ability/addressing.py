@@ -30,6 +30,13 @@ PROMPT_TTL_S. A message that never reached Gemini is left to its sender's own
 retry, so nothing is sent twice. This runs whether or not the gate is enabled.
 Once the person speaks, the next reply is theirs and nothing is sent again.
 
+People talking to each other (`side`, from person_recognition.conversation): while
+several people take turns talking among themselves and nobody faces Ember, a reply is
+held whether or not the gate is enabled, and played only if someone says Ember's
+name (or it answers one of Ember's own messages). The 20 s follow-up rule doesn't
+apply then. Otherwise this changes nothing: one person talking to Ember is never
+held by it.
+
 conversation.only_when_addressed = false in device.toml (or
 BAYMAX_ADDRESS_GATE=0) plays every reply again. Nothing is sent anywhere and no
 device is opened: the gate only reads the existing transcription.
@@ -93,8 +100,9 @@ def is_speech(text):
 
 
 class AddressGate:
-    def __init__(self, enabled=True, follow_up=None, clock=time.monotonic, log=print):
+    def __init__(self, enabled=True, follow_up=None, clock=time.monotonic, log=print, side=None):
         self.enabled = enabled
+        self.side = side or (lambda: False)  # () -> people are talking to each other now
         self.follow_up = follow_up_seconds() if follow_up is None else follow_up
         self.clock = clock
         self.log = log
@@ -198,14 +206,25 @@ class AddressGate:
         with self._lock:
             return self._prompt_waiting()
 
+    def _side(self):
+        try:
+            return bool(self.side())
+        except Exception:
+            return False             # never let this check stop Ember from answering
+
     def _addressed(self, prompt=True):
         # A prompt counts only when a reply starts: one sent mid-reply is
         # answered by the next reply, not the one being held.
-        if not self.enabled or (prompt and self._prompt_waiting()):
+        if prompt and self._prompt_waiting():
+            return True
+        side = self._side()
+        if not self.enabled and not side:
             return True
         heard = "".join(self._heard)
         if names_ember(heard):
             return True
+        if side:
+            return False             # people talking to each other: only the name
         if not is_speech(heard) or self._spoke_until is None:
             return False
         started = self._heard_at if self._heard_at is not None else self.clock()
@@ -258,7 +277,8 @@ class AddressGate:
             self._turn_from, self._turn_at = len(self._heard), None
             self._decision, self._held, self._held_text = None, [], []
         if dropped:
-            self.log(f"[ADDRESS] Not spoken to; dropped reply: {text or '(audio only)'}", flush=True)
+            why = " (people talking to each other)" if self._side() else ""
+            self.log(f"[ADDRESS] Not spoken to{why}; dropped reply: {text or '(audio only)'}", flush=True)
 
     # ── session hook ─────────────────────────────────────────────────────────
     def watch(self, session):

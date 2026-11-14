@@ -1,5 +1,19 @@
 # MVP (unreleased)
 
+- Ember tells people talking to each other from people talking to it, and recognises
+  people more reliably (features/person_recognition/README.md).
+  - Every utterance gets a session voice ("voice 1", "voice 2", or a known name) in the
+    voice child, so Ember knows how many people are talking. A voice's average over
+    several utterances recognises a person when single utterances only "might be" them.
+  - While two or more people take turns since Ember last spoke, two people are evidently
+    there and the speaker isn't facing the camera, Ember's reply is held and dropped
+    unless someone says "Ember", and Ember starts no conversation of its own. One person
+    alone is never held. `who_is_here` reports it; `BAYMAX_GROUP_AWARE=0` turns it off.
+  - Faces: a confirmed face learns how it looks turned (0.40-0.55), every 3 min instead
+    of 15; a face close to someone known (0.30+) isn't asked its name; the people file
+    is backed up (4 copies, at most every 6 hours).
+  - Tests: `tests/test_person_recognition_conversation.py` and additions to the face tests.
+
 - People recognition keeps names straight in a group (board test, 2026-11-13: Ember
   stopped recognising Joe's voice and called him and others "Nadi").
   - Learning a voice from conversation now keeps only clips that clearly sound like the

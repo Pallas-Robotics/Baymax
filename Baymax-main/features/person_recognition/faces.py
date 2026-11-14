@@ -67,7 +67,19 @@ MIN_FACE_PX = 40              # smaller faces are too blurry to recognise
 LEARN_FACE_PX = 64            # minimum face size to store as a sample
 MAX_SAMPLES = 20              # per person; the most redundant sample is dropped
 AUTO_LEARN_RANGE = (0.55, 0.85)   # confident but not a near-duplicate
-AUTO_LEARN_INTERVAL = 15 * 60 # seconds between learned samples per person (each is a file write)
+AUTO_LEARN_INTERVAL = 3 * 60  # seconds between learned samples per person (each is a file write;
+                              # PR #8: 15 min, too slow to learn new angles in one visit)
+# Learning new angles: a face already confirmed on this track (CONFIRM_VOTES clear
+# matches) that now scores in the "maybe" band against the same person is the same
+# face turned or lit differently. Stored, it is recognised at that angle next time.
+# Board, 2026-11-13: Joe turned away scored 0.43-0.47 and was "maybe" or unknown.
+ANGLE_LEARN_RANGE = (0.40, 0.55)
+INTRO_MAX_SCORE = 0.30        # a face this close to someone known isn't introduced as new: it
+                              # may be them at an angle (board: Joe at 0.33-0.38 was asked his name)
+FACING_YAW = 0.22             # nose offset from the eyes' midpoint / eye distance: below this the
+                              # face is turned toward the camera (about 25 degrees)
+BACKUP_INTERVAL = 6 * 3600    # the people file is copied aside at most this often...
+BACKUPS_KEPT = 4              # ...and this many copies are kept
 CONFIRM_VOTES = 2             # confident frames needed before naming someone
 IN_VIEW_SECONDS = 2.0         # a face seen this recently is "in front of you"
 TRACK_EXPIRY = 10.0           # forget a track this long after it leaves
@@ -216,6 +228,17 @@ class Detection:
     def size(self):
         return min(self.box[2], self.box[3])
 
+    def yaw(self):
+        """How far the face is turned: the nose's offset from the eyes' midpoint as a
+        fraction of the eye distance (0 = facing the camera, ~0.5 = side on)."""
+        (rx, _), (lx, _), (nx, _) = self.landmarks[0], self.landmarks[1], self.landmarks[2]
+        eye_dist = abs(lx - rx)
+        return 1.0 if eye_dist < 1 else abs(nx - (rx + lx) / 2) / eye_dist
+
+    def facing(self):
+        """Turned toward the camera (Ember), as people do when they talk to it."""
+        return self.yaw() < FACING_YAW
+
     def frontal(self):
         """Nose between the eyes and eyes roughly level — a usable, front-on face."""
         (rx, ry), (lx, ly), nx = self.landmarks[0], self.landmarks[1], self.landmarks[2][0]
@@ -348,7 +371,26 @@ class PeopleStore:
         except OSError:
             pass
 
+    def _backup(self):
+        """Copy the file aside before changing it, at most every BACKUP_INTERVAL, keeping
+        BACKUPS_KEPT copies: a bad change (a wrong name, a voice taken in from someone
+        else, a forget_person by mistake) can be undone from the copy."""
+        folder, base = os.path.split(self.path)
+        try:
+            copies = sorted(f for f in os.listdir(folder or ".") if f.startswith(base + ".backup-"))
+            if copies and time.time() - os.path.getmtime(os.path.join(folder, copies[-1])) < BACKUP_INTERVAL:
+                return
+            if not os.path.exists(self.path):
+                return
+            stamp = time.strftime("%Y%m%d-%H%M%S")
+            shutil.copy2(self.path, os.path.join(folder, f"{base}.backup-{stamp}"))
+            for old in copies[:max(0, len(copies) + 1 - BACKUPS_KEPT)]:
+                os.remove(os.path.join(folder, old))
+        except OSError as e:
+            print(f"[FACE] Could not back up the people file: {e}", flush=True)
+
     def _write_file(self, data):
+        self._backup()
         tmp = self.path + ".tmp"
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(data, f)
@@ -611,6 +653,8 @@ class Track:
     unsure_no: bool = False      # declined, but it wasn't clear whether it was this person
     last_embed: float = -1e9     # when this face was last identified (not just followed)
     look: np.ndarray = None      # thumbnail fingerprint from the last frame
+    facing: bool = False         # turned toward the camera in the last frame
+    facing_at: float = -1e9      # when it last was
 
 
 def _iou(a, b):
@@ -724,6 +768,9 @@ class FaceIdentifier:
             track.last_seen = now
             track.box = det.box
             track.look = look
+            track.facing = det.facing()
+            if track.facing:
+                track.facing_at = now
             # Photos (for how someone looks) only from frames where the face
             # was actually identified — never from one that was just followed
             if emb is not None and good and now - track.crop_t >= CROP_REFRESH:
@@ -746,14 +793,26 @@ class FaceIdentifier:
                 self._seen[track.person_id] = self._wall()
                 self._note_presence(track, det, frame, good, now)
                 if (good and pid == track.person_id
-                        and AUTO_LEARN_RANGE[0] <= score <= AUTO_LEARN_RANGE[1]
-                        and now - self._last_learned.get(pid, -1e9) >= AUTO_LEARN_INTERVAL):
+                        and now - self._last_learned.get(pid, -1e9) >= AUTO_LEARN_INTERVAL
+                        and (AUTO_LEARN_RANGE[0] <= score <= AUTO_LEARN_RANGE[1]
+                             or (ANGLE_LEARN_RANGE[0] <= score < ANGLE_LEARN_RANGE[1]
+                                 and self._confirmed(track) and not self._crowded(track, now)))):
                     self._last_learned[pid] = now
                     self.store.add_samples_to(pid, [emb])
             elif track.visitor is not None:
                 track.visitor["last_seen"] = now        # still here: the visit continues
             elif track.samples and not (track.asked or track.declined):
                 self._inherit_visit(track, now)
+
+    def _confirmed(self, track):
+        """This track was named from clear matches of its own (not only followed)."""
+        return sum(1 for pid, s in track.votes
+                   if pid == track.person_id and s >= MATCH_THRESHOLD) >= CONFIRM_VOTES
+
+    def _crowded(self, track, now):
+        """Another face overlaps this one: the track could have jumped between them."""
+        return any(o is not track and now - o.last_seen <= 1.0 and _iou(o.box, track.box) > 0
+                   for o in self._tracks)
 
     def _assign(self, det, emb, now, used, good=False):
         live = [t for t in self._tracks if t.id not in used and now - t.last_seen <= 1.5]
@@ -986,7 +1045,7 @@ class FaceIdentifier:
             for t in self._tracks:
                 if (now - t.last_seen <= 1.0 and not t.person_id and not t.asked
                         and not t.declined and now - t.first_seen >= INTRO_AFTER
-                        and len(t.samples) >= INTRO_MIN_SAMPLES):
+                        and len(t.samples) >= INTRO_MIN_SAMPLES and not self._could_be_known(t)):
                     t.asked = True
                     self._last_intro = now
                     self._last_asked_track = t.id
@@ -1034,6 +1093,20 @@ class FaceIdentifier:
         except Exception as e:
             print(f"[FACE] {name} failed: {e}")
             return {"error": str(e)}
+
+    def _could_be_known(self, track):
+        """Too close to someone Ember knows to ask "who are you?": unless Ember thinks it
+        might be them (then it asks "Is that you, ...?"), wait for a clearer look."""
+        if track.maybe_id:
+            return False
+        _, score = self.store.match(_normalize(np.mean(track.samples, axis=0)))
+        return score >= INTRO_MAX_SCORE
+
+    def facing_people(self, seconds=IN_VIEW_SECONDS):
+        """[(person id or None, when last facing the camera)] for the faces in view."""
+        now = self._clock()
+        with self._lock:
+            return [(t.person_id, t.facing_at) for t in self._tracks if now - t.last_seen <= seconds]
 
     def _looks_known(self, track):
         """A track not yet named whose face clearly matches someone stored
