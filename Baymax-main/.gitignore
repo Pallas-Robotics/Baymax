@@ -33,6 +33,7 @@ users.json
 # Experimental toolkit preferences and local review artifacts
 toolkit_feed_preferences.json
 voice_volume.json
+ember_voice.json
 .toolkit-prefs-*
 .local-review/
 .venv/
