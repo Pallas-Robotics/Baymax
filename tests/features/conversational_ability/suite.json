@@ -26,6 +26,7 @@
         "test_runtime_monitor.py",
         "test_session.py",
         "test_voice_volume.py",
+        "test_voice_choice.py",
         "test_waiting_cue.py",
         "test_toolkit_engage.py",
         "test_toolkit_conversation.py"
