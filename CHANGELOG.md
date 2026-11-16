@@ -1,5 +1,11 @@
 # MVP (unreleased)
 
+- Ember's replies are shorter, like banter between witty friends (a live test found them
+  too long): one or two sentences under about 25 words unless asked for more, the
+  funny part last, building on the person's line; `[REMEMBER]` at the end of the
+  persona repeats it. Median reply: 38 to 26.5 words on gemini-2.5, 40.5 to 24.5 on 3.8
+  (features/conversational_ability/README.md, "Ember's personality").
+
 - Ember is funnier and keeps conversations going (a live test found it "not funny" and
   ending on a comment): `[YOUR HUMOR]` (a line meant to make them laugh in every light
   reply; never about pain or grief) and `[KEEPING IT GOING]` (end almost every reply

@@ -564,6 +564,22 @@ Humor stays moderate on 2.5 (its best lines are wry comparisons, not real jokes)
 wittier. Replies grew to 36-41 words, and 2.5 once invented a memory ("I remember when
 the family I study...").
 
+Second follow-up (2026-11-16, "the replies sometimes feel too long"): funny people in
+conversation say less per turn. Banter is a chain of short teases and comebacks over
+several turns; in Provine's recordings only 10-20% of laughs followed anything
+joke-like (the rest came from playful reacting); turns follow each other about 200 ms
+apart. So `[YOUR HUMOR]` now asks for witty-friend banter, not a comedian's set (one
+short sentence, the funny part last, build on their line, leave room for their
+comeback, not every reply needs a joke), the hook can be the tease itself, replies are
+one or two sentences under about 25 words unless they ask for an explanation, a story
+or instructions, and a short `[REMEMBER]` repeats that at the end of the persona.
+Median reply on the same 8 conversations: 38 to 26.5 words on gemini-2.5 (it ignored the
+limit until `[REMEMBER]` was added: 33.5 without it), 40.5 to 24.5 on 3.8 (longest 64 to
+32). Blind judging wasn't possible that day (the Mac key's text-model quotas ran out).
+On 3.8 the replies read like banter ("Oh no, the ultimate grocery betrayal! Did you have
+to settle for a backup loaf?"); 2.5 stays mildly funny.
+
+
 ### Choosing Ember's voice (`voice_choice.py`)
 
 People can pick the voice Ember speaks with by asking: "Ember, can you use a deeper
