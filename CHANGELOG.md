@@ -1,5 +1,13 @@
 # MVP (unreleased)
 
+- Ember is funnier and keeps conversations going (a live test found it "not funny" and
+  ending on a comment): `[YOUR HUMOR]` (a line meant to make them laugh in every light
+  reply; never about pain or grief) and `[KEEPING IT GOING]` (end almost every reply
+  with a varied hook that hands the turn back). Against the first personality version
+  on the same 8 conversations: humor 3.3 to 5.4 and replies ending in a question 50% to
+  92% on gemini-2.5; humor 4.8 to 6.3 and 17% to 88% on 3.8
+  (features/conversational_ability/README.md, "Ember's personality").
+
 - People can choose Ember's voice by asking ("Ember, can you use a deeper voice?", "go
   back to your usual voice"): the `change_voice` tool picks one of Gemini's 30 prebuilt
   voices from a catalogue grouped by measured pitch, saves it (`ember_voice.json`;

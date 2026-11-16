@@ -539,6 +539,31 @@ audio did not change measurably (5.9-6.5 semitones either way), so the livelier 
 instruction shows in what Ember says more than in how the audio model delivers it.
 2.5 still opens with stock interjections more often than 3.8.
 
+Follow-up after a live test on a Mac (2026-11-16: "more fun, but not funny, doesn't crack
+jokes, makes a comment and ends it there"):
+- `[YOUR HUMOR]`: in a light moment every reply has at least one line meant to make
+  them smile or laugh (exaggeration, absurd comparison, wordplay, deadpan, mock
+  outrage, a silly "what if", a callback, a joke at its own expense), invented from
+  what they said, never explained, never about pain, grief, fear or health.
+- `[KEEPING IT GOING]`: end almost every reply with a hook that hands the turn back (a
+  question about them, a playful challenge, a "would you rather", a teaser, an opinion
+  to argue with), varied and specific; none when they are wrapping up. The `[HOW TO
+  TALK]` line "Stop after your contribution" now says to hand the turn back first.
+- A version with three example exchanges scored no better (humor 4.8 vs 5.9 on 2.5), so
+  there are no examples.
+
+Same 8 conversations, judge `gemini-3.6-flash` with humor and engagement added, the
+first personality version against this one:
+
+| Model | Humor | Engagement | Flair | Appropriateness | Replies ending in a question | Preferred |
+|---|---|---|---|---|---|---|
+| gemini-2.5-flash-native-audio | 3.3 / 5.4 | 5.9 / 8.4 | 5.0 / 7.0 | 7.4 / 7.7 | 50% / 92% | new, 6 of 7 judged |
+| gemini-3.8-live | 4.8 / 6.3 | 5.0 / 8.9 | 6.0 / 7.5 | 8.3 / 8.4 | 17% / 88% | new, 7 of 8 |
+
+Humor stays moderate on 2.5 (its best lines are wry comparisons, not real jokes); 3.8 is
+wittier. Replies grew to 36-41 words, and 2.5 once invented a memory ("I remember when
+the family I study...").
+
 ### Choosing Ember's voice (`voice_choice.py`)
 
 People can pick the voice Ember speaks with by asking: "Ember, can you use a deeper
