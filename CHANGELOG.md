@@ -1,5 +1,25 @@
 # MVP (unreleased)
 
+- The Orange Pi 5 Max work comes to the Orange Pi 4 Pro (merged from Pallas-Robotics/Baymax
+  `main`, `opi5-latency`, `people-recognition` and `ember-voice-personality`; each
+  feature's own entry follows below). The Wi-Fi setup hotspot is not part of it.
+  - What stays 5 Max only, decided on the board at runtime: the RK3588 NPU (pose and
+    AuraFace), fast-core pinning, the 1 ms GIL switch and the 512-frame speaker stream.
+    On the 4 Pro, face recognition is SFace on the CPU.
+  - New on the 4 Pro: the face and voice recognition processes run on the A55s (cpu0-5)
+    at nice 10 while Ember itself stays unpinned, so they never take an A76 from the
+    conversation (`pc_hardware._recognition_on_slow_cores`; `BAYMAX_VISION_CPUS=fast`
+    leaves them where they are). Unmeasured on the board.
+  - Kept from PR #2's adaptation: the weather pre-warm pauses while the toolkit is off,
+    and a profile note cut off by a disconnect is sent again. Replaced by the 5 Max
+    versions: the reconnect loop (model fallback, GoAway handover at a quiet moment) and
+    Google Search (the `search_web` lookup session, so the 128-token thinking guard for
+    built-in search is gone).
+  - Voice recognition needs its ONNX models copied to
+    `~/ember-deployment/shared/.models/voice/` (README, board table).
+  - Tests: `tests/test_pc_hardware.py` (unpinned big.LITTLE placement) and the 5 Max
+    suites.
+
 - Language follow-up: remove the sticky ongoing-language preference after owner
   testing found Spanish input still received Korean replies. Select the language
   again each turn, including the reply to a switch request itself. Add direct

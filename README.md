@@ -23,6 +23,9 @@ on the board at runtime (the NPU, fast-core pinning) or by how it is set up:
 |---|---|---|
 | OS | DietPi (Debian 13) SD image from [OPI4-Flash](devops/opi4-flash/README.md), or Debian 13 | Armbian Debian 13 with the vendor 6.1 kernel (needed only for the NPU) |
 | Fast-core pinning (`BAYMAX_CPU_PINNING=auto`, the default) | off (unmeasured; `on` tries the two A76s) | on: Ember stays on the RK3588's four Cortex-A76 cores, cpu4-7 (measured); where its pose and face processes run: [ORANGE_PI_SETUP.md, Fast cores](Baymax-main/ORANGE_PI_SETUP.md#fast-cores) |
+| Face recognition (`BAYMAX_PEOPLE_RECOGNITION`, on in `run_mvp.py`) | SFace on the CPU (YuNet + SFace download at first start into the shared `.models`) | SFace + AuraFace on the NPU once `convert_face_rknn.py` has passed; SFace alone until then |
+| Face and voice recognition processes | the A55s (cpu0-5) at nice 10, Ember itself not pinned (unmeasured) | the A55s (cpu0-3) at nice 10 (measured) |
+| Voice recognition | needs `.models/voice/` (ECAPA + Silero ONNX, made by `convert_voice_model.py` on a PC) copied to `~/ember-deployment/shared/.models/voice/`; off until then | the same, copied into the checkout |
 | Updates | the image's `ember-update`, following a branch (default `release`) | opt-in: `devops/mvp/update.py` before each start of the autostart service (needs the git checkout, `install_autostart.py` and `BAYMAX_AUTO_UPDATE=1`; `BAYMAX_UPDATE_BRANCH`, default `release`); otherwise `git pull` by hand |
 
 Where this came from: JoeKojima/Baymax PR #29 (`opi4-demo`, the Orange Pi 4 Pro

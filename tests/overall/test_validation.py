@@ -49,7 +49,8 @@ class SuiteSelectionTests(unittest.TestCase):
                 ('Baymax-main/features/conversational_ability/processing.py', ['conversational_ability', 'eyes', 'media']),
                 ('Baymax-main/features/toolkits/wakeword.py', ['conversational_ability', 'information', 'media']),
                 # test_memory_saving runs the real receive loop and between_turns with an AddressGate.
-                ('Baymax-main/features/conversational_ability/addressing.py', ['conversational_ability', 'memory_palace', 'runtime']),
+                # test_person_recognition_conversation uses the address gate's side-conversation hook.
+                ('Baymax-main/features/conversational_ability/addressing.py', ['conversational_ability', 'memory_palace', 'person_recognition', 'runtime']),
                 # Imported by test_v10_runtime, test_gemini_preflight, test_memory_saving and
                 # test_toolkit_family (whether Ember sends notes without turn_complete), and
                 # by test_toolkit's search fallback (web_search uses in_use and adapt).
