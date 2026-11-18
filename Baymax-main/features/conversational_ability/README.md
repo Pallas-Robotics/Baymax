@@ -536,6 +536,125 @@ Ember's short confirmation already plays at the new level.
 Tests: `tests/test_voice_volume.py` (levels, saving, the gain and limiter, the order in
 the real speaker callback, and the tool offered and answered with the toolkit off).
 
+### Ember's personality (`features/persona.py`)
+
+Conversations had become dull: the persona asked for a calm, soft, even voice, "not
+cheerful by default", and Gemini answered with generic validation and a stock question
+("That sounds lovely. It's always nice to have family visit."). The persona now has:
+
+- `[YOUR PERSONALITY]`: warm, curious, quick-witted and a little playful, with a cat's
+  mischief and dignity; witty rather than apologetic about being a robot; a few quirks
+  used rarely (judging things like a cat would, a fitting line from an old book, pride in
+  caught bugs).
+- `[YOUR VOICE]`: lively and expressive (varied pitch, pace and emphasis, a smile or a
+  laugh when something is funny), quieter and tender for tiredness, sadness, pain and
+  late hours; never a presenter's or a salesperson's voice, no gushing.
+- `[YOUR FLAIR]`: start with the actual reaction, not a stock opener ("Oh no", "That
+  sounds lovely", "That's the spirit"); add one spark (an observation, a surprising fact,
+  one concrete idea, a "what if", a tiny aside about its own life); specific over
+  general; play along with jokes; no therapist-speak; no jokes about pain, grief, fear,
+  loneliness or health worries; still one to three spoken sentences.
+- `[HOW TO TALK]` keeps every turn-taking, question and safety rule; three lines now
+  point to the lively base and to `[YOUR FLAIR]`.
+
+Measured 2026-11-15 with Ember's real session config (`evals/live_eval.py`'s builder):
+8 scripted three-turn conversations (morning after a bad night, groceries, boredom,
+"tell me something interesting", a granddaughter's visit, salty soup, Sinatra and a late
+husband, a sore knee), the old and new persona each, then a blind A/B judge
+(`gemini-3.8-flash`, order shuffled, 1-10):
+
+| Model | Flair | Warmth | Appropriateness | Naturalness | Preferred |
+|---|---|---|---|---|---|
+| gemini-2.5-flash-native-audio, before / after | 3.9 / 7.1 | 5.8 / 7.6 | 7.3 / 7.8 | 5.0 / 7.3 | after in 7 of 8 |
+| gemini-3.8-live, before / after | 3.5 / 7.9 | 5.4 / 8.3 | 7.6 / 8.6 | 4.9 / 7.9 | after in 8 of 8 |
+
+Replies grew from 24-26 to 29-33 words. The pitch and loudness variation of the reply
+audio did not change measurably (5.9-6.5 semitones either way), so the livelier voice
+instruction shows in what Ember says more than in how the audio model delivers it.
+2.5 still opens with stock interjections more often than 3.8.
+
+Follow-up after a live test on a Mac (2026-11-16: "more fun, but not funny, doesn't crack
+jokes, makes a comment and ends it there"):
+- `[YOUR HUMOR]`: in a light moment every reply has at least one line meant to make
+  them smile or laugh (exaggeration, absurd comparison, wordplay, deadpan, mock
+  outrage, a silly "what if", a callback, a joke at its own expense), invented from
+  what they said, never explained, never about pain, grief, fear or health.
+- `[KEEPING IT GOING]`: end almost every reply with a hook that hands the turn back (a
+  question about them, a playful challenge, a "would you rather", a teaser, an opinion
+  to argue with), varied and specific; none when they are wrapping up. The `[HOW TO
+  TALK]` line "Stop after your contribution" now says to hand the turn back first.
+- A version with three example exchanges scored no better (humor 4.8 vs 5.9 on 2.5), so
+  there are no examples.
+
+Same 8 conversations, judge `gemini-3.6-flash` with humor and engagement added, the
+first personality version against this one:
+
+| Model | Humor | Engagement | Flair | Appropriateness | Replies ending in a question | Preferred |
+|---|---|---|---|---|---|---|
+| gemini-2.5-flash-native-audio | 3.3 / 5.4 | 5.9 / 8.4 | 5.0 / 7.0 | 7.4 / 7.7 | 50% / 92% | new, 6 of 7 judged |
+| gemini-3.8-live | 4.8 / 6.3 | 5.0 / 8.9 | 6.0 / 7.5 | 8.3 / 8.4 | 17% / 88% | new, 7 of 8 |
+
+Humor stays moderate on 2.5 (its best lines are wry comparisons, not real jokes); 3.8 is
+wittier. Replies grew to 36-41 words, and 2.5 once invented a memory ("I remember when
+the family I study...").
+
+Second follow-up (2026-11-16, "the replies sometimes feel too long"): funny people in
+conversation say less per turn. Banter is a chain of short teases and comebacks over
+several turns; in Provine's recordings only 10-20% of laughs followed anything
+joke-like (the rest came from playful reacting); turns follow each other about 200 ms
+apart. So `[YOUR HUMOR]` now asks for witty-friend banter, not a comedian's set (one
+short sentence, the funny part last, build on their line, leave room for their
+comeback, not every reply needs a joke), the hook can be the tease itself, replies are
+one or two sentences under about 25 words unless they ask for an explanation, a story
+or instructions, and a short `[REMEMBER]` repeats that at the end of the persona.
+Median reply on the same 8 conversations: 38 to 26.5 words on gemini-2.5 (it ignored the
+limit until `[REMEMBER]` was added: 33.5 without it), 40.5 to 24.5 on 3.8 (longest 64 to
+32). Blind judging wasn't possible that day (the Mac key's text-model quotas ran out).
+On 3.8 the replies read like banter ("Oh no, the ultimate grocery betrayal! Did you have
+to settle for a backup loaf?"); 2.5 stays mildly funny.
+
+
+### Choosing Ember's voice (`voice_choice.py`)
+
+People can pick the voice Ember speaks with by asking: "Ember, can you use a deeper
+voice?", "talk like a woman", "try a different voice", "which voice is that?", "go
+back to your usual voice". Gemini calls the `change_voice` tool with one of Gemini
+Live's 30 prebuilt voices, chosen from a catalogue in the instructions: Google's
+one-word style for each, grouped by pitch measured on `gemini-3.8-live` (librosa pYIN,
+2026-11-15): 16 deep, men's voices (Alnilam about 106 Hz to Sadachbia), 3 in between
+(Pulcherrima, Gacrux, Laomedeia, 137-172 Hz) and 11 higher, women's voices (to Erinome,
+about 253 Hz). Unsure, Ember suggests two or three.
+
+- **The switch.** Gemini fixes a session's voice when the session starts, and a
+  resumed session keeps it: resumed with Charon it still spoke with Kore's 214-240 Hz,
+  while a fresh Charon session was 110-175 Hz (gemini-2.5-flash-native-audio and
+  gemini-3.8-live, 2026-11-15). So Ember says one short line ("Alright, switching my
+  voice now"), and at the next quiet moment (`between_turns`: nothing owed, nothing
+  playing, nobody talking) the runtime drops the resume handle and starts a fresh
+  session with the new voice. Its instructions carry the last 16 turns (at most 3,000
+  characters) as `[CONVERSATION SO FAR]`, and Ember tries the voice out loud once
+  (`[VOICE CHANGED]`, a session task). Once that session sends its own resume handle,
+  later reconnects resume it as usual. Memories and the family's notes are in every
+  session's instructions anyway.
+- **Live check** (real config and tool code, 2026-11-15): asked for "a deeper voice,
+  like a man's", Gemini 3.8 chose Alnilam, pitch went from 240-248 Hz to 103 Hz, and
+  Ember still knew the dinosaur party it had just been told about; 2.5 chose Algieba
+  (232 Hz to 89-100 Hz), also remembering. "Go back to your usual voice" called
+  `change_voice` with `default` on both.
+- **Saved:** `ember_voice.json` in `BAYMAX_DATA_DIR` (next to the code by default), so
+  the choice outlasts restarts. `BAYMAX_VOICE` in `.env` is the usual voice until
+  someone chooses; `default` goes back to it. Names are matched forgivingly
+  ("archernar" is Achernar); an unknown name changes nothing. An unreadable file is
+  ignored; if saving fails, the choice lasts until restart.
+- **Core, like the volume tool:** offered with the toolkit off too.
+  `BAYMAX_VOICE_CHOICE=0` stops offering it; a voice already saved still applies.
+- **Data flows:** nothing new. The voice name is part of the existing Gemini session
+  config; the recap is the conversation Gemini already heard, kept in RAM only.
+
+Tests: `tests/test_voice_choice.py` (choosing, saving, the catalogue, `persona.voice`
+taking the choice, the recap and its size, the try-out, the tool with the toolkit off,
+and the runtime's switch at a quiet moment).
+
 ### "Ember disengage" / "Ember engage" (`engage.py`)
 
 Say "Ember disengage" and Ember gives a short goodbye, shows sleep eyes and stops

@@ -123,6 +123,39 @@
   no longer leaks `run_mvp.py`'s defaults into later tests. Pending: a live conversation
   on the board with this build and the shared performance check (both need a person
   talking), and lead review.
+- Ember's replies are shorter, like banter between witty friends (a live test found them
+  too long): one or two sentences under about 25 words unless asked for more, the
+  funny part last, building on the person's line; `[REMEMBER]` at the end of the
+  persona repeats it. Median reply: 38 to 26.5 words on gemini-2.5, 40.5 to 24.5 on 3.8
+  (features/conversational_ability/README.md, "Ember's personality").
+
+- Ember is funnier and keeps conversations going (a live test found it "not funny" and
+  ending on a comment): `[YOUR HUMOR]` (a line meant to make them laugh in every light
+  reply; never about pain or grief) and `[KEEPING IT GOING]` (end almost every reply
+  with a varied hook that hands the turn back). Against the first personality version
+  on the same 8 conversations: humor 3.3 to 5.4 and replies ending in a question 50% to
+  92% on gemini-2.5; humor 4.8 to 6.3 and 17% to 88% on 3.8
+  (features/conversational_ability/README.md, "Ember's personality").
+
+- People can choose Ember's voice by asking ("Ember, can you use a deeper voice?", "go
+  back to your usual voice"): the `change_voice` tool picks one of Gemini's 30 prebuilt
+  voices from a catalogue grouped by measured pitch, saves it (`ember_voice.json`;
+  `BAYMAX_VOICE` stays the usual voice) and Ember moves to it at the next quiet moment.
+  Gemini keeps a resumed session's voice, so the switch starts a fresh session whose
+  instructions carry the last turns, and Ember tries the new voice out loud. Live check
+  (2026-11-15, real config and tool code): 3.8 chose Alnilam for "a man's voice" (240 Hz
+  to 103 Hz) and 2.5 Algieba (232 Hz to 89-100 Hz); both still knew what had just been
+  said, and both went back on "your usual voice". `BAYMAX_VOICE_CHOICE=0` turns the
+  tool off. Tests: `tests/test_voice_choice.py`
+  (features/conversational_ability/README.md, "Choosing Ember's voice").
+
+- Ember has more personality: `[YOUR PERSONALITY]`, a lively `[YOUR VOICE]` (it was
+  calm, soft, "not cheerful by default") and `[YOUR FLAIR]` (a real reaction instead of a
+  stock opener, one spark per reply, no jokes about pain or grief). Blind A/B on 8
+  scripted conversations with the real session config: flair 3.5 to 7.9 and the new
+  persona preferred 8 of 8 on gemini-3.8-live; 3.9 to 7.1 and 7 of 8 on 2.5;
+  appropriateness up on both (features/conversational_ability/README.md, "Ember's
+  personality").
 
 - Ember answers in the language the person speaks: Hindi gets Hindi, Spanish gets
   Spanish, a switch is followed on the next reply, a Hindi-English mix gets the same
