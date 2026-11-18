@@ -193,7 +193,10 @@ Windows and Mac still needs a fresh-image hardware test before fleet use.
    visit; the page lists them and shows the current connection. It closes once
    the board is online and 10 minutes have passed since the last save. If the
    driver refuses `ap0`, the older behavior is used: the hotspot closes while the
-   board tries the network and returns if joining fails. To add networks while
+   board tries the network and returns if joining fails. The setup service also
+   watches the Wi-Fi address: if the board joins a network but DHCP has given up
+   (for example the router was off at boot), or it moves to another network while
+   keeping the old address, it asks DHCP again, at most once a minute. To add networks while
    Ember is already online, run `sudo python3 /usr/local/lib/ember/ember_wifi_setup.py --now`
    over SSH; the hotspot stays open for 10 minutes. No keyboard, monitor or internet is needed to
    reach this setup page. An open network may still require a captive-portal

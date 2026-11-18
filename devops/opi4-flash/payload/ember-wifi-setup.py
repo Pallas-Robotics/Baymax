@@ -13,6 +13,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import socket
 import subprocess
 import sys
@@ -32,6 +33,8 @@ GRACE = 90          # seconds offline before the hotspot starts
 JOIN_WAIT = 60      # seconds to wait for a saved network after leaving the hotspot
 RETRY_EVERY = 300   # hotspot seconds with no phone before retrying saved networks
 STAY_OPEN = 600     # shared hotspot: seconds kept open after the last save, even once online
+ADDRESS_WAIT = 30   # seconds joined to Wi-Fi without an address before asking DHCP again
+RENEW_EVERY = 60    # least seconds between two DHCP renewals
 
 
 def log(message):
@@ -286,12 +289,105 @@ def client_mode():
     run('ifup', IFACE, timeout=90)
 
 
+def wifi_status():
+    """wpa_supplicant's view of wlan0 as a dict; empty if it is not running."""
+    result = run('wpa_cli', '-i', IFACE, 'status', timeout=10)
+    if result.returncode:
+        return {}
+    return dict(line.split('=', 1) for line in result.stdout.splitlines() if '=' in line)
+
+
+def client_address():
+    """wlan0's DHCP address, or '' (never the take-turns hotspot's own address)."""
+    for match in re.finditer(r'\binet (\d+\.\d+\.\d+\.\d+)/', run('ip', '-4', 'addr', 'show', 'dev', IFACE).stdout):
+        if match[1] != ADDRESS:
+            return match[1]
+    return ''
+
+
+def renew_address():
+    """Ask for a fresh DHCP lease on wlan0 without restarting wpa_supplicant, so ap0 stays up.
+
+    ifupdown runs `dhclient -1`, which exits for good if the first try fails (router off at boot,
+    a network saved from the page later) and never notices wlan0 moving to another network.
+    Same pid and lease files as ifupdown, so `ifdown wlan0` still releases it."""
+    if shutil.which('dhclient'):
+        files = ['-pf', f'/run/dhclient.{IFACE}.pid', '-lf', f'/var/lib/dhcp/dhclient.{IFACE}.leases']
+        run('dhclient', '-4', '-r', *files, IFACE, timeout=20)  # drop the old address and route, stop the old client
+        run('dhclient', '-4', '-nw', *files, IFACE, timeout=20)  # keeps retrying in the background
+    elif shutil.which('dhcpcd'):
+        run('dhcpcd', '-4', '-n', IFACE, timeout=20)  # rebind, or start it if it exited
+    else:
+        log('No DHCP client found to renew the Wi-Fi address')
+
+
+class Lease:
+    """Keep wlan0's address in step with the network wpa_supplicant joined.
+
+    1. Joined but no address for ADDRESS_WAIT s (DHCP gave up, or never ran): renew.
+    2. Joined a different network than the address came from (a network saved or moved first
+       from the page, or the first one went away): renew at once, before the old address and
+       gateway are mistaken for being online.
+    3. wpa_supplicant not running at all: run ifup again.
+    Renewals are at least RENEW_EVERY s apart."""
+
+    def __init__(self):
+        self.ssid = None            # network the current address was obtained on
+        self.address = None
+        self.waiting_since = None   # when wlan0 was first seen joined without an address
+        self.renewed = None
+
+    def due(self, now):
+        return self.renewed is None or now - self.renewed >= RENEW_EVERY
+
+    def check(self):
+        status = wifi_status()
+        now = time.monotonic()
+        if not status:
+            self.ssid = self.address = self.waiting_since = None
+            if not online() and self.due(now):
+                log('wpa_supplicant is not running on wlan0; bringing the client back up')
+                self.renewed = now
+                client_mode()
+            return
+        if status.get('wpa_state') != 'COMPLETED':
+            self.waiting_since = None
+            return
+        ssid, address = status.get('ssid', ''), client_address()
+        if address:
+            self.waiting_since = None
+            if address != self.address:
+                self.ssid, self.address = ssid, address  # a new lease (ifup, or our renewal) belongs to this network
+            elif ssid != self.ssid:
+                log(f'Wi-Fi moved from {self.ssid!r} to {ssid!r} but kept its old address; asking for a new one')
+                self.ssid, self.address, self.renewed = ssid, None, now
+                renew_address()
+            return
+        if self.waiting_since is None:
+            self.waiting_since = now
+        elif now - self.waiting_since >= ADDRESS_WAIT and self.due(now):
+            log(f'Joined {ssid!r} but no address after {ADDRESS_WAIT} s; asking DHCP again')
+            self.renewed = now
+            renew_address()
+
+
+lease = Lease()
+
+
+def keep_address():
+    try:
+        lease.check()
+    except Exception as error:  # never let the watch stop the hotspot loop
+        log(f'Address check failed: {error}')
+
+
 def join_saved(wait=JOIN_WAIT):
     client_mode()
     deadline = time.monotonic() + wait
     while time.monotonic() < deadline:
         if online():
             return True
+        keep_address()
         time.sleep(3)
     return online()
 
@@ -387,7 +483,8 @@ def shared_until_online(portal, processes):
         time.sleep(10)
         if any(process.poll() is not None for process in processes):
             return False
-        recent = portal.last_save is not None and time.monotonic() - portal.last_save < STAY_OPEN
+        keep_address()
+        recent =portal.last_save is not None and time.monotonic() - portal.last_save < STAY_OPEN
         if online() and not recent:
             return True
 
@@ -440,6 +537,7 @@ def main():
     client_mode()
     offline_since = None
     while True:
+        keep_address()
         if online():
             offline_since = None
         elif offline_since is None:

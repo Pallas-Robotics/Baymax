@@ -119,9 +119,11 @@ class WifiSetupTests(unittest.TestCase):
         with patch.object(module, 'start_shared_hotspot', return_value=[alive]), \
              patch.object(module, 'start_hotspot') as take_turns, \
              patch.object(module, 'stop_hotspot') as stop, patch.object(module.time, 'sleep'), \
-             patch.object(module, 'online', side_effect=[False, False, True]):
+             patch.object(module, 'online', side_effect=[False, False, True]), \
+             patch.object(module, 'keep_address') as keep:
             module.setup_until_online({'password': 'abcd2345ef'})
         take_turns.assert_not_called()
+        self.assertEqual(keep.call_count, 3)  # the DHCP watch runs while the hotspot is up
         self.assertEqual(stop.call_args.args[2], 'ap0')
 
     def test_shared_hotspot_stays_open_after_a_recent_save(self):
@@ -130,6 +132,7 @@ class WifiSetupTests(unittest.TestCase):
         clock = iter([100.0, 100.0 + module.STAY_OPEN])
         portal.last_save = 50.0
         with patch.object(module.time, 'sleep'), patch.object(module, 'online', return_value=True), \
+             patch.object(module, 'keep_address'), \
              patch.object(module.time, 'monotonic', side_effect=lambda: next(clock)):
             self.assertTrue(module.shared_until_online(portal, [alive]))
         self.assertRaises(StopIteration, next, clock)  # first check (recent save) kept it open
@@ -161,6 +164,90 @@ class WifiSetupTests(unittest.TestCase):
         self.assertIn('add several networks', html)
         self.assertNotIn('leave this hotspot', html)
 
+
+
+
+class LeaseTests(unittest.TestCase):
+    """The DHCP watch: wlan0 joined without an address, or moved networks with the old one."""
+
+    def watch(self, steps, online=False):
+        """steps: (seconds, wpa_cli status dict, wlan0 address). Returns the times DHCP was renewed."""
+        lease, renewed, ifup = module.Lease(), [], []
+        for now, status, address in steps:
+            with patch.object(module, 'wifi_status', return_value=status), \
+                 patch.object(module, 'client_address', return_value=address), \
+                 patch.object(module, 'online', return_value=online), \
+                 patch.object(module, 'client_mode', side_effect=lambda: ifup.append(now)), \
+                 patch.object(module, 'renew_address', side_effect=lambda: renewed.append(now)), \
+                 patch.object(module.time, 'monotonic', return_value=now):
+                lease.check()
+        return renewed, ifup
+
+    def joined(self, ssid):
+        return {'wpa_state': 'COMPLETED', 'ssid': ssid}
+
+    def test_joined_without_an_address_asks_dhcp_again_spaced_out(self):
+        home = self.joined('Home')
+        renewed, _ = self.watch([(0, home, ''), (29, home, ''), (30, home, ''), (60, home, ''),
+                                 (89, home, ''), (90, home, ''), (95, home, '192.168.1.5')])
+        self.assertEqual(renewed, [30, 90])
+
+    def test_moving_networks_with_the_old_address_renews_at_once(self):
+        renewed, _ = self.watch([(0, self.joined('Home'), '192.168.1.5'),
+                                 (10, self.joined('Phone'), '192.168.1.5'),
+                                 (15, self.joined('Phone'), '172.20.10.3'),
+                                 (20, self.joined('Phone'), '172.20.10.3')])
+        self.assertEqual(renewed, [10])
+
+    def test_a_fresh_lease_on_a_new_network_is_left_alone(self):
+        renewed, _ = self.watch([(0, self.joined('Home'), '192.168.1.5'),
+                                 (5, {'wpa_state': 'SCANNING'}, '192.168.1.5'),
+                                 (10, self.joined('Phone'), '172.20.10.3'),
+                                 (15, self.joined('Home'), '192.168.1.5')])
+        self.assertEqual(renewed, [])
+
+    def test_not_joined_waits_for_wpa_supplicant(self):
+        renewed, ifup = self.watch([(t, {'wpa_state': 'SCANNING'}, '') for t in range(0, 300, 10)])
+        self.assertEqual((renewed, ifup), ([], []))
+
+    def test_missing_wpa_supplicant_brings_the_client_back_only_when_offline(self):
+        _, ifup = self.watch([(0, {}, ''), (30, {}, ''), (60, {}, '')])
+        self.assertEqual(ifup, [0, 60])
+        _, ifup = self.watch([(0, {}, ''), (60, {}, '')], online=True)  # Ethernet
+        self.assertEqual(ifup, [])
+
+    def test_renew_uses_ifupdown_dhclient_files_or_dhcpcd(self):
+        with patch.object(module.shutil, 'which', side_effect=lambda name: name == 'dhclient'), \
+             patch.object(module, 'run') as run:
+            module.renew_address()
+        release, start = (call.args for call in run.call_args_list)
+        self.assertEqual(release[:3], ('dhclient', '-4', '-r'))
+        self.assertEqual(start[:3], ('dhclient', '-4', '-nw'))
+        for command in (release, start):
+            self.assertIn('/run/dhclient.wlan0.pid', command)
+            self.assertIn('/var/lib/dhcp/dhclient.wlan0.leases', command)
+            self.assertEqual(command[-1], 'wlan0')
+        with patch.object(module.shutil, 'which', side_effect=lambda name: name == 'dhcpcd'), \
+             patch.object(module, 'run') as run:
+            module.renew_address()
+        self.assertEqual(run.call_args.args, ('dhcpcd', '-4', '-n', 'wlan0'))
+
+    def test_status_and_address_parsing(self):
+        status = 'bssid=aa:bb:cc:dd:ee:ff\nssid=Home Wi-Fi\nwpa_state=COMPLETED\nip_address=192.168.1.5\n'
+        with patch.object(module, 'run', return_value=module.subprocess.CompletedProcess([], 0, status, '')):
+            self.assertEqual(module.wifi_status()['ssid'], 'Home Wi-Fi')
+        with patch.object(module, 'run', return_value=module.subprocess.CompletedProcess([], 1, '', 'no')):
+            self.assertEqual(module.wifi_status(), {})
+        addr = ('3: wlan0: <UP>\n    inet 192.168.4.1/24 scope global wlan0\n'
+                '    inet 192.168.1.5/24 brd 192.168.1.255 scope global dynamic wlan0\n')
+        with patch.object(module, 'run', return_value=module.subprocess.CompletedProcess([], 0, addr, '')):
+            self.assertEqual(module.client_address(), '192.168.1.5')
+        with patch.object(module, 'run', return_value=module.subprocess.CompletedProcess([], 0, '', '')):
+            self.assertEqual(module.client_address(), '')
+
+    def test_a_failing_check_never_stops_the_hotspot_loop(self):
+        with patch.object(module.lease, 'check', side_effect=OSError('boom')):
+            module.keep_address()
 
 if __name__ == '__main__':
     unittest.main()
