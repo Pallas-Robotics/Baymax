@@ -308,14 +308,17 @@ def client_address():
 def renew_address():
     """Ask for a fresh DHCP lease on wlan0 without restarting wpa_supplicant, so ap0 stays up.
 
-    ifupdown runs `dhclient -1`, which exits for good if the first try fails (router off at boot,
+    ifupdown's dhclient retries only every ~5 minutes after a failed first try (router off at boot,
     a network saved from the page later) and never notices wlan0 moving to another network.
     Same pid and lease files as ifupdown, so `ifdown wlan0` still releases it."""
-    if shutil.which('dhclient'):
-        files = ['-pf', f'/run/dhclient.{IFACE}.pid', '-lf', f'/var/lib/dhcp/dhclient.{IFACE}.leases']
+    path = os.environ.get('PATH', '') + ':/usr/sbin:/sbin'
+    if shutil.which('dhclient', path=path):
+        # ifupdown's own options (seen on ember-001), so the router sees the same client ID and address.
+        files = ['-i', '-pf', f'/run/dhclient.{IFACE}.pid', '-lf', f'/var/lib/dhcp/dhclient.{IFACE}.leases',
+                 '-I', '-df', f'/var/lib/dhcp/dhclient6.{IFACE}.leases']
         run('dhclient', '-4', '-r', *files, IFACE, timeout=20)  # drop the old address and route, stop the old client
         run('dhclient', '-4', '-nw', *files, IFACE, timeout=20)  # keeps retrying in the background
-    elif shutil.which('dhcpcd'):
+    elif shutil.which('dhcpcd', path=path):
         run('dhcpcd', '-4', '-n', IFACE, timeout=20)  # rebind, or start it if it exited
     else:
         log('No DHCP client found to renew the Wi-Fi address')

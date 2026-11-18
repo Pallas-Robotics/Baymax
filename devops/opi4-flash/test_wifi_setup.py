@@ -217,7 +217,7 @@ class LeaseTests(unittest.TestCase):
         self.assertEqual(ifup, [])
 
     def test_renew_uses_ifupdown_dhclient_files_or_dhcpcd(self):
-        with patch.object(module.shutil, 'which', side_effect=lambda name: name == 'dhclient'), \
+        with patch.object(module.shutil, 'which', side_effect=lambda name, path=None: name == 'dhclient'), \
              patch.object(module, 'run') as run:
             module.renew_address()
         release, start = (call.args for call in run.call_args_list)
@@ -227,7 +227,8 @@ class LeaseTests(unittest.TestCase):
             self.assertIn('/run/dhclient.wlan0.pid', command)
             self.assertIn('/var/lib/dhcp/dhclient.wlan0.leases', command)
             self.assertEqual(command[-1], 'wlan0')
-        with patch.object(module.shutil, 'which', side_effect=lambda name: name == 'dhcpcd'), \
+            self.assertIn('-I', command)  # same DUID client ID as ifupdown's dhclient
+        with patch.object(module.shutil, 'which', side_effect=lambda name, path=None: name == 'dhcpcd'), \
              patch.object(module, 'run') as run:
             module.renew_address()
         self.assertEqual(run.call_args.args, ('dhcpcd', '-4', '-n', 'wlan0'))
