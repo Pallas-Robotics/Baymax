@@ -14,6 +14,15 @@ ROOT = Path(__file__).resolve().parent
 # A machine's own settings: its .env (Setup, .env.example) or its shell.
 LOCAL_SETTING_PREFIXES = ("BAYMAX_", "EMBER_")
 LOCAL_SETTING_NAMES = {"GOOGLE_API_KEY", "GEMINI_API_KEY", "OPENAI_API_KEY", "FLASK_SECRET_KEY"}
+# Inputs for the tests, not settings of Ember, so they stay: BAYMAX_MEMORY_MODEL_DIR
+# points the real-model memory tests at a downloaded model (they skip without it).
+TEST_INPUT_NAMES = {"BAYMAX_MEMORY_MODEL_DIR"}
+# Checks of the repository's own bookkeeping (every test file listed in one suite.json,
+# the suites --changed picks). The robots run this gate before taking a release and
+# roll back (the 5 Max never retries that commit), so a forgotten suite.json entry
+# would stop every robot updating. They run in CI (GitHub sets GITHUB_ACTIONS=true)
+# and in tests/run.py, never on a robot.
+CI_ONLY_CHECKS = {"test_validation.py"}
 REQUIRED_TEST_FILES = {
     "core": {"test_dev_settings.py", "test_devUI_http.py", "test_pc_hardware.py", "test_runtime_monitor.py"},
     "toolkit": {"test_toolkit.py"},
@@ -81,7 +90,8 @@ def local_settings_ignored(root=ROOT):
 
     saved = dict(os.environ)
     for name in [name for name in os.environ
-                 if name.startswith(LOCAL_SETTING_PREFIXES) or name in LOCAL_SETTING_NAMES]:
+                 if (name.startswith(LOCAL_SETTING_PREFIXES) or name in LOCAL_SETTING_NAMES)
+                 and name not in TEST_INPUT_NAMES]:
         del os.environ[name]
     dotenv.main.DotEnv = WithoutLocalEnv
     try:
@@ -105,7 +115,10 @@ def collect_suites(test_dir):
         suites[section].addTests(unittest.TestLoader().discover(str(test_dir), pattern=path.name))
     overall = ROOT.parent / 'tests/overall'
     if Path(test_dir).resolve() == (ROOT / 'tests').resolve() and overall.is_dir():
-        suites['core'].addTests(unittest.TestLoader().discover(str(overall), pattern='test_*.py'))
+        in_ci = os.environ.get("GITHUB_ACTIONS") == "true"
+        for path in sorted(overall.glob('test_*.py')):
+            if in_ci or path.name not in CI_ONLY_CHECKS:
+                suites['core'].addTests(unittest.TestLoader().discover(str(overall), pattern=path.name))
         performance = ROOT.parent / 'devops/performance'
         if performance.is_dir():
             suites['core'].addTests(unittest.TestLoader().discover(str(performance), pattern='test_*.py'))

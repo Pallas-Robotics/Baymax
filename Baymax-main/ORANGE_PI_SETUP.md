@@ -22,7 +22,7 @@ On an Orange Pi 5 Max with Armbian Debian 13 (vendor kernel 6.1), `requirements-
 1. Get the code as a git checkout of the `release` branch, in a folder you keep: `sudo apt install -y git`, then `git clone --branch release --single-branch https://github.com/Pallas-Robotics/Baymax.git ~/Baymax`. Automatic updates (below) need this checkout. An extracted ZIP runs the same way but never updates itself.
 2. Open devops/clickables/Linux. On a minimal Debian 13 system, run **0 - Debian Prerequisites** first. It lists system libraries/build tools, asks permission, and uses sudo/pkexec for apt installation. It does not install NPU drivers, replace the kernel or configure an audio server. Ensure XFCE desktop audio and a browser already work.
 3. Open **1 - Setup**. It installs private Python 3.12 and automatically selects requirements-orange-pi.txt for Linux aarch64/arm64. Expect a potentially long native build for Praat-Parselmouth. A resolver pass does not prove that compilation will succeed.
-4. Enter your own Gemini key, select/test mic, speaker and camera, and optionally enable **experimental fall detection (CPU, or NPU on a set-up Orange Pi)**. Save. It is off by default and requires a camera. With camera pose tracking on (the default) it reuses Ember's own pose, which can run on the Orange Pi 5 Max's NPU (below). It adds a second fall detector (one fall can give two check-ins), so leave it off unless you are testing it.
+4. Enter your own Gemini key (its project needs Live quota for the models Ember uses: see [Gemini model](MVP.md#gemini-model)), select/test mic, speaker and camera, and optionally enable **experimental fall detection (CPU, or NPU on a set-up Orange Pi)**. Save. It is off by default and requires a camera. With camera pose tracking on (the default) it reuses Ember's own pose, which can run on the Orange Pi 5 Max's NPU (below). It runs its own detector on that pose for the Monitor; with Ember's built-in fall detection on (`fall_detection.enabled`, the default) it leaves the check-in to it, so one fall gives one check-in.
 5. Open **2 - Monitor**, then **3 - Start Ember**. On an Orange Pi (Linux ARM64) it starts `run_mvp.py`, as MVP.md, the autostart service and the 4 Pro image do: the LED eyes (set `BAYMAX_EYES_PORT`; [features/eyes](features/eyes/README.md)) and the MVP defaults (400 ms turn-end silence; interruptions, the wait cue and voice analysis off; 10 s to save memories at stop; values saved in `.env` win). Ember downloads its pose model (`pose_landmarker_lite.task` by default; `camera.pose_model` in `/etc/ember/device.toml` picks lite, full or heavy) on the first camera start. With pose tracking on (the default) the fall toolkit loads no model of its own and the Monitor shows **Running on CPU (core pose)** (or **Running on NPU (core pose)** after the NPU steps below), with actual FPS and inference milliseconds. Only with `camera.pose_tracking = false` does the toolkit's first run download and verify its own model and show **Running on CPU**. Disabled/starting/loading/unavailable/waiting is not a working detector.
 6. Use **4 - Stop Ember**. Test device release and restart; keep your evidence for review.
 
@@ -71,7 +71,13 @@ backend and logs it to Ember's log:
   again, on the CPU.`) or dies later (`[CAM] Pose process failed (...); restarting it
   on the CPU.`), Ember starts it again once, on the CPU; a second failure leaves video
   only until Ember restarts (`[CAM] Pose unavailable; video only ...`). Video to Gemini
-  continues throughout. A pose process that hangs without exiting is not detected yet.
+  continues throughout. A pose process that hangs without exiting is stopped once a
+  frame has had no reply for 5 s (60 s while it starts) and restarted the same way
+  (`[CAM] Pose process failed (vision process hung: no reply in 5 s, so it was
+  stopped); ...`). An NPU error during a frame does not use that restart: the pose
+  process switches to MediaPipe itself (`[POSE] NPU (RK3588) failed during inference
+  (...); switching to CPU (MediaPipe) for the rest of this run.`), and the frame in
+  which it loads MediaPipe is allowed the start's 60 s instead of 5 s.
 
 Eye-contact greetings (`BAYMAX_PRESENCE_GREETING=1`, off by default) run face
 landmarks in a second child process the same way. The annotated live view is drawn
@@ -99,20 +105,72 @@ need to be measured again, summed over the process tree as above.
 
 The RK3588 has four fast Cortex-A76 cores (cpu4-7) and four slow Cortex-A55s (cpu0-3).
 Ember keeps itself on the fast ones (it prints `[CPU] Running on the fast cores
-4,5,6,7`): MediaPipe pose takes about 43 ms a frame on an A76 and over 200 ms on an
-A55. `run_mvp.py` (the MVP service and, on an Orange Pi, **3 - Start Ember**) and
-`run_pc.py` (which it starts) do this first thing, before the eyes, the network watch and numpy's thread pool start, and also move
-any thread that already runs, so every thread of Ember stays on the A76s. The pose
-and face child processes inherit it. `BAYMAX_CPU_PINNING` in `.env`:
+4,5,6,7, GIL switch interval 1 ms`): MediaPipe pose takes about 43 ms a frame on an A76
+and over 200 ms on an A55. `run_mvp.py` (the MVP service and, on an Orange Pi, **3 -
+Start Ember**) and `run_pc.py` (which it starts) do this first thing, before the eyes,
+the network watch and numpy's thread pool start, and also move any thread that already
+runs, so every thread of Ember's own process stays on the A76s. None of them is moved to
+an A55 by itself: they all share Python's GIL, and whatever one of them did there while
+holding it would keep the audio threads waiting 3.6-5x as long.
+
+With Ember on the fast cores, and only then:
+
+- **GIL switch interval 1 ms** instead of Python's 5 ms. The mic callback lets go of the
+  GIL inside each WebRTC frame (2-3 times a block) and has to win it back each time; in
+  the 5 Max's full-system test it took about 2.5 ms at the median but 9.3-10.2 ms at p99,
+  just as long with pose on the NPU as on the CPU. `BAYMAX_GIL_SWITCH_MS` in `.env`
+  changes it (0.1-100 ms; 5 is Python's own, 0 leaves Python's setting alone).
+- **No idle thread pools.** OpenCV's pool is off in Ember and in the vision processes
+  (its three workers spun at 1.2-1.6% of a core each around the camera's 0.3 ms colour
+  conversion), and `OPENBLAS_NUM_THREADS=1`, `OPENCV_FOR_THREADS_NUM=1` and
+  `TOKENIZERS_PARALLELISM=false` apply to Ember and everything it starts, unless `.env`
+  or the shell sets them. ONNX Runtime keeps its two threads for the memory lookup
+  (below). With `BAYMAX_MEMORY_NOTES=1` a lookup runs between turns, once Ember's reply
+  has played, and nothing waits for it; two threads finish it sooner (19 ms instead of
+  39 ms on one fast core) in case the person's next reply starts while it is running.
+- **Speaker stream: 512-frame callbacks and low latency** instead of sounddevice's 1024
+  and `high`. With the 5 Max's USB speaker on PipeWire's default device the speaker's
+  output latency went from about 96 ms to about 42 ms (PortAudio reported 42.7 ms, now
+  10.7 ms), with no output underflows in three 3.5-minute runs (one with MediaPipe pose on
+  the CPU) and the mic and speaker callbacks' timing unchanged. `BAYMAX_OUTPUT_BLOCKSIZE`
+  (64-4096) and `BAYMAX_OUTPUT_LATENCY` (`low`, `high` or up to 0.5 s) in `.env` change it,
+  e.g. 1024 and `high` if another speaker crackles.
+- **The pose process** (NPU or MediaPipe, and the fall toolkit's own with
+  `camera.pose_tracking = false`) stays on the fast cores at nice 5, so Ember's audio
+  wins any core it shares with pose. On an A55 the NPU path's own CPU work (about 11.5 ms
+  a frame on an A76) would take 3.6-5x as long, estimated to push its slower frames past
+  the 100 ms a frame has at 10 fps.
+- **The face process** of eye-contact greetings (`BAYMAX_PRESENCE_GREETING=1`, off by
+  default; 4 fps, and a look has to last 0.8 s anyway) runs on the slow cores at nice 10.
+- Each vision process logs where it runs, e.g. `[CPU] Face process on the slow cores
+  0,1,2,3 at nice 10.` `BAYMAX_VISION_CPUS=fast` or `slow` puts both on those cores, to
+  measure. Nice values only ever go up (a higher priority needs root) and nothing uses
+  real-time scheduling. The audio cleanup and memory stay inside Ember's process: their
+  heavy parts already let go of the GIL, and another process would add a hop on the
+  microphone's path.
+
+In the full-system tests Ember and its pose process used 10-19% of the A76s on average
+and no audio block was dropped, so this layout is about steadier audio timing, not
+about CPU. Its effect on the mic callback is expected, not yet measured on the board.
+To see where every thread runs (`psr`: the core it last ran on; `ni`: its nice value),
+with `PIDS` from **Measuring CPU** above: `ps -L -o pid,tid,psr,ni,comm -p "$PIDS"`.
+
+`BAYMAX_CPU_PINNING` in `.env`:
 
 - `auto` (default): pin only on an RK3588 (Orange Pi 5 / 5 Max), where it was measured.
 - `on`: pin on any Linux ARM64 board with fast and slow cores. On the Orange Pi 4 Pro
-  that puts Ember and both children on its two A76s; this has not been measured, so
-  `auto` leaves the 4 Pro unpinned. Use `on` there only to compare
-  (`cat /sys/devices/system/cpu/cpu*/cpu_capacity` shows which cores are fast).
-- `off`: never pin; Linux uses every core.
+  that puts Ember and the pose process on its two A76s and the face process on its six
+  A55s; this has not been measured, so `auto` leaves the 4 Pro unpinned. Use `on` there
+  only to compare (`cat /sys/devices/system/cpu/cpu*/cpu_capacity` shows which cores
+  are fast).
+- `off`: never pin; Linux uses every core, and none of the settings above apply.
 
-Windows, macOS and x86 Linux PCs (including Intel/AMD hybrid CPUs) are never pinned.
+Windows, macOS and x86 Linux PCs (including Intel/AMD hybrid CPUs) are never pinned,
+and none of the settings above apply there either. Started under `taskset`, Ember and
+its children stay within the cores it was given (with `taskset -c 4-7` the face process
+stays on cpu4-7, at nice 10). `features/pose/benchmark.py` pins itself like Ember, so it
+also runs with the single-threaded pools and the 1 ms interval: compare its figures
+only with runs made the same way.
 On both Orange Pis the camera also keeps only its newest frame (a V4L2 buffer of
 one); that is not measured with a camera yet: check that the FPS stays near 10 (the
 Monitor shows it with Setup's fall-detection checkbox on; otherwise read the FPS
@@ -126,8 +184,11 @@ Gemini summarises the conversation since the last save (the same step on every
 platform) and the summary lines are stored on the board in `chroma_store/` (in
 `BAYMAX_DATA_DIR`, by default next to the code; on the Orange Pi 4 Pro SD image
 `~/ember-deployment/data`, which updates keep). A crash or power cut loses only the
-conversation since the last save. On each turn the closest memories are looked up and
-given to Gemini, and the 50 newest are part of its instructions.
+conversation since the last save. The 50 newest memories are part of Gemini's
+instructions at every connection, and Gemini uses them (checked live: a remembered fact
+there was used 5 of 5 times). Looking memories up during the conversation and handing
+them to Gemini between turns is opt-in (`BAYMAX_MEMORY_NOTES=1`): Gemini 2.5 ignored
+such notes in 10 of 10 live runs, so by default Ember does no per-turn lookups.
 `requirements-orange-pi.txt` installs ChromaDB, ONNX Runtime and `tokenizers` for this,
 without torch: `semantic_embedder.py` runs the same MiniLM model with the same results
 as the robot image.
@@ -146,11 +207,13 @@ in Ember's own process, full model, 15 fps; 500 memories, a 30-word query of abo
 tokens):
 - **A lookup:** 34 ms of CPU, ready in 19 ms with its two threads on two fast cores
   (39 ms on one fast core, about 140 ms on a slow A55). It runs once per user turn,
-  in the background, while the person is still talking.
+  in the background: then while the person was still talking, now once Ember's reply
+  has played.
 - **In the full-system test** (pose, audio cleanup, the Gemini link and the eyes all
   running, one scripted user turn every 12 s): Ember used 42.8% of one core with pose
   on the NPU and 92.0% with pose on the CPU, against 42.7% and 91.8% with memory off.
-  18 lookups per run, none timed out.
+  18 lookups per run, none timed out (the reply then waited up to 150 ms for one; now
+  nothing waits).
 - **RAM:** about 170-230 MB more. Saving 30 summary lines takes about 0.5 s of CPU;
   loading the model at start about 1.2 s.
 - `pip install -r requirements-orange-pi.txt` added the packages in 55 s and the

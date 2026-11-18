@@ -34,6 +34,7 @@ Official key instructions: https://ai.google.dev/gemini-api/docs/api-key
 **Check Ember's Gemini usage and limits**
 1. Open https://aistudio.google.com/rate-limit and select the SAME project that owns the key you saved in Ember.
 2. Find **Gemini 2.5 Flash Native Audio / Live API** for conversation (configured model: gemini-2.5-flash-native-audio-preview-12-2025).
+   Also find **gemini-3.8-live**: it replaces 2.5 (shut down as early as 2026-11-17) and Ember moves to it when 2.5 can't be used, so the project needs Live quota for it.
 3. Also check **Gemini 2.5 Flash** for summaries. Use the usage/chart controls and time range to inspect each model's activity and limits.
 4. If you see quota/rate-limit errors (429), check the relevant model's limits before retrying. An Unlimited request column does not mean every limit is unlimited.
 

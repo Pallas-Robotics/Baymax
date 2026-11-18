@@ -73,9 +73,11 @@ class CpuPose:
 
 
 def remote_pose(model_path=None):
-    """CpuPose in its own process, so inference cannot stall the mic or Gemini I/O."""
+    """CpuPose in its own process, so inference cannot stall the mic or Gemini I/O. The
+    model is fetched here first: the child gets a limited time to start (vision_process)."""
     from functools import partial
     from features.vision_process import Remote
+    model_path = model_path or ensure_model(ROOT / ".models/pose_landmarker_full.task")
     return Remote(partial(CpuPose, model_path))
 
 
@@ -106,15 +108,21 @@ class FallWorker:
         self.samples = deque(maxlen=30)
         self.dropped = 0
         self.shared = False                 # landmarks come from the core's pose model
+        self.builtin = False                # the core's own fall detection sends the check-in
         self.pose_device = "CPU"            # where the core's pose model runs: "CPU" or "NPU"
         self.running_state = "Running on CPU"
 
-    def start(self, fps=15, shared_pose=False, **settings):
+    def start(self, fps=15, shared_pose=False, builtin=False, **settings):
         """shared_pose=True: the core already runs pose on every frame and passes its
-        landmarks to share(), so this worker loads no second model."""
+        landmarks to share(), so this worker loads no second model. builtin=True: the
+        core's own fall detection is on and sends the possible-fall check-in, so this
+        worker still detects and reports (Monitor) but queues no second check-in. Only
+        with shared_pose: on its own model the core has no landmarks to check, so this
+        worker still checks in."""
         if self.thread and self.thread.is_alive():
             return
         self.shared = bool(shared_pose)
+        self.builtin = bool(builtin) and self.shared    # the core sees no pose otherwise
         self.running_state = self._running_label()
         self.is_enabled = enabled()
         if not self.is_enabled:
@@ -152,9 +160,10 @@ class FallWorker:
     def _running_label(self):
         return f"Running on {self.pose_device} (core pose)" if self.shared else "Running on CPU"
 
-    def share(self, landmarks, inference_ms=None, device=None):
-        """The core's pose result for the latest frame, how long it took and where it ran
-        ("CPU" or "NPU", from features/pose/backend.py) in shared_pose mode."""
+    def share(self, landmarks, inference_ms=None, device=None, captured_at=None):
+        """The core's pose result for the latest frame, how long it took, where it ran
+        ("CPU" or "NPU", from features/pose/backend.py) and when the frame was captured
+        (time.monotonic(); fall velocities use it) in shared_pose mode."""
         if device and self.shared and device != self.pose_device:
             with self.lock:
                 previous = self.running_state
@@ -164,7 +173,7 @@ class FallWorker:
                     self.state = self.running_state
         if not self.shared or not self.is_enabled or self.stop_event.is_set() or not self.thread or not self.thread.is_alive():
             return
-        self._put((time.monotonic(), landmarks, inference_ms))
+        self._put((time.monotonic(), landmarks, inference_ms, captured_at))
 
     def _put(self, item):
         with self.lock:
@@ -196,16 +205,20 @@ class FallWorker:
                 landmarks = item[1] if self.shared else backend.detect(item[1])
                 if self.stop_event.is_set():
                     break
-                result = detector.update(landmarks)
+                # Velocities use when the frame was captured (the core's time; or when
+                # submit() got it), not when its pose was done.
+                result = detector.update(landmarks, timestamp=item[3] if self.shared else item[0])
                 finished = time.monotonic()
                 with self.lock:
                     self.inference_ms = (item[2] if self.shared else round((finished - started) * 1000, 1))
                     self.samples.append(finished)
                     self.last_result = {k: result.get(k) for k in ("fall_pending", "fall_active", "trunk_angle")}
-                    if result.get("fall_detected"):
+                    if result.get("fall_detected") and not self.builtin:   # the core's own already checks in
                         self.alerts.append({"time": time.time(), "recorded": finished})
                 if result.get("fall_detected"):
-                    _record("Possible fall detected locally; awaiting a check-in. No external alert sent.")
+                    _record("Possible fall detected locally; check-ins come from Ember's built-in fall detection."
+                            if self.builtin else
+                            "Possible fall detected locally; awaiting a check-in. No external alert sent.")
                 next_frame = started + self.interval
         except Exception as error:
             self.state = "Unavailable: " + type(error).__name__

@@ -8,6 +8,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 from zoneinfo import ZoneInfo
 
+from features.conversational_ability import live_models
 from features.toolkits.everyday.store import Store
 from features.toolkits.family import tools as family
 from features.toolkits.family.link import Link
@@ -179,6 +180,17 @@ class FamilyTests(unittest.TestCase):
             asyncio.run(family.refresh_profile(session))
         self.assertIn("call her Ruthie", str(session.send_client_content.call_args))
         self.assertFalse(self.link.profile_changed.is_set())
+
+    def test_on_gemini_3_the_profile_note_waits_for_the_next_session(self):
+        # It goes without turn_complete, which is unchecked on Gemini 3 (live_models.takes_quiet_notes).
+        self.store.set_profile("Ruth, 82; call her Ruthie.", "t1")
+        self.link.profile_changed.set()
+        session = AsyncMock()
+        with patch.object(family.everyday, "available_to_speak", return_value=True), \
+                patch.object(live_models, "in_use", "gemini-3.8-live"):
+            asyncio.run(family.refresh_profile(session))
+        session.send_client_content.assert_not_called()
+        self.assertTrue(self.link.profile_changed.is_set())     # the next session's instructions have it
 
     def test_session_task_is_registered(self):
         from features.toolkits import fall_detection

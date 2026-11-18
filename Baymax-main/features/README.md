@@ -11,6 +11,16 @@ The prompt is sent to Gemini with session instructions; it adds no provider,
 device stream or setting. `tests/test_toolkit_eyes.py` checks persona injection;
 live conversation still needs evaluation for brevity, relevance and turn balance.
 
+Its `[LANGUAGE]` section has Ember answer in the language the person speaks (a
+switch is followed on the next reply, a Hindi-English mix gets the same mix) and
+answer its own English notes ([FALL ALERT], reminders) in that language. The
+native-audio model picks the language itself: no `language_code` or transcription
+language is set, so none must be added. The offline pause words stay English
+("Hey Ember", "stop"). Still English: the startup hello before anyone speaks,
+the eye cues read from the reply text and the saved memory lines (the memory
+embedder is English-only). `tests/test_live_eval.py` checks that the section
+reaches the session config; `evals/scenarios.json` has the live `language-*` runs.
+
 ```text
 features/
   memory_palace/       Connected memories, interests, relationships and goals

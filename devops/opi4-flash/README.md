@@ -1,5 +1,9 @@
 # OPI4-Flash
 
+Start with the [SD CARD Flash quickstart](../../docs/SD_CARD_FLASH.md).
+After building, run `python3 verify_image.py --manifest output/ready-image.json`
+before selecting a card in your image writer. The verifier reads files only.
+
 Build a personalized bootable microSD image for the **Orange Pi 4 Pro (A733)**.
 The image installs Ember, a headless XFCE desktop, AnyDesk and a progress page.
 No running Ember device is required to prepare it.
@@ -163,7 +167,8 @@ No extra microphone/camera streams are opened by hardware enumeration or tests.
 The conversation service starts **`run_mvp.py`**, which wraps the same v10
 conversation in `run_pc.py` with saved-device readiness, single-instance handling,
 the eye lifecycle and `run_mvp.py`'s MVP defaults: 400 ms turn-end silence,
-interruptions off, the wait cue off, voice analysis off and at most 10 s for saving
+interruptions off, room-level noise instead of digital zeros while the mic is muted,
+the wait cue off, voice analysis off and at most 10 s for saving
 memories when Ember stops. Existing `.env` overrides still win: a `BAYMAX_TURN_END_SILENCE_MS` saved on a
 board (for example 600 from an earlier test) replaces the 400 ms default there.
 No connected eye board is required for conversation; physical eyes and their

@@ -3,9 +3,12 @@
   "sources": [
     "Baymax-main/run_*.py",
     "Baymax-main/gemini_preflight.py",
+    "Baymax-main/features/conversational_ability/live_models.py",
     "Baymax-main/deploy/**",
     "devops/mvp/**",
-    "devops/clickables/**"
+    "devops/clickables/**",
+    "Baymax-main/dev_settings.py",
+    "Baymax-main/pc_hardware.py"
   ],
   "python": [
     {

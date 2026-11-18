@@ -13,26 +13,77 @@ monitor. Robot v10 supports the same public tools through its adapter. See
 
 ## Conversational web discovery
 
-When built-in search is enabled on Gemini 2.5, an explicitly zero thinking budget
-is raised to 128 tokens, adapting Joe Kojima's `d2cca1f` fix. Zero thinking with
-search plus function tools reproduced a session close on the volume command;
-128 allowed both repeated volume tests to pass while retaining search. Existing
-nonzero budgets are preserved. Search off retains the original budget. This can
-add reasoning latency/quota compared with zero thinking; it does not add another
-session, model or provider.
+**On by default; `BAYMAX_GOOGLE_SEARCH=0` turns it off.** Gemini gets a `search_web` tool
+([`web_search.py`](web_search.py)). When it calls it, a lookup session that has Google Search and
+nothing else answers the query in a sentence or two, and Gemini speaks the answer. Only the
+query Gemini writes is sent, never the conversation.
 
-The existing Gemini Google Search tool can be used without an explicit search
+Why not Gemini's built-in `google_search` tool in the conversation itself: on the native-audio
+model (`gemini-2.5-flash-native-audio-preview-12-2025`), with it next to Ember's function
+tools and no thinking (Ember's fastest setting), the session closed with "1011 internal
+error" whenever Gemini called one of Ember's tools: a dropped connection and a reconnect
+during which Ember can't hear. In `evals/live_eval.py` with Ember's real config
+(2026-11-06/07), 7 of 27 runs dropped (reminder 0/3, radio 0/3); merging or moving the tools
+did not help (4 and 6 of 9 runs dropped), nor did declaring them blocking (5 of 9). Any
+thinking budget stopped the drops (32, 128, 512, dynamic), but it slowed every reply (median
+first reply audio 2.85 s against 1.9 s without thinking) and made the language rule answer
+English spoken with an Indian accent in Malayalam (4-5 of 5 runs with the synthetic voice).
+
+The lookup session uses `gemini-robotics-er-2-streaming-preview` (`BAYMAX_SEARCH_MODEL`), the
+Live model this key can use that answers in text: 1.3-2.2 s per grounded answer with
+thinking off. The native-audio models answer only in audio, at speaking pace (10-16 s for
+two sentences). Its quota limits new sessions rather than questions (one per question was
+refused after about a dozen in two minutes; one session answered eight back to back), so
+one session is opened at the first search, reused for the next ones (anything an earlier
+answer left queued is dropped first), and closed after two minutes without one. On the tested free-tier key it refused new sessions after 25 in a
+morning. When it refuses one (quota, or the model is gone), the conversation's own Live model
+looks the question up instead, asked to answer in English (Gemini speaks the result in the
+person's language): it answers only in audio, so its session asks for one sentence and
+closes once the transcript has one (a clear sentence end in any script, never after a digit
+or an abbreviation; or, once generation is done, the whole transcript after 0.3 s without
+more), 5.0-6.4 s per answer (the eyes show thinking after 2 s). A whole search, fallback and
+any wait for an earlier search included, ends within 13 s, under the runtime's 15 s window
+for an owed reply, and the runtime counts a reply as owed while any tool call runs; sessions
+close, and stalled setups are abandoned, in the background, outside that time. A lookup that fails or runs out of time returns an error, and Ember says it could not
+check; each kind of failure is logged once (`[SEARCH] ...`, never the query). A regular Gemini API call with Google Search grounding would also do,
+but the tested key's project is refused grounding ("429 quota exceeded") on every model
+while plain calls work; it needs billing.
+
+Live results (`evals/live_eval.py`, Ember's real config, Gemini 2.5 native audio,
+2026-11-07): over the 20 standard scenarios (3 runs each, 70 turns) the median first reply
+audio was 2.03 s (p90 3.08 s) with search on, against 2.85 s (p90 4.28 s) with the built-in
+tool and a thinking budget. Every tool scenario passed 3/3, Gemini never searched when it
+didn't need to, and one session in 60 ended with a server error ("Deadline expired"), as
+before. English spoken with an Indian accent stayed English in 5 of 8 runs (0-1 of 5 with
+thinking). Asked who won the World Series this year, Gemini called `search_web` ("World
+Series winner 2026") in every run and answered right when a lookup could run: first audio
+3.6 and 4.8 s through the text model, 5.7-11.1 s through the fallback (5 of 5; 7.9 and
+8.2 s with the final sentence handling).
+Before the fallback existed, the text model's quota refusals made Ember say it couldn't
+check (4 runs).
+
+When turned on, the search tool can be used without an explicit search
 request when a public topic in an engaged conversation merits a relevant lookup.
 Ember is guided to share one sourced finding, connect it to the person's interest,
 and contribute a reaction or invite their view. It avoids research during venting
 or ongoing storytelling, repeated searches, and invented sources or familiarity.
 Queries should contain public topic terms, not personal disclosures or transcripts;
-Google receives the query through Gemini's existing built-in search integration.
-No new provider, dependency, background worker or recording is added.
-`BAYMAX_GOOGLE_SEARCH=0` or `BAYMAX_TOOLKIT_ENABLED=0` disables this search tool.
-Offline coverage is in `tests/test_toolkit.py` (registration, idempotence and
-disabled behavior); relevant results, latency and natural spoken follow-ups still
-require live evaluation.
+Google receives the query through a Gemini Live lookup session (Gemini runs the search).
+No new provider, dependency or recording is added; the lookup session's thread waits
+idle between searches.
+`BAYMAX_GOOGLE_SEARCH=0` removes this search tool, and `BAYMAX_TOOLKIT_ENABLED=0` removes
+it either way. Offline coverage is in `tests/test_toolkit.py` (`search_web` declared by
+default and never the built-in tool, no thinking, registration, idempotence and disabled
+behavior; dispatch through `execute` and `handle_tool_call`; one lookup session reused, a late
+chunk dropped before the next question, one reconnect, idle close, a stalled setup abandoned
+on time; the fallback's first sentence in Latin, Devanagari and Japanese scripts, waiting out
+ordinals, decimals and abbreviations, the whole answer after generation, a whole sentence
+kept at the deadline; one deadline for the whole search, including a wait for an earlier
+one; quota and other failures as short errors, failures logged once without the query; the
+model settings), `tests/test_memory_saving.py` and `tests/test_public_core_integration.py`
+(a reply stays owed while a tool runs and from its result), and `tests/test_live_eval.py`
+(the real runtime config; `--real-tools` gets the key, also over an empty `GOOGLE_API_KEY=`,
+and the model under test); the live results are above.
 
 ## Location and weather
 
@@ -87,7 +138,8 @@ recording's own level.
 
 Book mode: echo cancellation leaves enough narration that Gemini answered the
 narrator as the person. While a book plays, `gate` (in `processing.input_gates`)
-withholds the mic from Gemini and feeds it to `wakeword.py`, an offline Vosk
+withholds the mic from Gemini (which gets room-level noise under MVP's
+`BAYMAX_COMFORT_NOISE`, digital zeros otherwise) and feeds it to `wakeword.py`, an offline Vosk
 listener (`vosk==0.3.45`, small English model ~41 MB in `models/`, gitignored;
 fetch once with `python features/toolkits/wakeword.py --download`). "Hey Ember",
 "Ember stop/pause", or a lone "stop"/"pause" pauses the book; the book also
@@ -214,10 +266,17 @@ once from storage.googleapis.com to `.models/`, checksum-pinned) on the existing
 camera frames, which reach it through `fall_detection.frame_observers`; no new
 camera stream. Face and pose inference run in a child process
 (`features/vision_process.py`): in Ember's own process MediaPipe held Python's GIL,
-starving the mic callback and Gemini I/O. Only frames go in and landmark tuples
-come out over local pipes; nothing leaves the device. If the face child cannot start,
-eye contact reports unavailable. If the core's pose child cannot start or
-dies, it is started again once, on the CPU; video continues either way. A look counts when the face is turned to the camera, both irises
+starving the mic callback and Gemini I/O. Where Ember runs on the RK3588's fast cores,
+the face child runs on the slow cores at nice 10 (`FaceLandmarks.vision_role`; see
+ORANGE_PI_SETUP.md, Fast cores). Only frames go in and landmark tuples
+come out over local pipes; nothing leaves the device. The face model is downloaded
+before its child starts. If the face child cannot start (or has not loaded in 60 s),
+eye contact reports unavailable; one that dies, or stops answering a frame for 5 s and
+is stopped, ends eye-contact greetings until Ember restarts, with one log line
+(`[PRESENCE] Eye-contact greetings stopped until Ember restarts (...)`); a frame the
+face model itself fails is skipped and logged. If the core's pose child
+cannot start, dies or hangs, it is started again once, on the CPU; video continues
+either way. A look counts when the face is turned to the camera, both irises
 are centred, the face is within about 1-1.5 m (detector limit) and it lasts
 ~0.8 s after nobody looked for 30 s. The dashboard timeline shows "Eye contact
 started" and "Eye contact ended" (with why it did or did not greet). It only
@@ -295,7 +354,7 @@ overriding model expressions and delayed thinking. Missing/disabled eyes do not
 prevent the existing check-in. No external notification is added; fake-alert
 dispatch and priority tests cover the integration. See [eye behavior](../eyes/README.md).
 
-Enable the experimental fall-detection checkbox in Setup and restart Ember. In v10 with camera pose tracking on (the default) it reuses the core camera thread's pose instead of running a model of its own, and that pose runs in the core's pose process, on the Orange Pi 5's NPU once [features/pose](../pose/README.md) is set up there (MediaPipe on the CPU otherwise; its inference time includes the round trip to that process). With v10's built-in fall detection also on (the default) that is a second detector, so one fall can give two check-ins; in v8, or with pose tracking off, it runs its own CPU model on copies of the camera frames. It reports performance/state in the monitor and can ask a possible-fall check-in through Gemini; no external alerts are sent. See [fall inputs, dependencies, outputs and validation](FALL_DETECTION.md).
+Enable the experimental fall-detection checkbox in Setup and restart Ember. In v10 with camera pose tracking on (the default) it reuses the core camera thread's pose instead of running a model of its own, and that pose runs in the core's pose process, on the Orange Pi 5's NPU once [features/pose](../pose/README.md) is set up there (MediaPipe on the CPU otherwise; its inference time includes the round trip to that process). With v10's built-in fall detection also on (the default) the built-in detection sends the check-in and the toolkit only reports in the Monitor, so one fall gives one check-in; in v8, or with pose tracking off, it runs its own CPU model on copies of the camera frames and checks in itself. It reports performance/state in the monitor and can ask a possible-fall check-in through Gemini; no external alerts are sent. See [fall inputs, dependencies, outputs and validation](FALL_DETECTION.md).
 
 ## Conversation discovery
 

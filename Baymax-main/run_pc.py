@@ -7,6 +7,7 @@ from dotenv import load_dotenv
 from pc_hardware import use_performance_cpus
 from secret_config import CredentialError, gemini_key
 from gemini_preflight import PreflightError, validate_key
+from features.conversational_ability import live_models
 
 ROOT = Path(__file__).resolve().parent
 RUNTIME = ROOT / "realtime_gemini_10.py"
@@ -34,7 +35,8 @@ def main():
         return 1
     print("Checking Gemini key and configured model access with Google (no audio/video sent)...", flush=True)
     try:
-        validate_key(key, RUNTIME)
+        # v10 connects with the first of its Live models (BAYMAX_LIVE_MODELS) this key can use.
+        validate_key(key, RUNTIME, live_models=live_models.configured)
     except PreflightError as error:
         print(f"Startup stopped: {error}", file=sys.stderr)
         return 1

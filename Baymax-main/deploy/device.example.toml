@@ -51,8 +51,7 @@ hotspot_connection = "Baymax_Hotspot"
 [fall_detection]
 # This is v10's built-in detector, separate from BAYMAX_FALL_DETECTION_ENABLED.
 # The toolkit (BAYMAX_FALL_DETECTION_ENABLED=1) reuses this pose (no second model)
-# but adds a second detector, so one fall can give two check-ins; leave it off
-# unless testing it.
+# and, with this detector on, leaves the check-in to it: one check-in per fall.
 # false turns off the fall check and its alerts (e.g. for a demo). Pose
 # tracking keeps running because video and face presence need it.
 enabled = true
