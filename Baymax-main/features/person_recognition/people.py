@@ -268,6 +268,7 @@ class People:
         self.greeted = {}              # person id -> when Ember last greeted them (face or voice)
         self.heard = {}                # person id -> when their voice was last recognised
         self.adopted_at = {}           # person id -> when a clip of theirs was last offered for learning
+        self.listening_for = {}        # lowercase name -> when remember_voice started listening
         self.conversation = conversation.ConversationTracker(clock)
         self.voice_arrivals = []
 
@@ -527,6 +528,7 @@ class People:
     def _voice_learned(self, result):
         with self.lock:
             self.learned.append((result, self.clock()))
+            self.listening_for.clear()
 
     # ── Tools (asyncio.to_thread from gemini_tools) ─────────────────────────────
     def execute(self, name, args):
@@ -577,6 +579,17 @@ class People:
                 return {"status": "not_saved",
                         "reason": f"To check it's really {person['name']}, ask them to look at your "
                                   "camera for a few seconds, then try again."}
+            key = person["name"].lower()
+            with self.lock:
+                started = self.listening_for.get(key)
+                if started is not None and self.clock() - started < voices.LEARN_TIMEOUT_S:
+                    # ember-001: Gemini called this 8 times in a minute while it listened, each
+                    # call a round trip ("I'm still learning..."), and replies took 7-31 s.
+                    return {"status": "already_listening",
+                            "note": "You're already learning their voice. Just keep talking with them "
+                                    "normally; [VOICE LEARNED] will tell you when it's done. Don't call "
+                                    "remember_voice again."}
+                self.listening_for[key] = self.clock()
             self.voice.learn(person["name"])
             return {"status": "listening",
                     "note": "Now ask them to talk naturally for about 10 seconds, e.g. about their day. "

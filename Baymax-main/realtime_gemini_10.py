@@ -495,6 +495,11 @@ _BASE_CONFIG = {
     "thinking_config": {
         "thinking_budget": 0
     },
+    # Camera frames are 320x240 JPEGs, one every 3 s. At the default resolution each costs
+    # ~258 tokens, so the session reached the 32k-token compression point every few minutes;
+    # LOW (~64 tokens) shows about as much at this size. BAYMAX_VIDEO_RESOLUTION=default reverts.
+    **({} if os.getenv("BAYMAX_VIDEO_RESOLUTION", "low").strip().lower() == "default"
+       else {"media_resolution": types.MediaResolution.MEDIA_RESOLUTION_LOW}),
     **({"proactivity": {"proactive_audio": True}} if ONLY_WHEN_ADDRESSED else {}),
     "realtime_input_config": {
         "automatic_activity_detection": {

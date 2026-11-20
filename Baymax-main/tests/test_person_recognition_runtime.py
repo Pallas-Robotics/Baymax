@@ -415,7 +415,24 @@ class ToolTests(unittest.TestCase):
         self.assertEqual(voice.learning, ["Stella"])
         stella["voice_embeddings"] = [[0.1]]            # adding to a known voice: no face needed
         self.people.identifier.names_in_view = []
+        self.people.listening_for.clear()               # (that first listen has finished)
         self.assertEqual(self.people.execute("remember_voice", {"name": "Stella"})["status"], "listening")
+
+    def test_remember_voice_again_while_listening_answers_at_once(self):
+        """ember-001: 8 remember_voice calls in a minute, each a round trip; replies took 7-31 s."""
+        stella = {"id": "p_1", "name": "Stella"}
+        self.people.identifier = FakeIdentifier(known={"Stella": stella}, in_view=["Stella"])
+        self.people.voice = voice = FakeVoice()
+        with patch("builtins.print"):
+            self.assertEqual(self.people.execute("remember_voice", {"name": "Stella"})["status"], "listening")
+            self.assertEqual(self.people.execute("remember_voice", {"name": "Stella"})["status"],
+                             "already_listening")
+            self.assertEqual(voice.learning, ["Stella"])           # listening once
+            self.people._voice_learned({"status": "saved", "name": "Stella"})
+            self.assertEqual(self.people.execute("remember_voice", {"name": "Stella"})["status"], "listening")
+            self.people.clock.now += people_module.voices.LEARN_TIMEOUT_S + 1
+            self.assertEqual(self.people.execute("remember_voice", {"name": "Stella"})["status"], "listening")
+        self.assertEqual(voice.learning, ["Stella"] * 3)
 
     def test_no_saving_under_a_placeholder_name(self):
         self.people.identifier = identifier = FakeIdentifier(known={"Stella": {"id": "p_1", "name": "Stella"}},

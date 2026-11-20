@@ -1,5 +1,9 @@
 # MVP (unreleased)
 
+- Faster replies: camera frames go to Gemini at low media resolution (~64 instead of ~258
+  tokens per 320x240 frame; `BAYMAX_VIDEO_RESOLUTION=default` reverts), so a session's context
+  grows about 3x slower. remember_voice called again while already listening answers at once:
+  on ember-001 Gemini called it 8 times in a minute and replies took 7-31 s.
 - Face and voice recognition answer together, and either one is enough: a recognised face
   names the speaker when the voice can't, a sure voice when no face can, and the person
   recognised a moment ago is "probably" still talking. One yes covers both, and the voice is
