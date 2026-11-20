@@ -239,6 +239,7 @@ class Proactive:
         self.thread = None
         self.greeted_startup = False
         self.startup_attempts = 0
+        self.video_sent = threading.Event()  # set by the core once Gemini has a camera frame
         self.sleep = asyncio.sleep
         self.last_greeting = None
         self.wanted = False        # New eye contact waiting to be delivered to Gemini.
@@ -327,7 +328,12 @@ class Proactive:
             # Once per run. A session that drops right after connecting cancels this
             # task before the hello counts, so the next session tries once more.
             self.startup_attempts += 1
-            await self.sleep(4.0)  # Allow the existing 3 s video sender its first frame.
+            # Greet once Gemini has a picture of the room, or after 4 s without one
+            # (no camera, or the pose process still loading on a cold boot).
+            for _ in range(16):
+                if self.video_sent.is_set():
+                    break
+                await self.sleep(0.25)
             # A stray/ambient transcript during boot must not permanently suppress
             # the requested startup statement.
             sent = await self._say(session, startup_note(self.wall()))

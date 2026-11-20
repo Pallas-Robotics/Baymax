@@ -1237,9 +1237,10 @@ class RealTimeThreadTests(unittest.TestCase):
 
         async def no_wait(seconds):
             pass
+        greeter = SimpleNamespace(video_sent=threading.Event())
         ns = {"asyncio": asyncio, "time": time, "cv2": FakeCv2, "_latest_frame_lock": threading.Lock(),
               "_latest_frame": "frame", "types": SimpleNamespace(Blob=lambda **kw: SimpleNamespace(**kw)),
-              "tracker_send_video": SimpleNamespace(record=Mock())}
+              "tracker_send_video": SimpleNamespace(record=Mock()), "_proactive": greeter}
         with patch("test_public_core_integration.CORE", V10):
             for name in ("_encode_video_frame", "send_video_realtime"):
                 load_function(name, ns)
@@ -1247,6 +1248,37 @@ class RealTimeThreadTests(unittest.TestCase):
             asyncio.run(ns["send_video_realtime"](SimpleNamespace(send_realtime_input=send)))
         self.assertEqual(on_main_thread, [False])     # the event loop runs on the main thread here
         self.assertEqual(sent, [b"jpeg"])
+        self.assertFalse(greeter.video_sent.is_set())  # the send failed, so no picture yet
+
+    def test_video_waits_for_a_slow_camera_and_sends_the_first_frame_at_once(self):
+        """Cold 4 Pro boot: the first frame came after the pose process loaded (>5 s), and the
+        sender used to give up for the whole session."""
+        sent, waits = [], []
+
+        async def send(**kwargs):
+            sent.append(len(waits))
+            if len(sent) == 2:
+                raise asyncio.CancelledError()
+
+        greeter = SimpleNamespace(video_sent=threading.Event())
+        ns = {"asyncio": asyncio, "time": time, "_latest_frame_lock": threading.Lock(), "_latest_frame": None,
+              "types": SimpleNamespace(Blob=lambda **kw: SimpleNamespace(**kw)),
+              "tracker_send_video": SimpleNamespace(record=Mock()), "_proactive": greeter,
+              "_encode_video_frame": lambda frame: b"jpeg"}
+
+        async def wait(seconds):
+            waits.append(seconds)
+            if len(waits) == 80:                       # 8 s of waiting, then the camera starts
+                ns["_latest_frame"] = "frame"
+            if sent:
+                self.assertTrue(greeter.video_sent.is_set())
+        with patch("test_public_core_integration.CORE", V10):
+            load_function("send_video_realtime", ns)
+        with patch("asyncio.sleep", wait), patch("builtins.print") as printed, self.assertRaises(asyncio.CancelledError):
+            asyncio.run(ns["send_video_realtime"](SimpleNamespace(send_realtime_input=send)))
+        self.assertEqual(sent, [80, 81])                 # first frame without the 3 s wait
+        self.assertEqual(waits[80], 3.0)
+        self.assertNotIn("video disabled", str(printed.call_args_list))
 
 
 class SpeakerStreamTests(unittest.TestCase):

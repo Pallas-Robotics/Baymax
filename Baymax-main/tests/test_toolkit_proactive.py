@@ -120,6 +120,33 @@ class ProactiveTests(unittest.TestCase):
             self.assertFalse(self.greeter.allowed())
         self.assertTrue(self.greeter.allowed())
 
+    def test_startup_greeting_waits_for_video_at_most_4_s(self):
+        session = SimpleNamespace(send_client_content=AsyncMock())
+
+        def run(video):
+            self.greeter.greeted_startup, self.greeter.startup_attempts = False, 0
+            self.greeter.video_sent.clear()
+            waits = []
+
+            async def sleep(seconds):
+                waits.append(seconds)
+                if len(waits) == 3 and video:
+                    self.greeter.video_sent.set()       # the first frame reached Gemini
+                if len(waits) > 30:
+                    shutdown.set()
+            shutdown = asyncio.Event()
+            self.greeter.sleep = sleep
+            with patch.dict("os.environ", {"BAYMAX_STARTUP_GREETING": "1"}):
+                asyncio.run(self.greeter.session_task(session, shutdown))
+            return session.send_client_content.await_args_list[0].kwargs["turns"]["parts"][0]["text"], waits
+        text, waits = run(video=True)
+        self.assertEqual(waits[:4], [0.25] * 3 + [0.2])  # greeted 0.75 s in, as soon as video was sent
+        self.assertIn("[STARTUP]", text)
+        session.send_client_content.reset_mock()
+        _, waits = run(video=False)
+        self.assertEqual(waits[:17], [0.25] * 16 + [0.2])  # no camera: the old 4 s, then hello anyway
+        session.send_client_content.assert_awaited()
+
     def test_session_task_says_hello_once_and_delivers_greetings(self):
         sent = []
         session = SimpleNamespace(send_client_content=AsyncMock(

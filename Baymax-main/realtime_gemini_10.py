@@ -69,6 +69,7 @@ from features import persona
 from features.conversational_ability import voice_choice
 # MVP (#15) toolkits: location/weather, everyday tasks, audiobooks, eyes, public tools.
 from features.toolkits import gemini_tools as public_toolkit
+from features.toolkits.proactive import proactive as _proactive  # startup greeting waits for video
 from features.person_recognition.people import people as _people  # faces + voices
 from features.person_recognition import people as person_recognition
 
@@ -1859,22 +1860,25 @@ def _encode_video_frame(frame):
 async def send_video_realtime(session):
     """Reads shared frames from the fall detection thread and sends to Gemini every 3s."""
     loop = asyncio.get_running_loop()
-    # Wait for fall detection thread to start capturing
-    for _ in range(50):
+    # Wait for the fall detection thread's first frame. On a cold Orange Pi 4 Pro boot the
+    # camera thread shares nothing until the pose process has loaded (5+ s), and giving up
+    # after 5 s left Gemini blind until the next reconnect. A board with no camera just polls.
+    waited = 0
+    while True:
         with _latest_frame_lock:
             if _latest_frame is not None:
                 break
-        await asyncio.sleep(0.1)
-
-    with _latest_frame_lock:
-        if _latest_frame is None:
-            print("[VIDEO] No camera frames available — video disabled.")
-            return
+        if waited == 50:
+            print("[VIDEO] No camera frames yet; video starts when the camera does.")
+        waited += 1
+        await asyncio.sleep(0.1 if waited < 300 else 2.0)
 
     print("[VIDEO] Sending shared camera frames to Gemini (1 frame / 3s).")
 
+    first = True
     while True:
-        await asyncio.sleep(3.0)
+        if not first:  # the first frame goes at once, so the startup greeting can see the room
+            await asyncio.sleep(3.0)
         t0 = time.perf_counter()
 
         with _latest_frame_lock:
@@ -1895,6 +1899,9 @@ async def send_video_realtime(session):
             continue
         send_ms = (time.perf_counter() - t1) * 1000
         tracker_send_video.record(encode_ms + send_ms)
+        if first:
+            first = False
+            _proactive.video_sent.set()
 
 async def fall_alert_monitor(session):
     """Watches the fall detection event and injects an alert into the Gemini session."""
