@@ -560,6 +560,7 @@ from features.conversational_ability.volume import voice_volume
 # directly (the Orange Pi's USB speaker); elsewhere Ember's voice is scaled (volume.py).
 import pc_hardware
 from pc_hardware import speaker_mixer
+_startup_files_noted = False  # pc_hardware.note_startup_files ran this run
 voice_volume.use_mixer(speaker_mixer(sd.query_devices()[target_device_speaker]["name"]))
 _waiting_cue = create_waiting_cue(_audio_enhancer is not None and _audio_enhancer.full_duplex)
 monitor.waiting_audio = _waiting_cue
@@ -2760,7 +2761,7 @@ def _run_voice_analysis():
 
 # ─── Main ─────────────────────────────────────────────────────────────────────
 async def run():
-    global _last_robot_speech_ts, _stop_started_ts, _go_away_at, _connected_at
+    global _last_robot_speech_ts, _stop_started_ts, _go_away_at, _connected_at, _startup_files_noted
     monitor.start(lambda: {"playback_bytes": len(_playback_buffer), "gemini_generating_audio": _gemini_speaking, "audio_input": dict(_audio_enhancer.metrics) if _audio_enhancer is not None else None})
     public_toolkit.prewarm()
     client = genai.Client(
@@ -2782,6 +2783,9 @@ async def run():
                 set_up = True
                 live_session = _address_gate.watch(live_session)  # notes Ember's own messages
                 print("Connected. System ready.")
+                if not _startup_files_noted:  # once a run: what to read into memory early next boot
+                    _startup_files_noted = True
+                    threading.Thread(target=pc_hardware.note_startup_files, args=("ember",), daemon=True).start()
                 monitor.emit("listening", "Connected to Gemini; listening")
                 _boot_status("ready", "Baymax is ready.", ready=True)
                 print("=" * 70)

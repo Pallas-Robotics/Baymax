@@ -494,6 +494,7 @@ class TeardownTests(unittest.TestCase):
                 return False
         client = SimpleNamespace(aio=SimpleNamespace(live=SimpleNamespace(connect=lambda **kw: Connect())))
         ns = {"asyncio": asyncio, "time": time, "monitor": Mock(), "public_toolkit": SimpleNamespace(prewarm=Mock()),
+              "_startup_files_noted": True,
               "genai": SimpleNamespace(Client=lambda **kw: client), "API_KEY": "k",
               "_live_models": live_models.ModelChoice(["m"]),  # run()'s Gemini Live model
               "_build_config": dict, "_boot_status": Mock(), "_address_gate": SimpleNamespace(watch=lambda s: s),
@@ -843,7 +844,7 @@ class RecalledMemoryTests(unittest.TestCase):
             "_user_turn": None, "_user_turn_words": [], "_looked_up": None, "_recalled": None,
             "_memories_given": set(), "_reply_owed_since": None, "_tool_calls_running": 0,
             "BETWEEN_TURNS_POLL_S": 0.01, "BETWEEN_TURNS_QUIET_S": 0.05, "REPLY_OWED_MAX_S": 15.0,
-            "_go_away_at": None, "_turn_done_at": 0.0,  # no GoAway here (see test_v10_runtime)
+            "_go_away_at": None, "_turn_done_at": 0.0, "_startup_files_noted": True,  # no GoAway here (see test_v10_runtime)
             "live_models": live_models, "MEMORY_NOTES_ENABLED": True,  # the opt-in these tests exercise
         }
 

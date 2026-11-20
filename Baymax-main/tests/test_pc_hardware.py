@@ -677,3 +677,37 @@ class SpeakerMixerTests(unittest.TestCase):
             mixer = pc_hardware.speaker_mixer("X (hw:2,0)", run=run)
         self.assertEqual((mixer.card, mixer.control, mixer.low_db, mixer.loud_db, mixer.switch),
                          (2, "Master", -12.0, 33.0, False))
+
+
+class StartupFilesTests(unittest.TestCase):
+    """note_startup_files: what Ember loaded, for the image's ember-prewarm next boot."""
+
+    def test_lists_modules_compiled_files_and_mapped_libraries_once(self):
+        import tempfile
+        from types import SimpleNamespace
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for name in ("a.py", "a.pyc", "lib.so", "gone.so"):
+                (root / name).write_text("x")
+            (root / "gone.so").unlink()
+            maps = root / "maps"
+            maps.write_text(f"aaa-bbb r-xp 0 00:00 1  {root / 'lib.so'}\n"
+                            f"ccc-ddd r--p 0 00:00 1  {root / 'lib.so'}\n"
+                            f"eee-fff r--p 0 00:00 1  {root / 'gone.so'}\n"
+                            "fff-000 rw-p 0 00:00 0  [heap]\n")
+            modules = {"a": SimpleNamespace(__file__=str(root / "a.py"), __cached__=str(root / "a.pyc")),
+                       "builtin": SimpleNamespace()}
+            with patch.object(pc_hardware.sys, "platform", "linux"):
+                target = pc_hardware.note_startup_files("Vision-Face", data_dir=str(root / "data"),
+                                                        modules=modules, maps=str(maps))
+            self.assertEqual(Path(target).name, "vision-face.txt")
+            listed = Path(target).read_text().splitlines()
+            self.assertEqual(listed, sorted(os.path.realpath(root / n) for n in ("a.py", "a.pyc", "lib.so")))
+
+    def test_off_without_a_data_dir_or_off_linux_and_never_raises(self):
+        with patch.dict(os.environ, {}, clear=True), patch.object(pc_hardware.sys, "platform", "linux"):
+            self.assertIsNone(pc_hardware.note_startup_files("ember"))
+        with patch.object(pc_hardware.sys, "platform", "darwin"):
+            self.assertIsNone(pc_hardware.note_startup_files("ember", data_dir="/tmp"))
+        with patch.object(pc_hardware.sys, "platform", "linux"):
+            self.assertIsNone(pc_hardware.note_startup_files("ember", data_dir="/dev/null/x", modules={}))

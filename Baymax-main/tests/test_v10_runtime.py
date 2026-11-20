@@ -572,7 +572,7 @@ class ReconnectTests(unittest.TestCase):
             "fall_alert_monitor": forever, "monitor_queues": forever, "between_turns": forever,
             "fall_worker": SimpleNamespace(alert_monitor=forever), "_shutdown_event": None,
             "connection_lost": connection_lost, "not_tried": not_tried, "RECONNECT_DELAY_S": 0.3, "QUICK_SESSION_S": 60.0,
-            "RECONNECT_MAX_DELAY_S": 4.8, "_go_away_at": None, "_connected_at": 0.0,
+            "RECONNECT_MAX_DELAY_S": 4.8, "_go_away_at": None, "_connected_at": 0.0, "_startup_files_noted": True,
             "live_models": live_models,
         }
         namespace.update(overrides)

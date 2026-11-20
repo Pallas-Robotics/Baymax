@@ -221,6 +221,12 @@ def main():
         return
     reply("ok", getattr(model, "device", None))
     try:
+        import pc_hardware
+        role = getattr(getattr(factory, "func", factory), "vision_role", None) or "pose"
+        pc_hardware.note_startup_files(f"vision-{role}")  # for the next boot's prewarm
+    except Exception:
+        pass
+    try:
         while True:
             try:
                 frame = pickle.load(requests)

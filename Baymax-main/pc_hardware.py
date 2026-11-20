@@ -287,6 +287,47 @@ def use_performance_cpus():
     return cpus
 
 
+STARTUP_FILES = "startup-files"   # under BAYMAX_DATA_DIR: one list per process
+
+
+def note_startup_files(role, data_dir=None, modules=None, maps="/proc/self/maps"):
+    """Write the files this process loaded to start (its Python modules, compiled or not,
+    and every mapped shared library) to <BAYMAX_DATA_DIR>/startup-files/<role>.txt, one
+    path a line. The Orange Pi image's ember-prewarm service reads these files into memory
+    early in the next boot, while the desktop is still starting: on the 4 Pro, Ember took
+    24 s from start to first words with a cold disk cache and 13.6 s with a warm one.
+    Linux with BAYMAX_DATA_DIR only; returns the list's path, or None. Never raises."""
+    data_dir = data_dir if data_dir is not None else os.getenv("BAYMAX_DATA_DIR")
+    if not data_dir or not sys.platform.startswith("linux"):
+        return None
+    try:
+        paths = set()
+        for module in list((sys.modules if modules is None else modules).values()):
+            for name in ("__file__", "__cached__"):
+                value = getattr(module, name, None)
+                if isinstance(value, str):
+                    paths.add(os.path.realpath(value))
+        try:
+            with open(maps) as mapped:
+                for line in mapped:
+                    fields = line.split(None, 5)
+                    if len(fields) == 6 and fields[5].startswith("/"):
+                        paths.add(os.path.realpath(fields[5].strip()))
+        except OSError:
+            pass
+        files = sorted(path for path in paths if os.path.isfile(path))
+        directory = os.path.join(data_dir, STARTUP_FILES)
+        os.makedirs(directory, exist_ok=True)
+        target = os.path.join(directory, re.sub(r"[^a-z0-9_-]", "_", role.lower()) + ".txt")
+        temporary = target + ".new"
+        with open(temporary, "w") as out:
+            out.write("".join(path + "\n" for path in files))
+        os.replace(temporary, target)
+        return target
+    except Exception:
+        return None
+
+
 def camera_candidates():
     value = os.getenv("BAYMAX_CAMERA_DEVICE", "").strip()
     if value == "none":
