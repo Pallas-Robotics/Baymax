@@ -1,5 +1,10 @@
 # MVP (unreleased)
 
+- Face and voice recognition answer together, and either one is enough: a recognised face
+  names the speaker when the voice can't, a sure voice when no face can, and the person
+  recognised a moment ago is "probably" still talking. One yes covers both, and the voice is
+  learned while they talk. Ember had greeted Joe by face, then answered "who is this?" with
+  "I haven't heard enough of your voice yet" (people.identity_answer).
 - Startup: the camera and pose process start before the memory embedder loads, so the
   pose process loads alongside it (5+ s on a cold Orange Pi 4 Pro boot) and the first
   camera frame, which the startup greeting waits up to 4 s for, comes sooner.

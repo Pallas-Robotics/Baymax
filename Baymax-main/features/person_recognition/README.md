@@ -75,8 +75,23 @@ Voice recognition stays off (logged once) until `.models/voice/` has both files.
   the clips of one speaker are kept, or the voice is removed to be learned again.
   PR #36 only learned voices through `remember_voice`, which never happened in
   practice. `BAYMAX_VOICE_LEARNING=0` restores remember_voice-only.
-- **Voice and face together.** `identify_speaker` answers "sure" when the voice "might
-  be" the person whose face is the only one in view.
+- **Voice and face together, either one enough** (`people.identity_answer`).
+  `identify_speaker` and `who_is_here` answer who is talking from both:
+  - a sure voice names the speaker;
+  - the only face in view, recognised, names them when the voice can't (not heard
+    yet, unknown, or a weak "might be" someone else);
+  - a voice and a face that only "might be" the same person agree, so it's sure;
+  - with no face in view, the one person recognised by face or voice in the last
+    `RECENT_S` (120 s), nobody else since, is "probably" still them.
+
+  On ember-001 Ember greeted Joe by face, then answered "who is this?" with "I haven't
+  heard enough of your voice yet", because only the voice was asked.
+  - A sure voice also names a "maybe" face (`faces.confirm_by_voice`).
+  - A named face that turns away keeps its name (`faces.HANDOFF_SECONDS`).
+- **One yes covers face and voice.** The prompt asks to remember "them", not their
+  face. `remember_person` tells Gemini their voice is learned on its own as they talk.
+  `remember_voice` for someone not yet remembered, alone in view, remembers their face
+  first.
 - **Memories don't name "the user".** Memory lines saved by the summariser assume one
   user; "The user's name is Nadi" made Gemini call everyone Nadi. With recognition on,
   such lines are left out of the prompt, recalled memories and new summaries, and the

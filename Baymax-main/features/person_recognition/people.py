@@ -46,6 +46,8 @@ ARRIVAL_WAIT_S = 60.0          # an arrival not greeted within this long is drop
 GREET_AFTER_S = float(os.getenv("BAYMAX_PEOPLE_GREET_AFTER_S", "120"))
 faces.AWAY_OTHERS = GREET_AFTER_S
 LEARNED_WAIT_S = 60.0          # same for a [VOICE LEARNED] result
+RECENT_S = 120.0               # the one person recognised (face or voice) this recently, with nobody
+                               # else since and no face in view, is probably still the one talking
 
 DECLARATIONS = faces.PEOPLE_TOOLS + voices.VOICE_TOOLS + [{
     "name": "who_is_here",
@@ -56,30 +58,36 @@ NAMES = {d["name"] for d in DECLARATIONS}
 
 INSTRUCTION = """
 [RECOGNIZING PEOPLE]
-You can recognize people you know by their face (your camera) and by their voice. When
-you need to know who is in front of you or who has been talking, call who_is_here. If
-someone asks who they are ("who am I?", "do you know who this is?"), call
-identify_speaker. Before you ask anyone their name, or whether you may remember their face
-or voice, call who_is_here: you may already know them. Names from who_is_here,
-identify_speaker and [ARRIVED] come from your own recognition: use them naturally. Never
-guess a name you aren't sure of; ask instead. A "might be" or "not sure" result means
-check politely ("Is that you, Sarah?") before assuming; if they say yes, call
-remember_person with that name so you recognize them better.
+You recognize people you know by their face (your camera) and their voice, together:
+either one is enough. who_is_here and identify_speaker already combine both, so trust
+their answer: if they name someone, that is who you're with, even if you haven't
+learned their voice yet. Never tell someone you don't know their voice, or ask about
+their voice, when you know who they are. When you need to know who is in front of you
+or who has been talking, call who_is_here. If someone asks who they are ("who am I?",
+"do you know who this is?"), call identify_speaker. Before you ask anyone their name,
+or whether you may remember them, call who_is_here: you may already know them. Names
+from who_is_here, identify_speaker and [ARRIVED] come from your own recognition: use
+them naturally. Never guess a name you aren't sure of. A "might be" or "not sure"
+result means check politely ("Is that you, Sarah?") before assuming; if they say yes,
+call remember_person with that name so you recognize them better. "probably" means
+it's most likely them: carry on, no need to ask.
 A message starting with [ARRIVED] means someone you know just came back (you saw their face
 or heard their voice): greet them warmly by name, briefly. [NEW PERSON] means someone you
 don't recognize has been in front of you for a while: greet them, say you're Ember, ask
-their name, and ask whether it's okay to remember their face. Only if they clearly say
-yes, and only once they have told you their name, call remember_person with that name. If
-it says you already remember that face, tell them you know them already. If they say no,
-call decline_to_be_remembered and don't ask again (if they later say yes themselves, call
-remember_person with changed_mind true).
+their name, and ask whether it's okay to remember them. One yes covers both their face
+and their voice: only if they clearly say yes, and only once they have told you their
+name, call remember_person with that name; their voice is then learned on its own as
+they talk, so never ask about their voice separately. If it says you already remember
+them, tell them you know them already. If they say no, call decline_to_be_remembered and
+don't ask again (if they later say yes themselves, call remember_person with changed_mind
+true).
 Several people may be in the room. who_is_here also says how many people have been talking
 and whether they are talking to each other right now; when they are, stay out of it unless
 someone says your name or turns to you.
-If someone asks you to learn their voice, first ask whether it's okay. Only if they
-clearly say yes, call remember_voice with their name, then ask them to talk naturally for
-about ten seconds. A message starting with [VOICE LEARNED] tells you how it went: tell
-them briefly.
+Only if someone asks you to learn their voice, or you're remembering someone who is out of
+view of your camera, call remember_voice (after they said yes) and ask them to talk
+naturally for about ten seconds. A message starting with [VOICE LEARNED] tells you how it
+went: tell them briefly.
 Faces and voices you remember stay on this robot as numbers, never photos or recordings.
 If someone asks you to forget them, call forget_person. Don't mention these tools,
 scores or the bracketed messages.
@@ -173,21 +181,58 @@ def learned_message(result):
     return voices.learned_message(result)
 
 
-def speaker_answer(result, face=None):
-    """identify_speaker's reply from the latest voice result (PR #36's speaker_report).
-    `face`: the person id of the only face in view, if recognised. A voice that "might be"
-    that same person is answered as sure: face and voice agree."""
-    if result is not None and result["level"] == "maybe" and face and result.get("person_id") == face:
-        return {"speaker": result["name"], "confidence": "sure", "by": "voice and face"}
-    if result is None:
-        return {"speaker": None, "note": "You haven't heard enough of their voice yet. If you need "
-                                         "to know who it is, ask them."}
-    if result["level"] == "sure":
-        return {"speaker": result["name"], "confidence": "sure"}
-    if result["level"] == "maybe":
-        return {"speaker": result["name"], "confidence": "not sure",
-                "note": f"It might be {result['name']}. Check politely before assuming."}
-    return {"speaker": None, "note": "You don't recognize this voice. If it matters, ask who they are."}
+def identity_answer(voice, faces=(), recent=None):
+    """Who is talking, from face and voice together: either one is enough.
+
+    voice: the latest voice result (None: not enough heard yet). faces: the faces in view,
+    each {"id": person id or None, "name", "maybe": person id it might be, "maybe_name"}.
+    recent: (person id, name) of the one person recognised by face or voice within RECENT_S,
+    nobody else since. On ember-001 Ember greeted Joe by his face, then answered "who is
+    this?" with "I haven't heard enough of your voice yet to know who you are": the voice
+    alone decided. Now a recognised face answers when the voice can't, a voice answers
+    when no face can, and the two agreeing settle a "might be"."""
+    voice = voice or {}
+    level, voice_name = voice.get("level"), voice.get("name")
+    voice_id = voice.get("person_id") or voice_name
+    single = faces[0] if len(faces) == 1 else None
+    face_id = single.get("id") if single else None
+    face_name = single.get("name") if single else None
+    maybe_id = single.get("maybe") if single and not face_id else None
+    maybe_name = single.get("maybe_name") if maybe_id else None
+    if level == "sure" and voice_id:
+        if face_id and face_id != voice_id:
+            return {"speaker": voice_name, "confidence": "sure", "by": "voice",
+                    "note": f"{face_name} is in front of you; {voice_name} may be talking from out of view."}
+        return {"speaker": voice_name, "confidence": "sure",
+                "by": "voice and face" if voice_id in (face_id, maybe_id) else "voice"}
+    if face_id:
+        both = level == "maybe" and voice_id == face_id
+        answer = {"speaker": face_name, "confidence": "sure", "by": "voice and face" if both else "face"}
+        if not both:
+            answer["note"] = (f"{face_name} is the only one in front of you, so it's them. Their voice is "
+                              "learned on its own while they talk: never say you don't know their voice.")
+        return answer
+    if maybe_id and level == "maybe" and voice_id == maybe_id:
+        return {"speaker": maybe_name, "confidence": "sure", "by": "voice and face"}
+    if maybe_id:
+        return {"speaker": maybe_name, "confidence": "not sure", "by": "face",
+                "note": f"It might be {maybe_name}. Check politely before assuming."}
+    if level == "maybe" and voice_id:
+        return {"speaker": voice_name, "confidence": "not sure", "by": "voice",
+                "note": f"It might be {voice_name}. Check politely before assuming."}
+    if len(faces) > 1:
+        names = [f["name"] for f in faces if f.get("id") and f.get("name")]
+        return {"speaker": None, "note": ("Several people are in front of you" +
+                (f" ({', '.join(names)} among them)" if names else "") +
+                "; you can't tell which one is talking. If it matters, ask.")}
+    if not faces and recent:
+        return {"speaker": recent[1], "confidence": "probably", "by": "recognized a moment ago",
+                "note": (f"You recognized {recent[1]} a moment ago and nobody else since, so it's most "
+                         "likely still them: don't ask who they are. If they say they're someone else, "
+                         "believe them.")}
+    if level == "unknown":
+        return {"speaker": None, "note": "You don't recognize this voice or face. If it matters, ask who they are."}
+    return {"speaker": None, "note": "You can't tell yet who this is. If you need to know, ask them."}
 
 
 def log_voice_result(result):
@@ -336,6 +381,38 @@ class People:
         heard = self.heard.get(person_id)
         return max((t for t in (seen, heard) if t is not None), default=None)
 
+    def faces_in_view(self):
+        """identity_answer's faces: each face in view, who it is or might be, with names."""
+        identifier = self.identifier
+        if identifier is None:
+            return []
+        store = identifier.store
+
+        def name(pid):
+            person = store.get(pid) if pid else None
+            return person["name"] if person else None
+        return [{"id": t.person_id if name(t.person_id) else None, "name": name(t.person_id),
+                 "maybe": getattr(t, "maybe_id", None), "maybe_name": name(getattr(t, "maybe_id", None))}
+                for t in identifier.in_view()]
+
+    def recent_person(self):
+        """(id, name) of the only person recognised by face or voice within RECENT_S, or None."""
+        identifier = self.identifier
+        if identifier is None:
+            return None
+        now = self.clock()
+        seen = dict(getattr(identifier, "_last_present", {}) or {})
+        for pid, at in self.heard.items():
+            seen[pid] = max(at, seen.get(pid, at))
+        recent = [pid for pid, at in seen.items() if now - at <= RECENT_S]
+        if len(recent) != 1:
+            return None
+        person = identifier.store.get(recent[0])
+        return (recent[0], person["name"]) if person else None
+
+    def who_is_talking(self, voice_result):
+        return identity_answer(voice_result, self.faces_in_view(), self.recent_person())
+
     def speaker_by_face(self):
         """The person whose voice this must be: the only face in view, recognised, or None."""
         identifier = self.identifier
@@ -461,24 +538,24 @@ class People:
             speaker = self.voice.speaker(wait=0.0) if self.voice else None
             return {"in_front_of_you": identifier.describe_in_view(),
                     "visits": identifier.describe_visits(),
-                    "talking": speaker_answer(speaker, self.speaker_by_face()) if self.voice
-                    else "voice recognition is off",
+                    "talking": self.who_is_talking(speaker),
                     "conversation": self.conversation.describe() if self.voice
                     else "voice recognition is off"}
         if name == "identify_speaker":
-            if self.voice is None:
-                return {"speaker": None, "in_front_of_you": identifier.describe_in_view(),
-                        "note": "Voice recognition is off; only faces are known."}
-            return speaker_answer(self.voice.speaker(), self.speaker_by_face())
+            return self.who_is_talking(self.voice.speaker() if self.voice else None)
         if name == "remember_voice":
             if self.voice is None:
                 return {"error": "Voice recognition isn't available right now."}
             person_name = str((args or {}).get("name") or "")
             person = identifier.find_person(person_name)
             if person is None:
-                return {"status": "not_saved",
-                        "reason": f"You don't know {person_name}'s face yet. Learn their face first "
-                                  "(with their permission), then their voice."}
+                # One yes covers face and voice: remember the face in view first.
+                saved = identifier.handle_tool_call("remember_person", {"name": person_name})
+                person = identifier.find_person(person_name) if saved.get("status") == "remembered" else None
+                if person is None:
+                    return {"status": "not_saved",
+                            "reason": saved.get("reason") or f"Ask {person_name} to look at your camera "
+                                                              "for a few seconds, then try again."}
             has_voice = bool(person.get(voices.VOICE_KEY))
             in_view = {n.lower() for n in identifier.present_names()}
             if not has_voice and person["name"].lower() not in in_view:
@@ -490,7 +567,12 @@ class People:
                     "note": "Now ask them to talk naturally for about 10 seconds, e.g. about their day. "
                             "Their voice is saved automatically; a [VOICE LEARNED] message will tell you "
                             "when it's done. Don't call remember_voice again."}
-        return identifier.handle_tool_call(name, args or {})
+        result = identifier.handle_tool_call(name, args or {})
+        if name == "remember_person" and result.get("status") in ("remembered", "already_known") \
+                and self.voice is not None and voice_learning_enabled():
+            result["note"] = (result.get("note", "") + " Their voice is learned on its own while they talk "
+                              "to you; don't ask about their voice separately.").strip()
+        return result
 
     # ── Spoken prompts, one live session at a time ─────────────────────────────
     def _can_speak(self):

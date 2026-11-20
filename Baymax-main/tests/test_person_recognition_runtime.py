@@ -16,7 +16,7 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from features.person_recognition import face_process, people as people_module, voice_process  # noqa: E402
-from features.person_recognition.people import People, arrival_prompt, describe_away, speaker_answer  # noqa: E402
+from features.person_recognition.people import People, arrival_prompt, describe_away, identity_answer  # noqa: E402
 from features.vision_process import Remote, Stopped  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -393,11 +393,11 @@ class ToolTests(unittest.TestCase):
         self.people.voice = FakeVoice({"level": "sure", "name": "Stella"})
         answer = self.people.execute("who_is_here", {})
         self.assertEqual(answer["in_front_of_you"], "Stella is in front of you.")
-        self.assertEqual(answer["talking"], {"speaker": "Stella", "confidence": "sure"})
+        self.assertEqual(answer["talking"], {"speaker": "Stella", "confidence": "sure", "by": "voice"})
 
     def test_identify_speaker(self):
         self.people.identifier = FakeIdentifier()
-        self.assertIn("note", self.people.execute("identify_speaker", {}))      # voice off: faces only
+        self.assertIn("note", self.people.execute("identify_speaker", {}))      # voice off, nobody in view
         self.people.voice = FakeVoice({"level": "maybe", "name": "Stella"})
         self.assertEqual(self.people.execute("identify_speaker", {})["confidence"], "not sure")
         self.people.voice = FakeVoice(None)
@@ -478,10 +478,63 @@ class ToolTests(unittest.TestCase):
 
     def test_a_maybe_voice_with_the_same_face_in_view_is_sure(self):
         maybe = {"level": "maybe", "person_id": "p_1", "name": "Joe", "score": 0.3}
-        self.assertEqual(speaker_answer(maybe)["confidence"], "not sure")
-        self.assertEqual(speaker_answer(maybe, face="p_2")["confidence"], "not sure")
-        self.assertEqual(speaker_answer(maybe, face="p_1"),
+        joe, ann = {"id": "p_1", "name": "Joe"}, {"id": "p_2", "name": "Ann"}
+        self.assertEqual(identity_answer(maybe)["confidence"], "not sure")
+        self.assertEqual(identity_answer(maybe, [joe]),
                          {"speaker": "Joe", "confidence": "sure", "by": "voice and face"})
+        self.assertEqual(identity_answer(maybe, [ann])["speaker"], "Ann")     # a clear face beats a maybe voice
+        might_be_joe = {"id": None, "name": None, "maybe": "p_1", "maybe_name": "Joe"}
+        self.assertEqual(identity_answer(maybe, [might_be_joe]),
+                         {"speaker": "Joe", "confidence": "sure", "by": "voice and face"})
+
+    def test_face_or_voice_is_enough_and_neither_confuses_the_other(self):
+        """ember-001: greeted as Joe by face, then "who is this?" got "I haven't heard enough
+        of your voice yet" because only the voice was asked."""
+        joe = {"id": "p_1", "name": "Joe"}
+        unknown_voice = {"level": "unknown", "person_id": None, "name": None}
+        for voice in (None, unknown_voice, {"level": "maybe", "person_id": "p_9", "name": "Bo"}):
+            with self.subTest(voice=voice):
+                answer = identity_answer(voice, [joe])
+                self.assertEqual((answer["speaker"], answer["confidence"], answer["by"]), ("Joe", "sure", "face"))
+                self.assertIn("never say you don't know their voice", answer["note"])
+        sure_joe = {"level": "sure", "person_id": "p_1", "name": "Joe"}
+        self.assertEqual(identity_answer(sure_joe), {"speaker": "Joe", "confidence": "sure", "by": "voice"})
+        self.assertEqual(identity_answer(sure_joe, [joe])["by"], "voice and face")
+        stranger = {"id": None, "name": None}
+        answer = identity_answer(sure_joe, [stranger])             # Joe off camera, a stranger in view
+        self.assertEqual(answer["speaker"], "Joe")
+        ann = {"id": "p_2", "name": "Ann"}
+        answer = identity_answer(sure_joe, [ann])
+        self.assertEqual(answer["speaker"], "Joe")
+        self.assertIn("Ann is in front of you", answer["note"])
+
+    def test_recently_recognized_carries_over_only_with_no_face_in_view(self):
+        recent = ("p_1", "Joe")
+        for voice in (None, {"level": "unknown"}):
+            answer = identity_answer(voice, [], recent)
+            self.assertEqual((answer["speaker"], answer["confidence"]), ("Joe", "probably"))
+        self.assertIsNone(identity_answer(None, [{"id": None, "name": None}], recent)["speaker"])  # a stranger now
+        self.assertIsNone(identity_answer(None, [], None)["speaker"])
+        two = [{"id": "p_1", "name": "Joe"}, {"id": None, "name": None}]
+        answer = identity_answer(None, two, recent)
+        self.assertIsNone(answer["speaker"])
+        self.assertIn("Joe among them", answer["note"])
+
+    def test_tools_combine_faces_voices_and_who_was_just_here(self):
+        from types import SimpleNamespace
+        clock = Clock()
+        people = People(clock=clock)
+        people.identifier = identifier = FakeIdentifier(known={"Joe": {"id": "p_1", "name": "Joe"}})
+        identifier.tracks = [SimpleNamespace(person_id="p_1", maybe_id=None)]
+        people.voice = FakeVoice(None)
+        with patch("builtins.print"):
+            self.assertEqual(people.execute("identify_speaker", {})["speaker"], "Joe")
+            identifier._last_present = {"p_1": clock.now}
+            identifier.tracks = []                       # turned away / out of view a moment
+            clock.now += 30
+            self.assertEqual(people.execute("identify_speaker", {})["confidence"], "probably")
+            clock.now += people_module.RECENT_S
+            self.assertIsNone(people.execute("identify_speaker", {})["speaker"])
 
     def test_memories_that_say_who_the_user_is_are_left_out(self):
         lines = ["The user's name is Nadi.", "User's name is Nadi.", "The user is called Joe.",
@@ -498,8 +551,8 @@ class ToolTests(unittest.TestCase):
         self.assertIn("person_recognition.MEMORY_NOTE", source)
 
     def test_answers_and_prompts(self):
-        self.assertEqual(speaker_answer(None)["speaker"], None)
-        self.assertEqual(speaker_answer({"level": "unknown"})["speaker"], None)
+        self.assertEqual(identity_answer(None)["speaker"], None)
+        self.assertEqual(identity_answer({"level": "unknown"})["speaker"], None)
         self.assertEqual(describe_away(None), None)
         self.assertEqual(describe_away(30 * 3600), "yesterday")
         self.assertEqual(describe_away(5 * 3600), "about 5 hours ago")

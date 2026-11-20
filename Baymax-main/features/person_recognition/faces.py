@@ -1240,7 +1240,7 @@ class FaceIdentifier:
                     f"you're not sure.{with_text} Ask kindly, e.g. \"Is that you, {name}?\" "
                     f"If they say yes, call remember_person with the name \"{name}\" so you "
                     "recognize them better. If not, ask their name and whether you may "
-                    "remember their face.")
+                    "remember them.")
         user = self.profile.get("user_name")
         hint = ""
         if user and not self.store.find_by_name(user) and not others:
@@ -1248,7 +1248,7 @@ class FaceIdentifier:
                     f"yet — this could be them, so you might ask \"Are you {user}?\"")
         return (f"[NEW PERSON] Someone you don't recognize has been in front of you for a "
                 f"few seconds.{with_text}{hint} Greet them, tell them you're Ember, and ask "
-                "their name. Then ask if it's okay to remember their face so you'll know "
+                "their name. Then ask if it's okay to remember them (face and voice) so you'll know "
                 "them next time. Only if they clearly say yes, call remember_person.")
 
     # ── Tools ────────────────────────────────────────────────────────────────

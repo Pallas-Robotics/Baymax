@@ -415,7 +415,7 @@ VOICE_TOOLS = [
     {
         "name": "identify_speaker",
         "description": (
-            "Find out who is talking right now, from their voice. Call this when "
+            "Find out who is talking right now, from their voice and face together. Call this when "
             "someone asks who they are (e.g. \"who am I?\", \"do you know who this "
             "is?\") or when you need to know who just spoke and no recent [SPEAKER] "
             "message tells you."
@@ -425,9 +425,10 @@ VOICE_TOOLS = [
         "name": "remember_voice",
         "description": (
             "Learn the voice of the person talking to you, so you recognize them by voice "
-            "next time, even off camera. ONLY call this after they clearly said yes to you "
-            "remembering their voice. After calling it, ask them to talk naturally for "
-            "about 10 seconds."
+            "next time, even off camera. Voices are normally learned on their own once you "
+            "remember someone (remember_person), so call this only if they ask you to learn "
+            "their voice or they are out of view, and ONLY after they clearly said yes. After "
+            "calling it, ask them to talk naturally for about 10 seconds."
         ),
         "parameters": {
             "type": "OBJECT",
