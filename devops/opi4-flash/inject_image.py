@@ -145,6 +145,7 @@ for parent, directories, files in os.walk(python_root):
             os.chmod(path, path.stat().st_mode & ~0o022)
 copy('ember-provision', '/usr/local/sbin/ember-provision', 0o755)
 copy('ember-wifi-setup.py', '/usr/local/lib/ember/ember_wifi_setup.py')
+copy('ember-prewarm.py', '/usr/local/lib/ember/ember_prewarm.py')
 copy('ember-hardware.py', '/opt/ember-provision/ember-hardware.py')
 copy('system-packages.txt', '/opt/ember-provision/system-packages.txt')
 for wheel in sorted(payload.glob('*.whl')):
@@ -152,7 +153,7 @@ for wheel in sorted(payload.glob('*.whl')):
 for name in ['ember-update', 'ember-run', 'ember-status', 'ember-device-settings', 'ember-wifi']:
     copy(name, '/usr/local/bin/' + name, 0o755)
 for name in ['ember-provision.service', 'ember-update.service', 'ember-status.service',
-             'ember-wifi-setup.service']:
+             'ember-wifi-setup.service', 'ember-prewarm.service']:
     copy(name, '/etc/systemd/system/' + name)
     # Dependency installation is guarded by provisioned marker.
     link = root / 'etc/systemd/system/multi-user.target.wants' / name
@@ -187,6 +188,10 @@ fleet_timer.symlink_to('../ember-fleet-agent.timer')
 copy('50-ember.conf', '/etc/lightdm/lightdm.conf.d/50-ember.conf')
 home = root / 'home/ember'
 image_directory(home)
+# Linger: ember's user services (Ember itself, PipeWire) start at boot, not after the
+# desktop's autologin; ~5 s sooner on the 4 Pro. The session autostart still imports
+# DISPLAY and starts them again, which does nothing once they run.
+write('/var/lib/systemd/linger/ember', '')
 if (root / 'etc/skel').is_dir():
     shutil.copytree(root / 'etc/skel', home, dirs_exist_ok=True)
 write('/home/ember/.config/ember/device.json', json.dumps(source(settings), indent=2) + '\n', 0o600)

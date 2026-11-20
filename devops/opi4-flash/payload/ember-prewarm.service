@@ -1,0 +1,15 @@
+[Unit]
+Description=Read Ember's startup files into memory early in boot
+After=local-fs.target
+
+[Service]
+# exec, not oneshot: nothing at boot waits for it to finish.
+Type=exec
+User=ember
+ExecStart=/usr/bin/python3 /usr/local/lib/ember/ember_prewarm.py
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=6
+
+[Install]
+WantedBy=multi-user.target
