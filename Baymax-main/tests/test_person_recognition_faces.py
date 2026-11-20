@@ -354,6 +354,34 @@ class RecognitionTests(Base):
         self.assertFalse(self.ident.confirm_by_voice(pid))         # who is talking? can't tell
         self.assertNotIn("Margaret is", self.ident.describe_in_view())
 
+    def test_a_known_face_turned_away_keeps_its_name(self):
+        """ember-001: Joe known front-on, then turned; the side view started new tracks that
+        scored "maybe" (0.41-0.51). A track named a moment ago hands its name over."""
+        m = identity()
+        self.enroll("Margaret", m)
+        pid = self.store.find_by_name("Margaret")["id"]
+        self.frames(lambda: [face(sample(m, .7))], 1.5)
+        self.assertEqual(self.ident.describe_in_view(), "Margaret is in front of you.")
+        before = self.store.samples_of(pid)
+        side = sample(m, .6)                                  # scores 0.40-0.50: a "maybe"
+        self.frames(lambda: [face(sample(side, .97), x=600, frontal=False)], 1.5)
+        self.assertEqual(self.ident.describe_in_view(), "Margaret is in front of you.")
+        self.assertEqual(self.store.samples_of(pid), before)   # nothing learned from a handoff
+
+    def test_no_handoff_when_long_gone_or_someone_else_is_in_view(self):
+        m, x = identity(), identity()
+        self.enroll("Margaret", m)
+        side = sample(m, .6)
+        self.frames(lambda: [face(sample(m, .7))], 1.5)
+        self.clock.t += fi.HANDOFF_SECONDS + 1                  # gone for a while
+        self.frames(lambda: [face(sample(side, .97), x=600, frontal=False)], 1.5)
+        self.assertIn("might be Margaret", self.ident.describe_in_view())
+        self.clock.t += fi.TRACK_EXPIRY + 1
+        self.frames(lambda: [face(sample(m, .7))], 1.5)
+        self.frames(lambda: [face(sample(side, .97), x=600, frontal=False),
+                             face(sample(x, .9), x=0)], 1.5)    # Margaret's spot taken by a stranger
+        self.assertNotIn("Margaret is", self.ident.describe_in_view())
+
     def test_stranger_unknown(self):
         self.enroll("Margaret", identity())
         x = identity()

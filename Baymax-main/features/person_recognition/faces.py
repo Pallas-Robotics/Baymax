@@ -83,6 +83,8 @@ BACKUPS_KEPT = 4              # ...and this many copies are kept
 CONFIRM_VOTES = 2             # confident frames needed before naming someone
 IN_VIEW_SECONDS = 2.0         # a face seen this recently is "in front of you"
 TRACK_EXPIRY = 10.0           # forget a track this long after it leaves
+HANDOFF_SECONDS = 4.0         # a named face lost this recently, then a "maybe" of them alone in
+                              # view: the same face turned (see FaceIdentifier._handoff)
 INTRO_AFTER = 4.0             # an unknown face must stay this long before Ember asks
 INTRO_MIN_SAMPLES = 3
 INTRO_COOLDOWN = 90.0         # seconds between "who are you?" questions
@@ -958,6 +960,25 @@ class FaceIdentifier:
             print(f"[FACE] Learning {name}'s face for {RECOGNIZER}: {done} of {MIGRATE_SAMPLES} samples",
                   flush=True)
 
+    def _handoff(self, track):
+        """The face Ember was just following, turned. Turning the head breaks a track (the
+        box jumps, or YuNet misses the profile for a moment), and the side view scores in the
+        "maybe" band against front-on samples: 0.41-0.51 for Joe on ember-001, 2026-11-20,
+        who was named a few seconds earlier. So a new track that "might be" someone is them
+        when a track named them stopped within HANDOFF_SECONDS and no other face is in view.
+        Not confirmed by clear matches of its own, the handed-off track never learns samples."""
+        now = self._clock()
+        pid = track.maybe_id
+        lost = [t for t in self._tracks if t is not track and t.person_id == pid
+                and now - t.last_seen <= HANDOFF_SECONDS and t.last_seen < track.last_seen]
+        if not lost or not self.store.get(pid):
+            return False
+        others = [t for t in self._tracks if t is not track and t not in lost
+                  and now - t.last_seen <= IN_VIEW_SECONDS]
+        if others or any(now - t.last_seen < 0.5 for t in lost):
+            return False                     # someone else in view, or the named face still is
+        return True
+
     def _confirmed(self, track):
         """This track was named from clear matches of its own (not only followed)."""
         return sum(1 for pid, s in track.votes
@@ -1013,6 +1034,8 @@ class FaceIdentifier:
         top_maybe = max(set(maybes), key=maybes.count) if maybes else None
         track.maybe_id = (top_maybe if not track.person_id and top_maybe
                           and maybes.count(top_maybe) >= CONFIRM_VOTES else None)
+        if track.maybe_id and self._handoff(track):
+            track.person_id, track.maybe_id = track.maybe_id, None
 
     def _inherit_visit(self, track, now):
         """A stranger who stepped away and came back is the same visitor."""
