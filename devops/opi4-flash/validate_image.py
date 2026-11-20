@@ -42,6 +42,8 @@ assert json.loads(setup_secret.read_text()) == {'password': credentials['setup_w
 assert stat.S_IMODE(setup_secret.stat().st_mode) == 0o600
 assert credentials['setup_wifi_ssid'] == 'Ember-Setup-' + credentials['hostname'].removeprefix('ember-')[-8:].upper()
 assert (root / 'usr/local/lib/ember/ember_wifi_setup.py').is_file()
+assert (root / 'etc/systemd/system/ifup@eth0.service.d/ember-ethernet.conf').is_file()
+assert (root / 'usr/local/sbin/ember-ifup-ethernet').stat().st_mode & 0o111
 assert (root / 'etc/systemd/system/multi-user.target.wants/ember-wifi-setup.service').is_symlink()
 assert os.readlink(root / 'etc/systemd/system/hostapd.service') == '/dev/null'
 for name in ('linux_password', 'anydesk_password'):
