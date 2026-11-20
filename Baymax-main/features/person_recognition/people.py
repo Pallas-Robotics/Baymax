@@ -363,6 +363,9 @@ class People:
         pid = result.get("person_id")
         if result["level"] != "sure" or not pid:
             return
+        identifier = self.identifier
+        if identifier is not None and result.get("stage") == "final":
+            identifier.confirm_by_voice(pid)      # their face "might be" them: now it is
         now = self.clock()
         last = self.last_present(pid)
         self.heard[pid] = now

@@ -1256,6 +1256,36 @@ class FaceIdentifier:
         _, score, _ = self.store.match_all(_normalize(np.mean(track.samples, axis=0)))
         return score >= INTRO_MAX_SCORE
 
+    def confirm_by_voice(self, person_id):
+        """Voice recognition is sure `person_id` is talking, and the only face in view "might
+        be" them: face and voice agree, so name the face now and keep one of its samples, from
+        today's light and angle. Without this, someone who moved or sat in other light after a
+        restart scored just under MATCH_THRESHOLD (0.40-0.47 for minutes on ember-001) until a
+        lucky frame. Returns whether the face was named."""
+        now = self._clock()
+        with self._lock:
+            in_view = [t for t in self._tracks if now - t.last_seen <= IN_VIEW_SECONDS]
+            if len(in_view) != 1:
+                return False
+            track = in_view[0]
+            if (track.person_id or track.maybe_id != person_id or track.declined
+                    or not track.samples or not self.store.get(person_id)):
+                return False
+            samples = list(track.samples)
+            if self.store.resemblance(person_id, samples) < MAYBE_THRESHOLD:
+                return False
+            track.person_id, track.maybe_id, track.unsure_no = person_id, None, False
+            track.votes.clear()
+            self._last_present[person_id] = now
+            self._here_since.setdefault(person_id, track.first_seen)
+            if now - self._last_learned.get(person_id, -1e9) >= AUTO_LEARN_INTERVAL:
+                self._last_learned[person_id] = now
+                best = max(samples, key=lambda emb: self.store.resemblance(person_id, [emb]))
+                self.store.add_samples_to(person_id, [best])
+        name = (self.store.get(person_id) or {}).get("name", person_id)
+        print(f"[FACE] track {track.id}: known ({name}: face and voice agree)", flush=True)
+        return True
+
     def facing_people(self, seconds=IN_VIEW_SECONDS):
         """[(person id or None, when last facing the camera)] for the faces in view."""
         now = self._clock()

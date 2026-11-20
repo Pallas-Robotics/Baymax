@@ -300,6 +300,13 @@ class VoiceLearningFromConversationTests(unittest.TestCase):
             people.clock.now += 31
             people._voice_result({**sure, "id": 10})
             self.assertEqual(adopted, [("p_1", 8), ("p_1", 10)])
+        # A sure voice offers its person to a "maybe" face (faces.confirm_by_voice); unsure
+        # and early results never do.
+        self.assertEqual(people.identifier.voice_confirmed, ["p_1", "p_1", "p_1"])
+        with patch("builtins.print"):
+            people._voice_result({**sure, "stage": "early", "id": 11})
+            people._voice_result({**sure, "level": "maybe", "id": 12})
+        self.assertEqual(people.identifier.voice_confirmed, ["p_1", "p_1", "p_1"])
         with patch.dict(os.environ, {"BAYMAX_VOICE_LEARNING": "0"}), patch("builtins.print"):
             adopted.clear()
             people.identifier.tracks = [SimpleNamespace(person_id="p_1")]
@@ -315,6 +322,11 @@ class FakeIdentifier:
         self.store = FakeStore(self.known)
         self.arrivals = []
         self.introductions = []
+        self.voice_confirmed = []
+
+    def confirm_by_voice(self, person_id):
+        self.voice_confirmed.append(person_id)
+        return False
 
     def describe_in_view(self):
         return "Stella is in front of you." if self.names_in_view else "Nobody is in front of your camera right now."

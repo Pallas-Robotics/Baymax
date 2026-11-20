@@ -326,6 +326,34 @@ class RecognitionTests(Base):
         self.assertEqual(self.ident.describe_in_view(),
                          "Someone who might be Margaret (not sure) is in front of you.")
 
+    def test_a_maybe_face_is_named_when_the_voice_is_sure(self):
+        """After a restart in other light the face scored 0.40-0.47 (maybe) for minutes;
+        a sure voice match for the same person names it and keeps one of today's samples."""
+        m = identity()
+        self.enroll("Margaret", m, sim=1.0, n=1)
+        pid = self.store.find_by_name("Margaret")["id"]
+        look = sample(m, .45)
+        self.frames(lambda: [face(sample(look, .97))], 1.5)
+        before = self.store.samples_of(pid)
+        self.assertTrue(self.ident.confirm_by_voice(pid))
+        self.assertEqual(self.ident.describe_in_view(), "Margaret is in front of you.")
+        self.assertEqual(self.store.samples_of(pid), before + 1)
+        self.frames(lambda: [face(sample(look, .97))], 1.5)       # stays named
+        self.assertEqual(self.ident.describe_in_view(), "Margaret is in front of you.")
+
+    def test_voice_never_names_a_stranger_or_one_of_several_faces(self):
+        m, x = identity(), identity()
+        self.enroll("Margaret", m, sim=1.0, n=1)
+        pid = self.store.find_by_name("Margaret")["id"]
+        self.frames(lambda: [face(sample(x, .9))], 1.5)            # a stranger: not even a maybe
+        self.assertFalse(self.ident.confirm_by_voice(pid))
+        self.assertEqual(self.ident.describe_in_view(), "Someone you don't recognize is in front of you.")
+        self.clock.t += 5
+        look = sample(m, .45)
+        self.frames(lambda: [face(sample(look, .97), x=0), face(sample(x, .9), x=400)], 1.5)
+        self.assertFalse(self.ident.confirm_by_voice(pid))         # who is talking? can't tell
+        self.assertNotIn("Margaret is", self.ident.describe_in_view())
+
     def test_stranger_unknown(self):
         self.enroll("Margaret", identity())
         x = identity()

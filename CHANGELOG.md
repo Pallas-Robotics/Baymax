@@ -1,5 +1,11 @@
 # MVP (unreleased)
 
+- A face that only "might be" someone is named when their voice is sure: after a restart
+  in other light, ember-001 scored Joe's face 0.40-0.47 for minutes (sure is 0.50). The face
+  keeps one of that moment's samples, so the new light is learned (faces.confirm_by_voice).
+- Cold boot: video to Gemini waits for the camera instead of giving up after 5 s (it stayed
+  off until the next reconnect), the first frame goes at once, and the startup greeting
+  goes as soon as Gemini can see, at most 4 s as before.
 - The Orange Pi 5 Max work comes to the Orange Pi 4 Pro (merged from Pallas-Robotics/Baymax
   `main`, `opi5-latency`, `people-recognition` and `ember-voice-personality`; each
   feature's own entry follows below). The Wi-Fi setup hotspot is not part of it.
