@@ -1,5 +1,10 @@
 # MVP (unreleased)
 
+- Startup: the camera and pose process start before the memory embedder loads, so the
+  pose process loads alongside it (5+ s on a cold Orange Pi 4 Pro boot) and the first
+  camera frame, which the startup greeting waits up to 4 s for, comes sooner.
+- A known face that turns away keeps its name: a new "maybe" track takes the name of a
+  track that named them within 4 s, with no other face in view (faces.HANDOFF_SECONDS).
 - A face that only "might be" someone is named when their voice is sure: after a restart
   in other light, ember-001 scored Joe's face 0.40-0.47 for minutes (sure is 0.50). The face
   keeps one of that moment's samples, so the new light is learned (faces.confirm_by_voice).

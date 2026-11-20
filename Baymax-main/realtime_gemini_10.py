@@ -2870,6 +2870,28 @@ def _boot_status(stage: str, message: str, ready: bool = False, error: bool = Fa
 if __name__ == "__main__":
     _boot_status("audio", "Configuring audio devices...")
 
+    # Camera and pose first: the pose process loads (5+ s on a cold Orange Pi 4 Pro boot)
+    # while the memory embedder loads below, so the first camera frame, and the startup
+    # greeting that waits for it, come seconds sooner. Neither needs the other.
+    # ── Download pose model if needed ──
+    _boot_status("pose_model", "Loading pose model...")
+    try:
+        _ensure_pose_model()
+    except Exception as e:
+        _boot_status("pose_model", f"Pose model error: {e}", error=True)
+        print(f"[BOOT] Pose model load failed: {e}")
+
+    # ── Start fall detection in a dedicated thread ──
+    _boot_status("camera", "Starting camera & pose tracking...")
+    _fall_thread = threading.Thread(target=_fall_detection_thread, daemon=True)
+    _fall_thread.start()
+    print(f"[CAM] Camera/pose thread started (fall detection {'active' if FALL_DETECTION_ENABLED else 'OFF (device.toml)'}).")
+
+    # ── Start MJPEG video stream server ──
+    _boot_status("video_stream", "Starting video stream server...")
+    _mjpeg_thread = threading.Thread(target=_start_mjpeg_server, args=(8080,), daemon=True)
+    _mjpeg_thread.start()
+
     # ── Load memory embedder at startup ──
     if MEMORY_RETRIEVAL_ENABLED:
         _boot_status("memory", "Loading memory system...")
@@ -2890,24 +2912,6 @@ if __name__ == "__main__":
     if not missing_packages():
         threading.Thread(target=_memory_saver_thread, name="memory-saver", daemon=True).start()
 
-    # ── Download pose model if needed ──
-    _boot_status("pose_model", "Loading pose model...")
-    try:
-        _ensure_pose_model()
-    except Exception as e:
-        _boot_status("pose_model", f"Pose model error: {e}", error=True)
-        print(f"[BOOT] Pose model load failed: {e}")
-
-    # ── Start fall detection in a dedicated thread ──
-    _boot_status("camera", "Starting camera & pose tracking...")
-    _fall_thread = threading.Thread(target=_fall_detection_thread, daemon=True)
-    _fall_thread.start()
-    print(f"[CAM] Camera/pose thread started (fall detection {'active' if FALL_DETECTION_ENABLED else 'OFF (device.toml)'}).")
-
-    # ── Start MJPEG video stream server ──
-    _boot_status("video_stream", "Starting video stream server...")
-    _mjpeg_thread = threading.Thread(target=_start_mjpeg_server, args=(8080,), daemon=True)
-    _mjpeg_thread.start()
 
     # ── Start audio recording thread ──
     _recording_thread = threading.Thread(target=_audio_writer_thread, daemon=True)
