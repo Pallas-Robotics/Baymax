@@ -46,6 +46,7 @@ ARRIVAL_WAIT_S = 60.0          # an arrival not greeted within this long is drop
 GREET_AFTER_S = float(os.getenv("BAYMAX_PEOPLE_GREET_AFTER_S", "120"))
 faces.AWAY_OTHERS = GREET_AFTER_S
 LEARNED_WAIT_S = 60.0          # same for a [VOICE LEARNED] result
+RECENT_WAIT_S = 0.4             # identify_speaker: how long the voice may confirm someone recent
 RECENT_S = 120.0               # the one person recognised (face or voice) this recently, with nobody
                                # else since and no face in view, is probably still the one talking
 
@@ -410,8 +411,23 @@ class People:
         person = identifier.store.get(recent[0])
         return (recent[0], person["name"]) if person else None
 
-    def who_is_talking(self, voice_result):
-        return identity_answer(voice_result, self.faces_in_view(), self.recent_person())
+    def who_is_talking(self, wait=None):
+        """identity_answer now. The voice result for a sentence still being identified is
+        waited for only when nothing else can answer: ember-001 waited the full 1.5 s on
+        "who is this?" (then answered "probably" anyway), so the reply took 3.4 s. A
+        recognised face in view answers at once; someone recognised a moment ago gets
+        RECENT_WAIT_S for the voice to confirm or overrule them."""
+        faces, recent = self.faces_in_view(), self.recent_person()
+        if self.voice is None:
+            return identity_answer(None, faces, recent)
+        if wait is None:
+            if len(faces) == 1 and faces[0].get("id"):
+                wait = 0.0
+            elif recent and not faces:
+                wait = RECENT_WAIT_S
+            else:
+                wait = voices.TOOL_WAIT_S
+        return identity_answer(self.voice.speaker(wait=wait), faces, recent)
 
     def speaker_by_face(self):
         """The person whose voice this must be: the only face in view, recognised, or None."""
@@ -535,14 +551,13 @@ class People:
                     "reason": "You don't know their name yet. Ask their name, then call this again "
                               "with the name they tell you."}
         if name == "who_is_here":
-            speaker = self.voice.speaker(wait=0.0) if self.voice else None
             return {"in_front_of_you": identifier.describe_in_view(),
                     "visits": identifier.describe_visits(),
-                    "talking": self.who_is_talking(speaker),
+                    "talking": self.who_is_talking(wait=0.0),
                     "conversation": self.conversation.describe() if self.voice
                     else "voice recognition is off"}
         if name == "identify_speaker":
-            return self.who_is_talking(self.voice.speaker() if self.voice else None)
+            return self.who_is_talking()
         if name == "remember_voice":
             if self.voice is None:
                 return {"error": "Voice recognition isn't available right now."}

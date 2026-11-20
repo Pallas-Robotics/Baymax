@@ -375,6 +375,7 @@ class FakeVoice:
         self.learning = []
 
     def speaker(self, wait=1.5):
+        self.waits = getattr(self, "waits", []) + [wait]
         return self.result
 
     def learn(self, name, allow_new=False):
@@ -519,6 +520,25 @@ class ToolTests(unittest.TestCase):
         answer = identity_answer(None, two, recent)
         self.assertIsNone(answer["speaker"])
         self.assertIn("Joe among them", answer["note"])
+
+    def test_identify_speaker_waits_for_the_voice_only_when_nothing_else_answers(self):
+        """ember-001: "who is this?" waited the full 1.5 s for the voice, then said
+        "probably" anyway: a 3.4 s reply."""
+        from types import SimpleNamespace
+        clock = Clock()
+        people = People(clock=clock)
+        people.identifier = identifier = FakeIdentifier(known={"Joe": {"id": "p_1", "name": "Joe"}})
+        people.voice = voice = FakeVoice(None)
+        with patch("builtins.print"):
+            identifier.tracks = [SimpleNamespace(person_id="p_1", maybe_id=None)]
+            people.execute("identify_speaker", {})               # Joe's face in view: no wait
+            identifier.tracks = []
+            identifier._last_present = {"p_1": clock.now}
+            people.execute("identify_speaker", {})               # just recognised: a short wait
+            clock.now += people_module.RECENT_S + 1
+            people.execute("identify_speaker", {})               # nothing else to go on: the full wait
+            people.execute("who_is_here", {})                    # never waits
+        self.assertEqual(voice.waits, [0.0, people_module.RECENT_WAIT_S, 1.5, 0.0])
 
     def test_tools_combine_faces_voices_and_who_was_just_here(self):
         from types import SimpleNamespace
