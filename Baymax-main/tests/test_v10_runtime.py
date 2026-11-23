@@ -1071,6 +1071,7 @@ class ReconnectTests(unittest.TestCase):
         async def receive(index, session, ns):
             if index == 0:
                 ns["_turn_done_at"] = time.monotonic()  # as receive_audio does at turn_complete
+                await REAL_SLEEP(0.03)                  # Windows' 16 ms clock: the next connection starts later
             if index < 2:
                 raise errors.APIError(1008, NOT_FOUND)
             raise ConnectionResetError()
