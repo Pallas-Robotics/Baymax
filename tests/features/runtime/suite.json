@@ -27,7 +27,8 @@
       "patterns": [
         "test_live_eval.py",
         "test_v10_runtime.py",
-        "test_robot_rig.py"
+        "test_robot_rig.py",
+        "test_robot_rig_av.py"
       ]
     }
   ]

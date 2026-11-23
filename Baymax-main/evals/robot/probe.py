@@ -20,6 +20,8 @@ import sys
 
 RIG_ROOT = Path(__file__).resolve().parents[2]
 PUBLIC_PREFIXES = ("BAYMAX_", "EMBER_")
+# Per-robot settings (device_config.py, /etc/ember/device.toml) that scenarios can require.
+DEVICE_KEYS = ("fall_detection.enabled", "camera.pose_tracking")
 OVERRIDE = "EMBER_PROBE_ENV_"
 
 
@@ -64,6 +66,12 @@ def probe(root):
                 result["env"][name] = value
         if not result["core"]:
             raise RuntimeError("run_pc.py names no realtime_gemini_N.py")
+        if (root / "device_config.py").is_file():
+            try:
+                import device_config
+                result["device"] = {key: device_config.get(key) for key in DEVICE_KEYS}
+            except Exception as error:  # A branch without these keys: scenarios needing them are skipped.
+                result["device_error"] = f"{type(error).__name__}: {error}"[:200]
         model, config = live_eval.core_session(root / result["core"])
         result.update(model=model, tools=sorted(live_eval.declared_tools(config)),
                       prompt=config.get("system_instruction", ""))

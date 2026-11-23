@@ -9,6 +9,8 @@ and the rig checks what the runtime reports in `.runtime-status.json` and its lo
     python evals/robot/rig.py --root ../pr/Baymax-main --yes          # on the marked test robot only
     python evals/robot/rig.py --calibrate --spl 61                    # level calibration (README)
     python evals/robot/rig.py --root ../pr/Baymax-main --cleanup      # stop a leftover runtime, delete recordings
+    python evals/robot/rig.py --root ../pr/Baymax-main --yes --repeat 20 --release   # pass rates, release gates
+    python evals/robot/rig.py --root ../pr/Baymax-main --yes --virtual --repeat 50   # virtual devices (README)
 
 Refuses to run unless /etc/ember/test-robot exists or EMBER_TEST_ROBOT=1. Posting
 the report to the PR needs --post-comment. See evals/robot/README.md.
@@ -18,6 +20,7 @@ import json
 import math
 import os
 from pathlib import Path
+import random
 import re
 import signal
 import socket
@@ -32,12 +35,13 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from evals import live_eval  # noqa: E402
-from evals.robot import audio, checks, observe, report, safety  # noqa: E402
+from evals.robot import audio, checks, fixtures, measure, observe, report, safety, stats, timeline  # noqa: E402
 
 HERE = Path(__file__).resolve().parent
 DEFAULT_CONFIG = Path(os.getenv("EMBER_RIG_CONFIG", "/etc/ember/robot-rig.json"))
 REPORT_DIR = ROOT / ".local-review" / "robot"
 POLL_S = 0.25
+PAD_S = 0.3                      # audio.pad's silence either side of a line.
 SAMPLE_S = 1.0
 SAY_TIMEOUT_S = 30.0
 SETTLE_S = 2.5
@@ -64,9 +68,26 @@ class RuntimeExited(RigError):
     pass
 
 
+class RigFault(RigError):
+    """The rig could not test fairly (screen check, fixtures, devices): not a product result."""
+
+
+class NoHook:
+    """Light, fault or power hook that is not configured: scenarios needing it are skipped."""
+
+    def set(self, percent):
+        raise RigFault("no light configured")
+
+    def start(self):
+        raise RigFault("hook not configured")
+
+    stop = start
+
+
 class Rig:
     def __init__(self, runtime, speaker, display, clock, sampler, speak=live_eval.synthesize, gain_db=0.0,
-                 voice=None, startup_timeout_s=STARTUP_TIMEOUT_S, deadline=None, log=print, scenario_dir=HERE):
+                 voice=None, startup_timeout_s=STARTUP_TIMEOUT_S, deadline=None, log=print, scenario_dir=HERE,
+                 light=None, faults=None, recorder=None, power=None, fixture_paths=None, seed=0):
         self.runtime, self.speaker, self.display, self.clock = runtime, speaker, display, clock
         self.sampler_factory, self.sampler, self.speak = sampler, None, speak
         self.gain_db, self.voice, self.startup_timeout_s = gain_db, voice, startup_timeout_s
@@ -77,6 +98,11 @@ class Rig:
                                          getattr(runtime, "trace_path", None))
         self.last_sample = 0.0
         self.clipped = []
+        # Optional rig hardware (README): smart bulb, fault hooks, reference microphone, smart plug.
+        self.light, self.faults, self.recorder, self.power = light or NoHook(), dict(faults or {}), recorder, power
+        self.fixture_paths, self.seed, self.round = dict(fixture_paths or {}), seed, 0
+        self.played = []               # [{"id", "start" (rig time), "samples"}] this scenario's person audio
+        self.step_index = 0
 
     # ── Time ─────────────────────────────────────────────────────────────────
     def tick(self):
@@ -139,12 +165,16 @@ class Rig:
         return self.pump_until(calm, 30.0)
 
     # ── Steps ────────────────────────────────────────────────────────────────
-    def play(self, samples, label):
+    def play(self, samples, label, record_id=None):
+        start = self.clock.time()
         duration = self.speaker.start(samples, label)
+        if record_id is not None:
+            self.played.append({"id": record_id, "start": start, "samples": samples})
         try:
             self.pump(duration + 0.2)
         finally:
             self.speaker.stop()
+        return start
 
     def level(self, step):
         if "level_db" in step:
@@ -194,8 +224,10 @@ class Rig:
             failures.append(f"wait_for {step['wait_for']} not met")
         if "say" in step:
             label = step["say"]
-            self.play(self.leveled(self.speak(label, step.get("voice", self.voice)), step, label), label)
-            speech_end = self.clock.time()
+            samples = self.leveled(self.speak(label, step.get("voice", self.voice)), step, label)
+            started = self.play(samples, label, record_id=f"step{self.step_index}")
+            # The end of the line itself (before the trailing pad), not when the rig stopped waiting for it.
+            speech_end = started + len(samples) / audio.RATE - PAD_S
             if any(k in expect for k in ("silent", "max_false_wakes", "no_user_speech")):
                 self.pump(float(step.get("observe_s", OBSERVE_S)))
             elif not self.pump_until(lambda: self.reply_done(speech_end), float(step.get("timeout_s", SAY_TIMEOUT_S))):
@@ -222,31 +254,161 @@ class Rig:
         turn = checks.observe_turn(window, speech_end)
         failures += checks.check(expect, window, turn, ready_s=ready_s) if expect else []
         kind = next(k for k in checks.STEP_KINDS if k in step)
-        return {"step": f"{kind}: {step[kind]}" if kind not in ("clear_display", "restart") else kind,
+        return {"id": f"step{self.step_index}", "expect": expect,
+                "step": f"{kind}: {step[kind]}" if kind not in ("clear_display", "restart") else kind,
                 "heard": turn["heard"], "reply": turn["reply"], "tools": [t["name"] for t in turn["tools"]],
                 "states": turn["states"], "latency_s": turn["latency_s"], "latency_source": turn["latency_source"],
                 "ready_s": ready_s,
                 "failures": failures}
 
+    # ── Optional hardware used by timelines ──────────────────────────────────
+    def fixture_path(self, name):
+        if name not in self.fixture_paths:
+            raise RigFault(f"fixture {name} was not verified before the run")
+        return self.fixture_paths[name]
+
+    def fixture_audio(self, name):
+        return live_eval.read_wav(self.fixture_path(name))
+
+    def power_cycle(self):
+        if self.power is None:
+            raise RigFault("no smart plug configured")
+        return self.power.cycle(self.clock)
+
+    # ── Scenarios ────────────────────────────────────────────────────────────
     def run_scenario(self, scenario):
         self.scenario_start = self.clock.time()
         self.scenario_deadline = self.scenario_start + float(scenario.get("timeout_s", SCENARIO_TIMEOUT_S))
-        steps = []
+        seed = timeline.trial_seed(self.seed, scenario["name"], self.round)
+        steps, result, self.played = [], {"seed": seed}, []
+        recording = False
         try:
             self.quiet()
-            for step in scenario["steps"]:
-                steps.append(self.run_step(step))
-            return {"steps": steps}
+            if self.recorder is not None:
+                self.recorder.start()
+                recording = True
+            if "timeline" in scenario:
+                result.update(self.run_timeline(scenario, seed))
+                steps = result["steps"]
+            else:
+                for index, step in enumerate(scenario["steps"]):
+                    self.step_index = index
+                    steps.append(self.run_step(step))
+                result["steps"] = steps
         except SuiteTimeout:
             raise
+        except RigFault as error:
+            result.update(steps=steps, rig_fault=str(error))
         except Exception as error:
-            return {"steps": steps, "error": f"{type(error).__name__}: {error}", "log_tail": self.observer.tail()}
+            result.update(steps=steps, error=f"{type(error).__name__}: {error}", log_tail=self.observer.tail())
         finally:
             self.scenario_deadline = None
             try:
                 self.display.clear()
             except Exception:
                 pass
+            if recording:
+                self.measure_reference(scenario, result)
+        return result
+
+    def run_timeline(self, scenario, seed):
+        player = timeline.Player(self, scenario, seed)
+        digest = player.prepare()
+        player.run()
+        steps = []
+        for check in scenario.get("checks", []):
+            origin = self.scenario_start if check.get("from", "start") == "start" else \
+                player.cue_rig_time(check["from"], check.get("edge", "start"))
+            if origin is None:
+                steps.append({"id": f"check:{check.get('from')}", "step": f"check from {check.get('from')}",
+                              "heard": "", "reply": "", "tools": [], "states": [], "latency_s": None,
+                              "failures": [f"cue {check['from']} never fired"]})
+                continue
+            window = self.observer.window(origin, min(origin + float(check["within_s"]), self.clock.time()))
+            speech = player.cue_rig_time(check["from"], "end") if check.get("from", "start") != "start" else None
+            turn = checks.observe_turn(window, speech if "_samples" in player.by_id.get(check.get("from"), {}) else None)
+            expect = check.get("expect", {})
+            steps.append({"id": f"check:{check.get('from', 'start')}", "expect": expect,
+                          "step": f"check {check.get('from', 'start')} +{check['within_s']}s",
+                          "heard": turn["heard"], "reply": turn["reply"], "tools": [t["name"] for t in turn["tools"]],
+                          "states": turn["states"], "latency_s": turn["latency_s"],
+                          "latency_source": turn.get("latency_source"),
+                          "failures": checks.check(expect, window, turn) if expect else []})
+        boot = [e.get("boot_ready_s") for e in player.log if "boot_ready_s" in e]
+        if "boot_ready_within_s" in scenario:
+            limit = float(scenario["boot_ready_within_s"])
+            ok = bool(boot) and boot[0] is not None and boot[0] <= limit
+            steps.append({"id": "boot", "step": "power cycle to ready", "heard": "", "reply": "", "tools": [],
+                          "states": [], "latency_s": None, "ready_s": boot[0] if boot else None,
+                          "failures": [] if ok else [f"ready after {boot[0] if boot else None}s, max {limit}s"]})
+        if player.failures:
+            steps.append({"id": "timeline", "step": "timeline", "heard": "", "reply": "", "tools": [], "states": [],
+                          "latency_s": None, "failures": list(player.failures)})
+        self.played.extend(player.played)
+        result = {"steps": steps, "cues": player.log, "stimulus_sha256": digest, "player": player}
+        if boot:
+            result["boot_ready_s"] = boot[0]
+        if player.rig_faults:
+            result["rig_fault"] = "; ".join(player.rig_faults)
+        return result
+
+    def measure_reference(self, scenario, result):
+        """Analyse the reference recording, keep only numbers, and delete the recording."""
+        player = result.pop("player", None)
+        try:
+            recording = self.recorder.stop()
+        except Exception as error:
+            result.setdefault("rig_fault", f"reference microphone failed: {type(error).__name__}: {error}")
+            return
+        try:
+            if recording is None:
+                result.setdefault("rig_fault", "reference microphone returned no audio")
+                return
+            samples, rate, started = recording
+            numbers = reference_numbers(scenario, self.played, samples, rate, started, player)
+            result["measured"] = numbers
+            by_id = {step.get("id"): step for step in result.get("steps", [])}
+            for entry in numbers:
+                step = by_id.get(entry.get("step"))
+                if step is not None and "latency_s" in entry:
+                    step["ref_latency_s"] = entry["latency_s"]
+                limit = entry.get("max_s")
+                if limit is not None and entry.get("latency_s") is not None and entry["latency_s"] > limit:
+                    result["steps"].append({"id": f"measure:{entry['id']}", "step": f"measured {entry['kind']}",
+                                            "heard": "", "reply": "", "tools": [], "states": [], "latency_s": None,
+                                            "failures": [f"reference mic: {entry['kind']} {entry['latency_s']:.2f}s, "
+                                                         f"max {limit}s"]})
+                if entry.get("error", "").startswith("no speech") and self.ember_spoke(entry):
+                    result.setdefault("rig_fault", "reference microphone heard no speech while the runtime "
+                                                   "reported Ember speaking (check its position and level)")
+        finally:
+            self.recorder.discard()
+
+    def ember_spoke(self, entry):
+        start = entry.get("rig_start")
+        return start is not None and (self.observer.window(start).first("speaking") is not None
+                                      or self.observer.playback_after(start) is not None)
+
+    def run_trials(self, plan, repeat=1, shuffle=False, log_order=True):
+        """Run `plan` `repeat` times (random order per round when `shuffle` or repeat > 1,
+        from the rig's seed). Returns [{"scenario", "repeat", "order", "result"}]."""
+        rng = random.Random(self.seed)
+        trials = []
+        for round_index in range(repeat):
+            self.round = round_index
+            order = list(plan)
+            if shuffle or repeat > 1:
+                rng.shuffle(order)
+            if log_order:
+                self.log(f"[RIG] Round {round_index + 1}/{repeat}: " + ", ".join(s["name"] for s in order))
+            results = self.run_suite(order, {})
+            for position, scenario in enumerate(order):
+                if scenario["name"] in results:
+                    trials.append({"scenario": scenario["name"], "repeat": round_index, "order": position,
+                                   "result": results[scenario["name"]]})
+            if any("time limit" in r.get("skipped", "") for r in results.values()):
+                break
+        return trials
 
     def run_suite(self, plan, results=None):
         results = {} if results is None else results
@@ -282,6 +444,76 @@ class Rig:
         return round(20 * math.log10(max(statistics.median(levels), 1) / 32768.0), 1)
 
 
+def reference_numbers(scenario, played, samples, rate, started, player=None):
+    """Latency numbers from one reference recording (`started`: rig time of its first sample)."""
+    starts = sorted(entry["start"] for entry in played)
+
+    def until(entry):
+        later = [s for s in starts if s > entry["start"] + 0.01]
+        return (later[0] - started - 0.05) if later else None
+
+    def latency(entry, kind, limit, step=None):
+        found = measure.response_latency(samples, rate, entry["samples"], audio.RATE, hint_s=entry["start"] - started,
+                                         until_s=until(entry))
+        row = {"id": entry["id"], "kind": kind, "rig_start": entry["start"], "max_s": limit, "step": step}
+        row.update({k: v for k, v in found.items() if k in ("latency_s", "error", "score")})
+        return row
+
+    numbers = []
+    if "timeline" not in scenario:
+        for entry in played:
+            index = int(entry["id"][4:]) if entry["id"].startswith("step") else None
+            step = scenario["steps"][index] if index is not None and index < len(scenario["steps"]) else {}
+            if "say" in step:
+                numbers.append(latency(entry, "response latency", step.get("expect", {}).get("max_ref_latency_s"),
+                                       entry["id"]))
+        return numbers
+    by_id = {entry["id"]: entry for entry in played}
+    for spec in scenario.get("measure", []):
+        kind = next(k for k in timeline.MEASURE_KINDS if k in spec)
+        cue_id = spec[kind]
+        limit = spec.get("max_s")
+        if kind == "latency":
+            if cue_id not in by_id:
+                numbers.append({"id": cue_id, "kind": "response latency", "error": "cue did not play"})
+                continue
+            numbers.append(latency(by_id[cue_id], "response latency", limit))
+        elif kind == "speech_after":
+            cue = player.by_id.get(cue_id) if player else None
+            if cue is None or "_actual" not in cue:
+                numbers.append({"id": cue_id, "kind": "speech after", "error": "cue did not fire"})
+                continue
+            offset = float(spec.get("offset_s", 0.0))
+            if spec.get("mark"):
+                offset += float(cue.get("marks", {}).get(spec["mark"], 0.0))
+            at = player.t0 + cue["_actual"] + offset
+            later = [s for s in starts if s > at]
+            found = measure.speech_after(samples, rate, at - started,
+                                         until_s=(later[0] - started) if later else None)
+            row = {"id": cue_id, "kind": "speech after", "rig_start": at, "max_s": limit}
+            row.update({k: v for k, v in found.items() if k in ("latency_s", "error")})
+            numbers.append(row)
+        else:
+            entry = by_id.get(cue_id)
+            cue = player.by_id.get(cue_id) if player else None
+            if entry is None or cue is None:
+                numbers.append({"id": cue_id, "kind": "barge-in offset", "error": "cue did not play"})
+                continue
+            since = player.by_id.get(cue.get("after", {}).get("since"))
+            ember_from = (player.t0 + since["_actual"] + since["_seconds"]) if since and "_actual" in since \
+                else player.t0
+            found = measure.barge_offset(samples, rate, entry["samples"], audio.RATE, entry["start"] - started,
+                                         ember_from - started)
+            row = {"id": cue_id, "kind": "barge-in offset", "rig_start": ember_from, "intended_ms":
+                   cue.get("after", {}).get("ms")}
+            if "offset_s" in found:
+                row["offset_s"] = found["offset_s"]
+            if "error" in found:
+                row["error"] = found["error"]
+            numbers.append(row)
+    return numbers
+
+
 def check_calibration(rig, calibration, tolerance=CALIBRATION_TOLERANCE_DB):
     """(ok, message): the robot hears the rig at the calibrated level, so failures are about the PR."""
     if not calibration:
@@ -307,12 +539,12 @@ def run_probe(python, root, extra_env, timeout=120):
         return {"error": f"probe failed: {type(error).__name__}", "tools": [], "prompt": "", "env": {}}
 
 
-def plan_scenarios(scenarios, probe, root, display_available, only=None):
+def plan_scenarios(scenarios, probe, root, display_available, only=None, capabilities=None):
     plan, skipped = [], {}
     for scenario in scenarios:
         if only and scenario["name"] not in only:
             continue
-        reason = checks.missing_requirements(scenario, probe, root, display_available)
+        reason = checks.missing_requirements(scenario, probe, root, display_available, capabilities)
         if reason:
             skipped[scenario["name"]] = {"skipped": reason}
         else:
@@ -327,7 +559,9 @@ def disclosure(plan, probe):
              "The rig plays (second speaker) / shows (tablet), all synthetic:"]
     for scenario in plan:
         lines.append(f"  {scenario['name']}:")
-        for step in scenario["steps"]:
+        for cue in scenario.get("timeline", []):
+            lines.append(f"    {timeline.describe(cue)}")
+        for step in scenario.get("steps", []):
             kind = next(k for k in checks.STEP_KINDS if k in step)
             detail = f"{step['seconds']}s" if kind == "noise" else step[kind]
             lines.append(f"    {kind}: {detail}")
@@ -382,7 +616,11 @@ def rig_env(config):
 def build_hardware(config, root, prepared, log_path):
     from evals.robot import hardware
     speaker = hardware.make_speaker(config, safety.ember_speaker_names(prepared.values))
-    display = hardware.make_display(config)
+    if config.get("_virtual") is not None:
+        from evals.robot import virtual
+        display = virtual.VirtualCamera(config["_virtual"])
+    else:
+        display = hardware.make_display(config)
     runtime = hardware.ProcessRuntime(root, hardware.python_for(root), log_path, trace_path=prepared.trace_path)
     return speaker, display, runtime, hardware.ProcessSampler
 
@@ -424,7 +662,97 @@ def _interrupt(signum, frame):
     raise KeyboardInterrupt
 
 
-def main(argv=None, hardware_factory=build_hardware, clock=None, confirm=input, opener=None):
+def capabilities_of(config, virtual_mode=False):
+    """What this rig can do, for requirement gating (checks.missing_requirements)."""
+    display = (config.get("display") or {}).get("kind", "none")
+    power = config.get("power") or {}
+    return {"display": virtual_mode or display != "none", "video": virtual_mode or display == "http",
+            "light": not virtual_mode and bool((config.get("light") or {}).get("command")),
+            "faults": set(config.get("faults") or {}),
+            "power": bool(power.get("external_controller") and power.get("off")),
+            "reference_mic": virtual_mode or bool((config.get("reference_mic") or {}).get("command")),
+            "mode": "virtual" if virtual_mode else "physical"}
+
+
+def build_extras(config, prepared):
+    from evals.robot import hardware
+    extras = hardware.make_rig_hardware(config, [prepared.values.get("BAYMAX_MIC_NAME", "")])
+    spec = config.get("_virtual")
+    if spec is not None:
+        from evals.robot import virtual
+        extras["recorder"] = hardware.CommandRecorder(virtual.ember_tap_command(spec))
+    return extras
+
+
+def virtual_runtime_env(spec, python):
+    """Device settings pointing the runtime at the loopback cards (queried in the branch's interpreter)."""
+    from evals.robot import virtual
+    done = subprocess.run([str(python), "-c", virtual.QUERY_DEVICES], capture_output=True, text=True, timeout=60)
+    if done.returncode != 0:
+        raise virtual.VirtualError("could not list audio devices: " + (done.stderr or "").strip()[-200:])
+    listing = json.loads(done.stdout.strip().splitlines()[-1])
+    return virtual.runtime_env(spec, listing["devices"], listing["hostapis"])
+
+
+NUMBER_WORDS = {"zero": "0", "oh": "0", "one": "1", "two": "2", "three": "3", "four": "4", "five": "5", "six": "6",
+                "seven": "7", "eight": "8", "nine": "9", "ten": "10", "eleven": "11", "twelve": "12",
+                "thirteen": "13", "fourteen": "14", "fifteen": "15", "sixteen": "16", "seventeen": "17",
+                "eighteen": "18", "nineteen": "19"}
+TENS = {"twenty": 2, "thirty": 3, "forty": 4, "fifty": 5, "sixty": 6, "seventy": 7, "eighty": 8, "ninety": 9}
+
+
+def spoken_digits(text):
+    """Digits in a reply, with number words read out: 'forty-eight twenty one' -> '4821'."""
+    tokens = re.findall(r"[a-z]+|\d+", (text or "").lower().replace("-", " "))
+    out, index = [], 0
+    while index < len(tokens):
+        token = tokens[index]
+        if token.isdigit() or token in NUMBER_WORDS:
+            out.append(token if token.isdigit() else NUMBER_WORDS[token])
+        elif token in TENS:
+            following = tokens[index + 1] if index + 1 < len(tokens) else ""
+            unit = NUMBER_WORDS.get(following)
+            if unit is not None and len(unit) == 1 and unit != "0":
+                out.append(f"{TENS[token]}{unit}")
+                index += 1
+            else:
+                out.append(f"{TENS[token]}0")
+        index += 1
+    return "".join(out)
+
+
+SCREEN_PROMPT = "Ember, please look at the screen in front of you and read me the code number on it."
+
+
+def screen_check(rig, seed, attempts=2, prompt=SCREEN_PROMPT, settle_s=3.0):
+    """(ok, message): the robot's camera reads a seeded code card through the real runtime.
+    Fails as a rig fault, so a misplaced or dark screen never counts against a PR."""
+    code = str(random.Random(seed).randrange(1000, 10000))
+    for attempt in range(1, attempts + 1):
+        version = rig.display.show(live_eval.card(["RIG CHECK", f"CODE {code}"]), f"RIG CHECK / CODE {code}")
+        if hasattr(rig.display, "ack") and not rig.pump_until(lambda: rig.display.ack(version, "shown") is not None, 5.0):
+            return False, "the display did not confirm the test card (page not open or not reachable)"
+        rig.pump(settle_s)  # The camera sends frames at about 1 fps.
+        start = rig.clock.time()
+        rig.play(rig.leveled(rig.speak(prompt, rig.voice), {}, prompt), prompt)
+        end = rig.clock.time()
+        rig.pump_until(lambda: rig.reply_done(end), 40.0)
+        reply = rig.observer.window(start).reply()
+        if code in spoken_digits(reply):
+            rig.display.clear()
+            return True, f"ok (code read on attempt {attempt})"
+        rig.log(f"[RIG] Screen check attempt {attempt}: code {code} not in the reply")
+    rig.display.clear()
+    return False, (f"the robot did not read the test card's code in {attempts} attempts: check the screen's "
+                   "position, brightness and focus, and the camera")
+
+
+def needs_screen(plan):
+    return any(s.get("requires", {}).get("display") or s.get("requires", {}).get("video") for s in plan)
+
+
+def main(argv=None, hardware_factory=build_hardware, clock=None, confirm=input, opener=None,
+         extras_factory=build_extras, modules_factory=None):
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--root", type=Path, default=ROOT, help="Baymax-main of the branch under test")
     parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG)
@@ -434,6 +762,12 @@ def main(argv=None, hardware_factory=build_hardware, clock=None, confirm=input, 
     parser.add_argument("--yes", action="store_true", help="Unattended: skip the empty-room confirmation")
     parser.add_argument("--max-minutes", type=float, default=75.0)
     parser.add_argument("--report-dir", type=Path, default=REPORT_DIR)
+    parser.add_argument("--repeat", type=int, default=1, help="Run every scenario N times (random order)")
+    parser.add_argument("--seed", type=int, help="Seed for the order and stimuli (default: from the clock; reported)")
+    parser.add_argument("--shuffle", action="store_true", help="Random order even with --repeat 1")
+    parser.add_argument("--release", action="store_true", help="Judge by the rig config's release gates")
+    parser.add_argument("--virtual", action="store_true",
+                        help="Virtual-device mode (needs the config's 'virtual' section; README)")
     parser.add_argument("--calibrate", action="store_true")
     parser.add_argument("--spl", type=float, help="With --calibrate: SPL meter reading, dB(A) at the robot's mic")
     parser.add_argument("--cleanup", action="store_true")
@@ -447,23 +781,50 @@ def main(argv=None, hardware_factory=build_hardware, clock=None, confirm=input, 
     if args.cleanup:
         cleanup(root, time.time() - args.since_minutes * 60)
         return 0
+    if args.repeat < 1:
+        print("--repeat must be at least 1", file=sys.stderr)
+        return 2
     try:
         config = load_config(args.config) if not args.dry_run or args.config.is_file() else {}
     except (RigError, ValueError) as error:
         print(error, file=sys.stderr)
         return 2
+    spec = None
+    if args.virtual:
+        from evals.robot import virtual
+        try:
+            spec = virtual.spec_of(config)
+        except virtual.VirtualError as error:
+            print(error, file=sys.stderr)
+            return 2
+    seed = args.seed if args.seed is not None else int(time.time()) % 1_000_000
     scenarios = checks.load_scenarios(args.scenarios)
     if args.only and set(args.only) - {s["name"] for s in scenarios}:
         print(f"Unknown scenario in {args.only}", file=sys.stderr)
         return 2
     from evals.robot import hardware as hw
     probe = run_probe(hw.python_for(root), root, rig_env(config))
-    display_available = (config.get("display") or {}).get("kind", "none") != "none"
-    plan, skipped = plan_scenarios(scenarios, probe, root, display_available, args.only)
+    capabilities = capabilities_of(config, spec is not None)
+    plan, skipped = plan_scenarios(scenarios, probe, root, capabilities["display"], args.only, capabilities)
+    wanted = {}
+    for scenario in plan:
+        wanted.update(timeline.fixtures_of(scenario))
+    fixture_folder = fixtures.folder_of(config)
     if not args.calibrate:
         print(disclosure(plan, probe))
         for name, outcome in skipped.items():
             print(f"  {name}: skipped ({outcome['skipped']})")
+        print(f"Seed {seed}; {args.repeat} round(s)" + (" in random order" if args.repeat > 1 or args.shuffle else ""))
+        if wanted:
+            print(f"Fixtures ({fixture_folder}): " + ", ".join(sorted(wanted)))
+        if spec is not None:
+            from evals.robot import virtual
+            print("Virtual-device mode. Commands:")
+            for command in (virtual.load_commands(spec) if spec.get("load_modules") else []):
+                print("  " + " ".join(command))
+            print("  person -> mic: " + " ".join(virtual.person_feed_command(spec)))
+            print("  Ember's speaker -> reference: " + " ".join(virtual.ember_tap_command(spec)))
+            print("  camera: " + " ".join(virtual.camera_command(spec, "<card or clip>", "video")))
     if args.dry_run:
         return 0
     if not safety.is_test_robot():
@@ -482,53 +843,93 @@ def main(argv=None, hardware_factory=build_hardware, clock=None, confirm=input, 
     clock = clock or hw.Clock()
     signal.signal(signal.SIGTERM, _interrupt)  # A cancelled job still stops the runtime and cleans up.
     meta = {"commit": commit_of(root), "pr": args.pr, "core": probe.get("core"), "started": started_text,
-            "robot": config.get("robot_name") or socket.gethostname().split(".")[0]}
-    results, removed, prepared_env = dict(skipped), None, None
+            "robot": config.get("robot_name") or socket.gethostname().split(".")[0], "seed": seed,
+            "repeat": args.repeat, "shuffled": args.repeat > 1 or args.shuffle, "mode": capabilities["mode"],
+            "release": args.release}
+    results, trials, removed, prepared_env, modules = dict(skipped), [], None, None, None
     try:
-        with safety.PreparedEnv(root, config.get("base_env"), key, config.get("env"), config.get("temp_dir")) as prepared:
+        try:
+            fixture_paths = fixtures.verify(fixture_folder, wanted)
+            meta["fixtures"] = fixtures.manifest_digest(fixture_folder) if wanted else None
+        except fixtures.FixtureError as error:
+            raise RigFault(f"fixtures: {error}") from None
+        extra_env = dict(config.get("env") or {})
+        if spec is not None:
+            from evals.robot import virtual
+            modules = (modules_factory or virtual.Modules)(spec)
+            modules.setup()
+            extra_env.update(virtual_runtime_env(spec, hw.python_for(root)))
+            config = dict(config, _virtual=spec,
+                          person_speaker={"command": virtual.person_feed_command(spec)}, display={"kind": "virtual"})
+        with safety.PreparedEnv(root, config.get("base_env"), key, extra_env, config.get("temp_dir")) as prepared:
             prepared_env = prepared
             speaker, display, runtime, sampler = hardware_factory(config, root, prepared, log_path)
-            calibration = load_calibration(config)
+            extras = extras_factory(config, prepared)
+            calibration = None if spec is not None else load_calibration(config)
             rig = Rig(runtime, speaker, display, clock, sampler, make_speak(config),
                       gain_db=float((calibration or {}).get("gain_db", config.get("gain_db", 0.0))),
                       voice=config.get("voice"), startup_timeout_s=float(config.get("startup_timeout_s", STARTUP_TIMEOUT_S)),
-                      deadline=clock.time() + args.max_minutes * 60)
+                      deadline=clock.time() + args.max_minutes * 60, light=extras.get("light"),
+                      faults=extras.get("faults"), recorder=extras.get("recorder"), power=extras.get("power"),
+                      fixture_paths=fixture_paths, seed=seed)
             try:
                 if args.calibrate:
                     return calibrate(rig, config, args.spl, confirm)
                 rig.start_runtime()
-                ok, message = check_calibration(rig, calibration, float(config.get("calibration_tolerance_db",
-                                                                                   CALIBRATION_TOLERANCE_DB)))
-                meta["calibration"] = message
-                if not ok:
-                    meta["rig_error"] = "out of calibration: " + message
+                if spec is not None:
+                    ok, message = True, "not needed in virtual-device mode (digital levels)"
                 else:
-                    rig.run_suite(plan, results)
+                    ok, message = check_calibration(rig, calibration, float(config.get("calibration_tolerance_db",
+                                                                                       CALIBRATION_TOLERANCE_DB)))
+                meta["calibration"] = message
+                if ok and needs_screen(plan) and (config.get("screen_check") or {}).get("enabled", True):
+                    ok, message = screen_check(rig, seed)
+                    meta["screen_check"] = message
+                    if not ok:
+                        meta["rig_error"] = "screen check failed: " + message
+                elif not ok:
+                    meta["rig_error"] = "out of calibration: " + message
+                if ok:
+                    trials = rig.run_trials(plan, args.repeat, args.shuffle)
+                    for trial in trials:
+                        results[trial["scenario"]] = trial["result"]  # The last round's result per scenario.
             except KeyboardInterrupt:
                 meta["rig_error"] = "interrupted (job cancelled or timed out)"
             except (RigError, RuntimeError, OSError) as error:
                 meta["rig_error"] = f"{type(error).__name__}: {error}"
             finally:
                 rig.stop_runtime()
-                speaker.close()
-                display.close()
+                for part in (speaker, display, extras.get("light"), extras.get("recorder"),
+                             *(extras.get("faults") or {}).values()):
+                    try:
+                        if part is not None and hasattr(part, "close"):
+                            part.close()
+                    except Exception as error:  # Keep closing the rest (a fault must still be restored).
+                        meta["rig_error"] = (meta.get("rig_error", "") + f" close failed: {error}").strip()
                 meta["cpu"] = checks.cpu_summary([v for _, v in rig.observer.samples])
                 if rig.clipped:
                     meta["rig_error"] = (meta.get("rig_error", "") + f" clipped playback: {rig.clipped[:3]}").strip()
-    except (RigError, RuntimeError, OSError) as error:  # Setup: key, devices, display.
+                if extras.get("recorder") is not None:
+                    meta["reference_recordings_deleted"] = getattr(extras["recorder"], "discarded", None)
+    except (RigError, RuntimeError, OSError) as error:  # Setup: key, devices, display, fixtures, virtual devices.
         meta["rig_error"] = str(error)
     finally:
+        if modules is not None:
+            modules.teardown()
         removed = safety.delete_recordings(root, started_wall)
         left = safety.leftover_recordings(root, started_wall)
-        meta["recordings_deleted"] = (sum(removed.values()) if removed else 0) + (prepared_env.data_removed if prepared_env else 0)
+        meta["recordings_deleted"] = (sum(removed.values()) if removed else 0) + \
+            (prepared_env.data_removed if prepared_env else 0)
         if left:
             meta["rig_error"] = (meta.get("rig_error", "") + f" recordings left behind: {left[:3]}").strip()
     if args.calibrate:
         return 0
     meta["minutes"] = (time.time() - started_wall) / 60
     ordered = {s["name"]: results[s["name"]] for s in scenarios if s["name"] in results}
-    markdown, verdict = report.render(ordered, meta)
-    report.write(args.report_dir / "robot-test.md", markdown, ordered, meta)
+    trials = trials + [{"scenario": name, "result": result} for name, result in skipped.items()]
+    gates = config.get("gates") if args.release else None
+    markdown, verdict = report.render(ordered, meta, trials, scenarios, gates)
+    report.write(args.report_dir / "robot-test.md", markdown, ordered, meta, trials)
     print("\n" + markdown)
     print(f"Report: {args.report_dir / 'robot-test.md'} (the runtime log stays local: {log_path})")
     if args.post_comment:

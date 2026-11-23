@@ -10,6 +10,7 @@ from pathlib import Path
 import re
 
 from evals import live_eval
+from evals.robot import timeline
 
 SCENARIOS = Path(__file__).resolve().parent / "scenarios.json"
 STEP_KINDS = ("say", "show", "show_image", "clear_display", "noise", "wait", "restart")
@@ -28,9 +29,15 @@ ROBOT_KEYS = {
     "max_cpu_peak_percent",
     "max_rss_mb",
     "ready_within_s",      # restart: seconds until "Connected; listening".
+    "max_ref_latency_s",   # Reference microphone: end of the line to Ember's first sound (needs the mic).
 }
 EXPECT_KEYS = LAYER1_KEYS | ROBOT_KEYS
-REQUIRE_KEYS = {"tools", "any_tools", "prompt", "files", "env", "env_defaults", "display"}
+REQUIRE_KEYS = {"tools", "any_tools", "prompt", "files", "env", "env_defaults", "display", "device",
+                # Rig hardware (README "Rig hardware"): checked against what the rig config provides.
+                "video", "light", "faults", "power", "reference_mic"}
+MODES = ("physical", "virtual")
+FULL_CAPABILITIES = {"display": True, "video": True, "light": True, "faults": None, "power": True,
+                     "reference_mic": True, "mode": "physical"}
 REGEX_KEYS = ("heard", "reply", "not_reply", "log", "not_log", "startup_log", "event", "not_event")
 
 
@@ -45,13 +52,29 @@ def load_scenarios(path=SCENARIOS):
     return scenarios
 
 
+def validate_expect(name, expect):
+    unknown = set(expect) - EXPECT_KEYS
+    if unknown:
+        raise ValueError(f"{name}: unknown expectations {sorted(unknown)}")
+    for key in REGEX_KEYS:
+        if key in expect:
+            re.compile(expect[key])
+
+
 def validate(scenario):
     name = scenario.get("name")
-    if not name or not scenario.get("steps"):
-        raise ValueError(f"Scenario needs a name and steps: {scenario}")
+    if not name or not (scenario.get("steps") or scenario.get("timeline")):
+        raise ValueError(f"Scenario needs a name and steps (or a timeline): {scenario}")
     unknown = set(scenario.get("requires", {})) - REQUIRE_KEYS
     if unknown:
         raise ValueError(f"{name}: unknown requirements {sorted(unknown)}")
+    if set(scenario.get("modes", MODES)) - set(MODES):
+        raise ValueError(f"{name}: modes must be among {MODES}")
+    if "timeline" in scenario:
+        if "steps" in scenario:
+            raise ValueError(f"{name}: a scenario has steps or a timeline, not both")
+        timeline.validate(scenario, validate_expect)
+        return
     for step in scenario["steps"]:
         kinds = [k for k in STEP_KINDS if k in step]
         if len(kinds) != 1:
@@ -79,15 +102,34 @@ def effective_env(probe, name, defaults):
     return env.get(name, defaults.get(name))
 
 
-def missing_requirements(scenario, probe, root, display_available=True):
-    """Why this scenario does not apply to the branch under test, else None.
+def missing_requirements(scenario, probe, root, display_available=True, capabilities=None):
+    """Why this scenario does not apply to the branch under test or this rig, else None.
 
     `probe` is what probe.py read from the branch: its declared tools, system prompt
     and the environment its launchers and the rig's .env give the runtime.
+    `capabilities` is what the rig has (rig.capabilities_of: display, video, light,
+    fault names, smart plug on an external controller, reference mic, mode).
     """
     needs = scenario.get("requires", {})
-    if needs.get("display") and not display_available:
+    have = dict(FULL_CAPABILITIES if capabilities is None else capabilities)
+    if capabilities is None:
+        have["display"] = display_available
+    if have.get("mode", "physical") not in scenario.get("modes", MODES):
+        return f"not meaningful in {have.get('mode')} mode (needs {', '.join(scenario['modes'])})"
+    if needs.get("display") and not have.get("display"):
         return "no rig display configured"
+    if needs.get("video") and not have.get("video"):
+        return "the rig display cannot play video"
+    if needs.get("light") and not have.get("light"):
+        return "no dimmable light configured"
+    if needs.get("power") and not have.get("power"):
+        return "power cycling needs a smart plug and the rig on an external controller (README)"
+    if needs.get("reference_mic") and not have.get("reference_mic"):
+        return "no reference microphone configured"
+    faults = have.get("faults")
+    missing_faults = [f for f in needs.get("faults", []) if faults is not None and f not in faults]
+    if missing_faults:
+        return "fault hooks not configured: " + ", ".join(missing_faults)
     absent = [path for path in needs.get("files", []) if not (Path(root) / path).exists()]
     if absent:
         return "file not on this branch: " + ", ".join(absent)
@@ -102,6 +144,10 @@ def missing_requirements(scenario, probe, root, display_available=True):
         any_tools = needs.get("any_tools", [])
         if any_tools and not set(any_tools) & set(probe.get("tools", [])):
             return "none of these tools on this branch: " + ", ".join(any_tools)
+    for key, wanted in needs.get("device", {}).items():
+        value = (probe.get("device") or {}).get(key)
+        if value != wanted:
+            return f"device setting {key}={value!r} on this robot (scenario needs {wanted!r}; /etc/ember/device.toml)"
     defaults = needs.get("env_defaults", {})
     for name, wanted in needs.get("env", {}).items():
         value = effective_env(probe, name, defaults)

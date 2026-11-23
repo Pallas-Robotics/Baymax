@@ -182,14 +182,15 @@ class GatingTests(unittest.TestCase):
 class SuiteTests(unittest.TestCase):
     def test_every_scenario_passes_against_an_ideal_robot(self):
         bench = Bench()
+        steps = [s["name"] for s in checks.load_scenarios() if "steps" in s]  # Timelines: test_robot_rig_av.py.
         try:
-            results = bench.run()
+            results = bench.run(steps)
         finally:
             bench.close()
         failures = {name: [f for s in r.get("steps", []) for f in s["failures"]] + [r.get("error")]
                     for name, r in results.items() if report.outcome(r) != "pass"}
         self.assertEqual(failures, {})
-        self.assertEqual(len(results), len(checks.load_scenarios()))
+        self.assertEqual(len(results), len(steps))
         latency = results["conversation-latency"]["steps"][0]["latency_s"]
         self.assertTrue(0 < latency < 2, latency)
         self.assertEqual(results["restart-recovers"]["steps"][0]["ready_s"], 3.0)
@@ -631,7 +632,9 @@ class ReportTests(unittest.TestCase):
         self.assertIn("not release approval", markdown)
         self.assertNotIn("[USER] x", markdown)  # Transcript lines stay out of the log excerpt.
         self.assertEqual(report.render({"a": self.RESULTS["a"]}, {})[1], "PASS")
-        self.assertEqual(report.render({"a": self.RESULTS["a"]}, {"rig_error": "drift"})[1], "FAIL")
+        # A rig problem is inconclusive, not a product failure.
+        self.assertEqual(report.render({"a": self.RESULTS["a"]}, {"rig_error": "drift"})[1], "RIG FAULT")
+        self.assertEqual(report.render(self.RESULTS, {"rig_error": "drift"})[1], "FAIL")
 
     def test_post_comment_request(self):
         sent = []

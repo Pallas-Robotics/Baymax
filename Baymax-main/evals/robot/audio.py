@@ -105,15 +105,16 @@ def tv(seconds, speak=None, seed=0):
     return bed
 
 
-NOISES = {"pink": lambda seconds, speak: pink_noise(seconds),
-          "music": lambda seconds, speak: music(seconds),
-          "tv": lambda seconds, speak: tv(seconds, speak)}
+NOISES = {"pink": lambda seconds, speak, seed: pink_noise(seconds, seed),
+          "music": lambda seconds, speak, seed: music(seconds, seed),
+          "tv": lambda seconds, speak, seed: tv(seconds, speak, seed)}
 
 
-def noise(kind, seconds, speak=None):
+def noise(kind, seconds, speak=None, seed=0):
+    """Deterministic for (kind, seconds, seed): the rig derives the seed from the trial's seed."""
     if kind not in NOISES:
         raise ValueError(f"Unknown noise {kind!r}; choose from {sorted(NOISES)}")
-    return NOISES[kind](seconds, speak)
+    return NOISES[kind](seconds, speak, seed)
 
 
 def pad(samples, seconds=0.3):

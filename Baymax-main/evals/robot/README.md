@@ -117,6 +117,13 @@ are reused too.
 | `cpu-ceiling` | Mean and peak CPU (% of all cores) and resident memory of the runtime during a turn with a card |
 | `restart-engaged` | A restart after "Ember disengage" comes back engaged |
 | `restart-recovers` | Stop and start again; connected within 150 s, and it answers |
+| `fall-clip-checkin` (timeline, safety gate) | A clip of a person falling plays fullscreen on the TV; `[FALL] Injecting fall alert`, then Ember checks on the person. The reference mic times Ember's first words from the fall moment in the clip. Needs `fall_detection.enabled` and `camera.pose_tracking` in the robot's `device.toml` |
+| `fall-clip-control` (timeline, safety gate) | A person sits down normally: no fall alert, no check-in (false-positive control) |
+| `barge-in-timed` (timeline) | The person speaks 800 ms after Ember starts a long reply; the reply is interrupted; the reference mic reports how long Ember had really been speaking |
+| `noisy-room` (timeline) | Questions over synthetic TV and music; heard and answered, reference-mic latency within 6 s |
+| `network-drop` (timeline, safety gate) | The robot loses its network for 45 s (fault hook): it reconnects without a restart and answers afterwards |
+| `dim-light-conversation` (timeline) | The smart bulb goes to 5%: camera and conversation keep working (robustness only; see the screen limits) |
+| `boot-to-ready` (timeline, safety gate) | Smart-plug power cycle to listening within 180 s. Needs an external controller; the on-robot rig always skips it |
 
 Step kinds:
 
@@ -138,6 +145,47 @@ Robot-only expectations:
 - `max_cpu_percent` / `max_cpu_peak_percent` / `max_rss_mb`
 - `ready_within_s`
 
+### Timelines
+
+A scenario may have a `timeline` instead of `steps` (`timeline.py` documents the
+format): cues on one rig clock that can overlap, such as noise under speech, a clip
+while a fault is active, or a barge-in.
+
+- **Timing.** `at` seconds, or `after` another cue's start or end, or `after` the
+  runtime reports a state or log line (for example, "800 ms after Ember starts
+  speaking").
+- **Exact audio spacing.** Fixed-time audio cues are mixed into one track before the
+  run and played as one buffer, so their spacing is exact to the sample. A relative
+  audio cue is mixed in when it fires, and playback continues from the current
+  position.
+- **Cue kinds:** `say`, `play` (a fixture WAV), `noise`, `show`, `show_image`,
+  `show_video` (a fixture clip, with `marks` such as the fall moment), `clear_display`,
+  `light` (percent), `fault` (name and seconds; always restored), `power`
+  (`cycle`) and `mark`.
+- **Checks and measurements.** `checks` apply step expectations to a window after a
+  cue. `measure` asks the reference microphone for `latency` (end of a line to
+  Ember's first sound), `speech_after` (a cue or clip mark to Ember's first sound)
+  or `barge_offset`.
+- **Cue log.** Every cue's scheduled and actual time, and its lateness, go into the
+  report's JSON. A display, light or fault cue more than 150 ms late, a display
+  that does not confirm a card or clip within 3 s, or clipped audio is a **rig
+  fault**.
+- **Deterministic stimuli.** Noise, TV gaps and the screen-check code come from the
+  trial's seed, and the trial records a SHA-256 of exactly what was played.
+
+### Fixtures
+
+Clips and recordings the rig cannot generate live outside Git, in `fixtures_dir`.
+For example, `fall-forward-01.mp4` and `sit-down-01.mp4` are recordings of
+consenting actors, or licensed footage, never residents. After adding files, run
+`python evals/robot/fixtures.py lock <dir>`, which writes `manifest.json` with each
+file's SHA-256 and size.
+
+Before any device opens, every fixture a planned scenario uses must match the
+manifest, and must also match a `sha256` pinned on the cue in `scenarios.json` if
+there is one. Otherwise the run is a rig fault and nothing starts. The report
+records the manifest's own hash.
+
 **Requirements gating.** As in Layer 1's `requires`, a scenario is skipped when the
 branch lacks its feature. The checks are:
 
@@ -148,10 +196,43 @@ branch lacks its feature. The checks are:
 - `env`: the effective value from the rig's `.env` plus the branch's launcher defaults,
   with `env_defaults` for the code default.
 - `display`.
+- `device`: per-robot settings from the branch's `device_config.py`, read by the
+  probe (`/etc/ember/device.toml`). Fall detection in v10 is enabled there, not in
+  `.env`.
+- Rig hardware: `video`, `light`, `faults` (names), `power` (an external controller)
+  and `reference_mic`. Scenario `modes` (`physical`, `virtual`) excludes scenarios that
+  mean nothing in virtual-device mode.
 
 If the branch's config can't be read (for example, a v10 core the AST reader doesn't
 understand), the scenarios that depend on it are skipped and the reason is reported.
 The rig never guesses.
+
+**Repeats and statistics.**
+
+- `--repeat N` runs every scenario N times, in a seeded random order each round.
+  `--seed` reproduces a run; the seed is printed and reported.
+- **Pass rates** per scenario come with a Wilson 95% interval.
+- **Failure classes:**
+  - *product*: an expectation failed, or the runtime crashed or never came up. A
+    startup failure counts here, so a PR that breaks startup fails.
+  - *flaky*: the same scenario also passed in this run.
+  - *rig fault*: calibration or the screen check failed, a fixture changed, a device
+    was missing, a cue was late, or the reference mic heard nothing while the
+    runtime reported speech.
+
+  Rig faults are not runs of the product and are left out of pass rates.
+- **Release gates.** `--release` judges by the config's `gates`. For example, safety
+  scenarios need at least 20 valid runs and 95% passing (19/20); latency scenarios
+  need a Wilson lower bound of at least 0.8. An ordinary run requires every valid run
+  to pass.
+- **Verdict:** PASS, FAIL, RIG FAULT (nothing concluded) or INCOMPLETE (too few runs
+  for a gate).
+
+**Screen check.** Before a session that uses the display, the rig shows a card with
+a seeded four-digit code. It then asks Ember, through the person speaker, to read
+the code. Ember answering with the code (in digits or words) proves the screen is
+placed, lit and in focus for this camera. Otherwise the run is a rig fault, so a
+misplaced TV is never blamed on a PR.
 
 **Runs.** One runtime serves the suite. It is restarted before any scenario that follows
 a failure or error, and when a scenario sets `fresh_runtime`. Conversation context
@@ -162,23 +243,24 @@ first through the monitor's stop file (a clean shutdown), then SIGTERM, then SIG
 
 ## Physical setup
 
-**Shopping list** (for one test robot):
+**Shopping list** (one test robot; rough 2026 US prices):
 
-- A second complete robot, identical to production: board, the same USB microphone,
-  speaker and camera, eyes (an Orange Pi like the production units). Use the
-  `devops/opi4-flash` image, and do **not** run `devops/mvp/install_autostart.py` or
-  enable `BAYMAX_AUTO_UPDATE` on it: the rig starts the runtime itself.
-- **Person speaker:** a small powered USB speaker that shows up as its own sound card,
-  with a name that differs from Ember's speaker. Do not use another Jieli "UACDemo":
-  the rig refuses any speaker that matches Ember's. Reasonably flat response; about
-  $25–40.
-- **Display:** a cheap Android tablet or a 7–8" screen with a stand, mains-powered, with
-  sleep, notifications and auto-brightness off.
-- **SPL meter:** Class 2, A-weighting, slow response; about $30–60. It is needed for
-  calibration only.
-- A mic stand or tripod for the speaker, a tape measure, and a powered USB hub. Wired
-  ethernet is preferable.
-- A room or closet that can be closed and kept empty during runs.
+| Item | Why | Rough price |
+|---|---|---|
+| Second complete robot like production: Orange Pi board, the same USB microphone, speaker and camera, eyes | The device under test. Use the `devops/opi4-flash` image, and do **not** run `devops/mvp/install_autostart.py` or enable `BAYMAX_AUTO_UPDATE` on it: the rig starts the runtime itself | (production BOM) |
+| Person speaker: small powered USB speaker that is its own sound card, with a different name from Ember's speaker (not another Jieli "UACDemo"; the rig refuses one that matches) | The scripted person, about 2 m away | $25–40 |
+| TV or monitor, 55–65", on a stand or wall mount | Full-size people in fall and video clips at a realistic distance | $300–600 |
+| or a 7–10" tablet or small monitor | Cards and the screen check only; too small for fall clips | $60–150 |
+| Reference USB microphone (omni measurement mic such as a miniDSP UMIK-1 or Dayton iMM-6/UMM-6, or any decent USB mic) on a small stand | Measures Ember's real audio output: reply latency at about 10 ms | $20–110 |
+| Dimmable smart bulb with a local API (TP-Link Kasa/Tapo, WiZ, or a Zigbee bulb with a hub) | `light` cues | $10–25 |
+| Smart plug with a local API (optional; Kasa/Shelly) | `boot-to-ready`, from an external controller only | $10–25 |
+| SPL meter, Class 2, A-weighted, slow | Calibration only | $30–60 |
+| Mic stand or tripod, tape measure, powered USB hub, ethernet cable | Placement; wired network makes `network-drop` controllable | $30–60 |
+
+Also needed: a room or closet that can be closed and kept empty during runs.
+
+**Rough total:** about $450–900 on top of the robot (or $150–400 with a tablet
+instead of the TV, without fall clips).
 
 **Placement:**
 
@@ -186,7 +268,21 @@ first through the monitor's stop file (a clean shutdown), then SIGTERM, then SIG
   (about 1.1–1.2 m), pointed at the robot. Keep it at least 1 m from Ember's own speaker
   and not directly behind the robot.
 - Put the tablet 40–60 cm in front of the camera so a card fills about two-thirds of the
-  frame. Check the framing once on devUI's camera test.
+  frame. Or put the TV 2–3 m away so a person in a clip appears life-size and whole,
+  floor included. Check the framing once on devUI's camera test (`device_test.py`).
+- Open `http://<robot>:8790/` on the screen in kiosk mode. On Chromium:
+  `--kiosk --autoplay-policy=no-user-gesture-required`. Turn off sleep, notifications
+  and auto-brightness. Clips play muted, because the sound comes from the person
+  speaker on the rig clock.
+- Put the reference mic 30–50 cm in front of the robot's speaker, at its height and
+  not touching the robot (vibration). It must not be Ember's microphone; the rig
+  refuses a `reference_mic` command naming it.
+- **Limits of a screen.** A screen is flat and emits its own light. A clip on a TV
+  tests the camera → pose → fall → check-in path. It does not test depth, real
+  lighting or occlusion. Dimming the room while a screen is on is **not** a valid
+  dark-room test, because the screen lights the scene. Use a printed card or a
+  person for that. Any radar or mmWave presence sensor (none on the current robots)
+  cannot see people on a screen.
 - Keep the room as it is. Soft furnishing helps. Moving the speaker or changing its
   volume invalidates the calibration, and the next run detects that.
 
@@ -213,6 +309,114 @@ Every suite run starts with a 6 s calibration check. If the robot's mic hears th
 more than 4 dB away from the saved level, the run stops with a **rig problem** (speaker
 moved, volume changed or mic fault), so a PR is not blamed for it. Without a
 calibration file the run proceeds and the report says "not calibrated".
+
+## Reference microphone (outside measurement)
+
+`reference_mic.command` records the room for each scenario. `measure.py` finds each
+line the rig played in that recording and measures from the end of the line to
+Ember's first sound.
+
+- **Method.** The line is located by GCC-PHAT cross-correlation with the exact
+  samples played; Ember's start is found by onset detection on 10 ms frames, refined
+  to 1 ms.
+- **Precision.** About 10 ms. Synthetic tests with noise and reverberation recover
+  known delays within ±20 ms.
+- **No clock alignment needed.** The person and Ember are in the same recording.
+- **Next to the runtime's own numbers.** The report also shows the runtime's
+  playback time (v10 `conversation_timing`) and the state-based estimate, labelled
+  by source.
+- **Recordings are not kept.** The recording is in a private 0700 temporary folder
+  and is deleted right after the analysis. Reports keep only numbers.
+- **Speech-to-text is a hook only.** `measure.transcribe(samples, rate, command)` is
+  for a local command such as Vosk with a downloaded model. None is configured or
+  bundled.
+
+## Faults
+
+`faults.<name>` has `start` and `stop` commands. A timeline `fault` cue runs
+`start`, then always runs `stop` after `seconds`, even if the scenario errors. For
+`network_drop`, use a helper that **restores itself**, so a crashed rig cannot leave
+the robot offline. For example, `/usr/local/sbin/ember-rig-netdrop`, with a sudoers
+line for the runner user that allows only this script:
+
+```bash
+#!/bin/sh
+# ember-rig-netdrop on SECONDS | off: drop all traffic except loopback and the LAN, then
+# restore it automatically after SECONDS.
+set -e
+case "$1" in
+  on)  nft add table inet ember_rig_drop
+       nft add chain inet ember_rig_drop out '{ type filter hook output priority 0; policy accept; }'
+       nft add rule inet ember_rig_drop out oif lo accept
+       nft add rule inet ember_rig_drop out ip daddr 192.168.0.0/16 accept
+       nft add rule inet ember_rig_drop out drop
+       ( sleep "${2:-60}"; nft delete table inet ember_rig_drop 2>/dev/null ) >/dev/null 2>&1 & ;;
+  off) nft delete table inet ember_rig_drop 2>/dev/null || true ;;
+esac
+```
+
+The Actions runner loses GitHub for the length of the drop. Keep it short (it reconnects).
+
+## Virtual-device mode
+
+`--virtual` (with a `virtual` section in the rig config) runs the real runtime on the
+test robot without the person speaker or screen, so it can run many more repeats.
+The devices are replaced as follows (`virtual.py`):
+
+| Real device | Virtual replacement |
+|---|---|
+| Microphone | ALSA loopback card `EmberRigMic` (`snd-aloop`). The rig plays the person into device 0; the runtime records device 1 |
+| Ember's speaker | Loopback card `EmberRigOut`. The runtime plays into device 0; the rig records device 1, an exact digital reference |
+| Camera | `/dev/video42` (`v4l2loopback`, "EmberRigCam"), fed by `ffmpeg` with the card, clip or black. The display "confirms" on ffmpeg's first frame |
+
+The runtime's device code, echo canceller, Gemini session and toolkits are the real
+ones. The rig finds the loopback devices in the branch's interpreter and gives them
+to the runtime (`BAYMAX_MIC_*`, `BAYMAX_SPEAKER_*`, `BAYMAX_CAMERA_DEVICE`).
+Calibration is skipped, since levels are digital. Acoustic scenarios (echo, wake
+words over Ember's own playback) are skipped with `modes: ["physical"]`, and light is
+not available.
+
+Setup, once, on the test robot. The rig never edits `/etc/modules-load.d`, systemd or
+startup:
+
+1. `sudo apt install v4l2loopback-dkms ffmpeg alsa-utils`.
+2. Either load the modules yourself before a run:
+   `sudo modprobe snd-aloop enable=1,1 index=10,11 id=EmberRigMic,EmberRigOut pcm_substreams=1,1`
+   and `sudo modprobe v4l2loopback devices=1 video_nr=42 card_label=EmberRigCam exclusive_caps=1`.
+   Or set `"virtual": {"load_modules": true}` and allow the runner user
+   `sudo -n /usr/sbin/modprobe` for these modules only. The rig then loads them and
+   unloads only what it loaded.
+3. Keep PipeWire/WirePlumber off the loopback cards: a user rule that disables the
+   `alsa_card.*Loopback*` devices, in `~/.config/wireplumber/`. Otherwise it may hold
+   them open.
+4. `python evals/robot/rig.py --root <checkout> --virtual --dry-run` prints every
+   command it will run.
+
+Config: `"virtual": {}` uses the defaults (cards 10 and 11, `/dev/video42`, 1280×720
+at 15 fps, `sudo -n`). Override `mic_card`, `out_card`, `camera` or `sudo` there.
+None of this is loaded unless the config has the section **and** `--virtual` is
+given.
+
+**Limits.** Timing between the rig's playback and its reference recording depends on
+`aplay`/`arecord` starting, about ±30 ms, unlike the single-recording physical
+measurement. The camera sees perfect frames, which is not optics. Nothing acoustic is
+tested.
+
+## What each layer can and cannot prove
+
+| Layer | Can prove | Cannot prove |
+|---|---|---|
+| 0: `check_release.py` | Code paths, config, tool routing and failure handling with fakes | Anything about Gemini, devices or timing |
+| 1: `evals/live_eval.py` | Gemini's behaviour on the real prompt and tools: transcripts, tool calls, reply content and latency (no audio devices) | Microphone, echo cancellation, speaker, camera, wake words, eyes, CPU |
+| 2, virtual devices | The real runtime and device code end to end, many repeats; pass rates; pose and fall from clips; network and fault recovery | Acoustics (echo, distance, room noise as heard), optics, lighting, the eyes |
+| 2, physical rig | Real microphone, echo cancellation, speaker, camera and CPU; calibrated levels; fall clips on a TV; outside-measured latency | Real people and voices, depth, real lighting on a person, what the eyes look like, long-term reliability, radar |
+| Human checks (TESTING_PROTOCOL.md §2–3) | Real voices, appearance, comfort, judgement | (release approval is the software lead's) |
+
+**The chamber.** The Baymax-pi4 repository planned the same idea: a closed "chamber"
+where synthetic people and scenes are played to a real robot and measured from
+outside. See the archived branch `natey/offline-fall-checkin`,
+`features/experimental/tested_in_sim/README.md`. This rig is meant to be that
+chamber.
 
 ## Runner registration (one-time, by a repository admin)
 
@@ -349,7 +553,8 @@ capped and runs are limited to collaborators.
   - The full runtime log (`runtime.log`) stays on the robot, in the job's temporary
     folder (deleted with the job) or `.local-review/robot/` (gitignored), and is never
     posted.
-  - No audio or images are kept.
+  - No audio or images are kept. Reference-mic recordings are deleted after their
+    analysis; the report keeps only latencies and counts.
 
 ## Inputs, outputs, dependencies
 
@@ -376,6 +581,22 @@ capped and runs are limited to collaborators.
     `/etc/ember/test-robot`; the rig then refuses.
 
 ## Tests
+
+`tests/test_robot_rig_av.py` covers the audio/video upgrade:
+
+- the timeline scheduler: exact track mixing, relative and state-anchored cues,
+  barge-in restarts, faults always restored, display confirmations, seeds;
+- fixture checksums;
+- latency estimation on synthetic signals: known delays recovered within ±20 ms with
+  noise and reverberation, at 48 and 16 kHz;
+- Wilson intervals, gates, verdicts and failure classes;
+- virtual-device command construction and module handling with fakes;
+- the HTTP display's video handshake on localhost;
+- the rig end to end with a fake reference microphone, the screen check, seeded
+  repeats, capability gating, and `rig.main` with fixtures, release gates and
+  virtual mode.
+
+No device is opened and nothing is played.
 
 `tests/test_robot_rig.py` (core section of `check_release.py`; runtime suite in
 `tests/features/runtime/suite.json`, so `python tests/run.py --feature runtime` runs it)
@@ -426,6 +647,12 @@ Covered:
 No microphone, camera or speaker is opened, and nothing contacts Gemini or GitHub.
 
 ## What still needs a human
+
+- **Fixtures.** Record or license the fall and sit-down clips, then lock them.
+- **First hardware run of the AV parts.** Check the kiosk page's timestamps against
+  the reference mic. Check that a fall clip on a TV triggers MediaPipe at that
+  distance. Tune `network-drop` and the latency limits, and check the
+  snd-aloop/v4l2loopback setup with PipeWire on the Orange Pi image.
 
 - **The trace on hardware.** Check that the runtime's real trace (once #10 merges)
   matches the schema-v1 example the reader is tested against.

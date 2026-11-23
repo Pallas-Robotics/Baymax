@@ -12,6 +12,10 @@ from pathlib import Path
 import sys
 import urllib.request
 
+if __package__ in (None, ""):  # Run as a script by the workflow's system python3.
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from evals.robot import stats  # noqa: E402  (standard library only, like this file)
+
 MAX_COMMENT = 60000
 SNIPPET = 160
 # Transcript lines stay out of the log excerpt (the step lines already show what was heard).
@@ -26,17 +30,26 @@ def _clip(text, size=SNIPPET):
 def outcome(result):
     if "skipped" in result:
         return "skipped"
+    if result.get("rig_fault"):
+        return "rig fault"
     if result.get("error"):
         return "error"
     return "pass" if not any(step["failures"] for step in result.get("steps", [])) else "FAIL"
 
 
-def render(results, meta):
-    """The report. Holds only what the rig played and what the runtime transcribed of it."""
+def render(results, meta, trials=None, scenarios=None, gates=None):
+    """The report. Holds only what the rig played, what the runtime transcribed of it, and
+    numbers (latencies, rates); never audio. `trials` (rig.run_trials) adds repeat statistics.
+
+    Verdict: PASS, FAIL (a gate failed on product evidence), RIG FAULT (the rig could not
+    test fairly, so nothing is concluded) or INCOMPLETE (too few runs for a gate)."""
+    trials = trials if trials is not None else [{"scenario": n, "result": r} for n, r in results.items()]
+    summary = stats.summarize(trials)
+    gate_results = stats.evaluate_gates(summary, scenarios or [], gates)
+    verdict = stats.verdict(summary, gate_results, meta.get("rig_error"))
     counts = {}
     for result in results.values():
         counts[outcome(result)] = counts.get(outcome(result), 0) + 1
-    verdict = "PASS" if not counts.get("FAIL") and not counts.get("error") and not meta.get("rig_error") else "FAIL"
     lines = [f"## Ember robot test: {verdict}", "",
              f"- Commit: `{meta.get('commit', 'unknown')}`" + (f" (PR #{meta['pr']})" if meta.get("pr") else ""),
              f"- Robot: {meta.get('robot', 'test robot')}; runtime `{meta.get('core') or 'unknown'}`",
@@ -45,8 +58,34 @@ def render(results, meta):
              f"- Calibration: {meta.get('calibration', 'not checked')}",
              f"- Runtime CPU (whole run): {_cpu(meta.get('cpu'))}",
              f"- Recordings deleted after the run: {meta.get('recordings_deleted', 'unknown')}"]
+    if meta.get("seed") is not None:
+        lines.append(f"- Seed {meta['seed']}, {meta.get('repeat', 1)} round(s)"
+                     + (" in random order" if meta.get("shuffled") else "")
+                     + (f"; fixtures manifest `{meta['fixtures'][:12]}`" if meta.get("fixtures") else "")
+                     + (f"; mode {meta['mode']}" if meta.get("mode") else "")
+                     + ("; release gates" if meta.get("release") else ""))
+    if meta.get("screen_check"):
+        lines.append(f"- Screen check: {meta['screen_check']}")
     if meta.get("rig_error"):
         lines += ["", f"**Rig problem (not necessarily the PR):** {meta['rig_error']}"]
+    if any(entry["runs"] > 1 for entry in summary.values()) or meta.get("release"):
+        lines += ["", "| Scenario | Runs | Passed | Pass rate (95% CI) | Rig faults | Gate | Class |",
+                  "|---|---|---|---|---|---|---|"]
+        for name, entry in summary.items():
+            gate = gate_results.get(name)
+            rate = "" if entry["pass_rate"] is None else \
+                f"{entry['pass_rate']:.0%} ({entry['wilson95'][0]:.0%}-{entry['wilson95'][1]:.0%})"
+            lines.append(f"| {name} | {entry['runs']} | {entry['passes']}/{entry['valid']} | {rate} | "
+                         f"{entry['rig_faults']} | {gate['state'] + ': ' + gate['reason'] if gate else ''} | "
+                         f"{entry['class']} |")
+    measured = measurements(trials)
+    if measured:
+        lines += ["", "| Scenario | Measurement | n | Median | p90 | Max | Source |", "|---|---|---|---|---|---|---|"]
+        for (name, kind, source), values in measured.items():
+            summary_row = _summary(values)
+            if summary_row:
+                lines.append(f"| {name} | {kind} | {summary_row['n']} | {summary_row['median_s']:.2f}s | "
+                             f"{summary_row['p90_s']:.2f}s | {summary_row['max_s']:.2f}s | {source} |")
     lines += ["", "| Scenario | Result | First audio | Notes |", "|---|---|---|---|"]
     detail = []
     for name, result in results.items():
@@ -57,10 +96,12 @@ def render(results, meta):
         latencies = [s["latency_s"] for s in result.get("steps", []) if s.get("latency_s") is not None]
         first = f"{min(latencies):.2f}s" if latencies else ""
         failed = [f for s in result.get("steps", []) for f in s["failures"]]
-        note = _clip(result.get("error") or (failed[0] if failed else ""), 90).replace("|", "/")
+        note = _clip(result.get("rig_fault") or result.get("error") or (failed[0] if failed else ""), 90).replace("|", "/")
         lines.append(f"| {name} | {state} | {first} | {note} |")
         if state != "pass":
             detail += ["", f"### {name}"]
+            if result.get("rig_fault"):
+                detail.append(f"- RIG FAULT (not counted as a run of the product): {_clip(result['rig_fault'], 300)}")
             if result.get("error"):
                 detail.append(f"- ERROR: {_clip(result['error'], 300)}")
             for index, step in enumerate(result.get("steps", []), 1):
@@ -80,6 +121,30 @@ def render(results, meta):
     return "\n".join(lines + detail + footer) + "\n", verdict
 
 
+def measurements(trials):
+    """{(scenario, kind, source): [seconds]} across trials: runtime-reported and reference-mic latencies."""
+    found = {}
+    for trial in trials:
+        result = trial["result"]
+        for step in result.get("steps", []):
+            if step.get("latency_s") is not None:
+                found.setdefault((trial["scenario"], "first audio", step.get("latency_source") or "runtime"),
+                                 []).append(step["latency_s"])
+        for entry in result.get("measured", []):
+            value = entry.get("latency_s", entry.get("offset_s"))
+            if value is not None:
+                found.setdefault((trial["scenario"], entry["kind"], "reference mic"), []).append(value)
+    return found
+
+
+def _summary(values):
+    values = sorted(values)
+    if not values:
+        return None
+    pick = lambda q: values[min(len(values) - 1, int(round(q * (len(values) - 1))))]  # noqa: E731
+    return {"n": len(values), "median_s": pick(0.5), "p90_s": pick(0.9), "max_s": values[-1]}
+
+
 def _cpu(summary):
     if not summary:
         return "no samples"
@@ -87,11 +152,16 @@ def _cpu(summary):
             f"peak memory {summary['peak_rss_mb']} MB")
 
 
-def write(path, markdown, results, meta):
+def write(path, markdown, results, meta, trials=None):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(markdown, encoding="utf-8")
-    path.with_suffix(".json").write_text(json.dumps({"meta": meta, "results": results}, indent=2, default=str),
-                                         encoding="utf-8")
+    data = {"meta": meta, "results": results}
+    if trials is not None:
+        summary = stats.summarize(trials)
+        data["trials"] = [dict(t, outcome=stats.trial_outcome(t["result"]),
+                               failure_class=stats.failure_class(t, summary)) for t in trials]
+        data["summary"] = summary
+    path.with_suffix(".json").write_text(json.dumps(data, indent=2, default=str), encoding="utf-8")
 
 
 def post_comment(markdown, repository, pr, token, opener=urllib.request.urlopen):
