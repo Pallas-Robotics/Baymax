@@ -1,5 +1,6 @@
 """Opt-in desktop WebRTC audio cleanup, using Ember's existing playback reference."""
 import copy
+import math
 import os
 import threading
 import time
@@ -96,7 +97,9 @@ class FanFilter:
 
     def __call__(self, samples):
         out, self.state = self.sosfilt(self.sos, samples.astype(np.float64), zi=self.state)
-        return np.clip(np.round(out), -32768, 32767).astype(np.int16)
+        np.rint(out, out=out)                 # in place: this runs in every mic callback
+        np.clip(out, -32768, 32767, out=out)
+        return out.astype(np.int16)
 
 
 def fan_filter_hz():
@@ -328,12 +331,22 @@ class InputEnhancer:
 
     @staticmethod
     def levels(samples):
-        values = samples.astype(np.float32)
-        rms = float(np.sqrt(np.mean(values * values))) if values.size else 0
-        peak = float(np.max(np.abs(values))) if values.size else 0
-        return {'rms_dbfs': round(20 * np.log10(max(rms, 1e-3) / 32768), 1),
-                'peak_dbfs': round(20 * np.log10(max(peak, 1e-3) / 32768), 1),
-                'clipped_percent': round(float(np.mean(np.abs(values) >= 32760)) * 100, 2) if values.size else 0}
+        """Level, peak and clipping of one block. Twice in every mic callback (raw and
+        cleaned), where with the fan filter it was over a third of the callback's Python
+        time on the Orange Pi 4 Pro: one dot product and min/max instead of five passes
+        with temporaries, and clipping counted only when the peak reaches it."""
+        if not samples.size:
+            rms = peak = 0.0
+        else:
+            values = samples.astype(np.float64)
+            rms = math.sqrt(float(np.dot(values, values)) / values.size)
+            peak = float(max(int(samples.max()), -int(samples.min())))
+        clipped = 0
+        if peak >= 32760:
+            clipped = round(int(np.count_nonzero(np.abs(samples.astype(np.int32)) >= 32760)) / samples.size * 100, 2)
+        return {'rms_dbfs': round(20 * math.log10(max(rms, 1e-3) / 32768), 1),
+                'peak_dbfs': round(20 * math.log10(max(peak, 1e-3) / 32768), 1),
+                'clipped_percent': clipped}
 
     def process(self, samples, timing=None):
         self.block_ms = len(samples) * 1000 / self.rate

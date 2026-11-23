@@ -113,6 +113,12 @@ runs, so every thread of Ember's own process stays on the A76s. None of them is 
 an A55 by itself: they all share Python's GIL, and whatever one of them did there while
 holding it would keep the audio threads waiting 3.6-5x as long.
 
+The Orange Pi 4 Pro's A733 has two A76s (cpu6-7) and six A55s (cpu0-5), and Ember does the
+same there (`[CPU] Running on the fast cores 6,7`), sharing the two A76s with its pose
+process. Left to the scheduler on ember-001, the mic callback ran on the A55s 88% of the
+time and the pose process 75%. Over 90 s idle, unpinned vs pinned: Ember's process 78% →
+30% of a core (the mic thread 38% → 14%), pose 79% → 60% and back at its 10 fps.
+
 With Ember on the fast cores, and only then:
 
 - **GIL switch interval 1 ms** instead of Python's 5 ms. The mic callback lets go of the

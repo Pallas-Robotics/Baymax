@@ -58,6 +58,13 @@ def is_rk3588(compatible=None):
     return any(entry.startswith("rockchip,rk3588") for entry in compatible)
 
 
+def is_a733(compatible=None):
+    """Allwinner A733 (sun60iw2, the Orange Pi 4 Pro): two Cortex-A76s and six A55s."""
+    compatible = device_tree_compatible() if compatible is None else compatible
+    return any(entry.startswith(("arm,sun60iw2", "allwinner,sun60iw2", "allwinner,a733"))
+               for entry in compatible)
+
+
 def npu_drivers(drivers="/sys/bus/platform/drivers"):
     """Loaded Rockchip NPU kernel drivers: 'RKNPU' (vendor kernel; what RKNN needs) and/or
     'rocket' (mainline accel driver, which librknnrt cannot use). Empty if neither."""
@@ -226,12 +233,12 @@ def place_vision_child(role):
 
 
 def _recognition_on_slow_cores(role):
-    """Ember not pinned (the Orange Pi 4 Pro by default): the face child (eye-contact landmarks
-    and face recognition) and the voice child still go to the slow cores at nice 10 on an ARM
-    big.LITTLE board, as on the 5 Max, so their bursts (ECAPA on 3 threads for each utterance,
-    SFace for each new face) never take a fast core from Ember's audio or pose. Unmeasured on
-    the 4 Pro's A733 (two A76s, six A55s). Pose and everything else stay where they were. Nothing changes
-    off such a board or with BAYMAX_VISION_CPUS=fast."""
+    """Ember not pinned (another ARM big.LITTLE board, or BAYMAX_CPU_PINNING=off): the face
+    child (eye-contact landmarks and face recognition) and the voice child still go to the
+    slow cores at nice 10, as where Ember is pinned, so their bursts (ECAPA on 3 threads for
+    each utterance, SFace for each new face) never take a fast core from Ember's audio or
+    pose. Pose and everything else stay where they were. Nothing changes off such a board
+    or with BAYMAX_VISION_CPUS=fast."""
     if role not in ("face", "voice") or os.getenv("BAYMAX_VISION_CPUS", "").strip().lower() == "fast":
         return None
     fast = performance_cpus()
@@ -259,15 +266,18 @@ def use_performance_cpus():
     themselves (place_vision_child). run_mvp.py and run_pc.py call it first thing; a second
     call changes nothing and prints nothing.
 
-    BAYMAX_CPU_PINNING: auto (default) pins only on an RK3588 (Orange Pi 5 / 5 Max, where
-    it was measured: 4 fast cores); on pins on any ARM big.LITTLE board, e.g. to try the
-    Orange Pi 4 Pro, whose A733 has only 2 fast cores for Ember and the pose process
-    (unmeasured); off never pins."""
+    BAYMAX_CPU_PINNING: auto (default) pins on the boards where it was measured, the RK3588
+    (Orange Pi 5 / 5 Max: 4 fast cores) and the A733 (Orange Pi 4 Pro: 2 fast cores for
+    Ember and the pose process). On the 4 Pro (ember-001, 90 s each, idle) the scheduler
+    kept the mic callback on the A55s 88% of the time and the pose process 75%: unpinned,
+    Ember's process took 78% of a core (the mic thread alone 38%) and pose 79%; pinned,
+    30% (mic thread 14%) and 60%, with pose back at its 10 fps. on pins on any ARM
+    big.LITTLE board; off never pins."""
     mode = os.getenv("BAYMAX_CPU_PINNING", "auto").strip().lower()
     if mode in ("off", "0", "false", "no"):
         return None
-    if mode not in ("on", "1", "true", "yes") and not is_rk3588():
-        return None  # auto: the RK3588 only
+    if mode not in ("on", "1", "true", "yes") and not (is_rk3588() or is_a733()):
+        return None  # auto: the measured boards only
     cpus = performance_cpus()
     if not cpus:
         return None

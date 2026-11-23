@@ -1,5 +1,12 @@
 # MVP (unreleased)
 
+- Orange Pi 4 Pro: Ember now stays on the two fast cores by default (`BAYMAX_CPU_PINNING=auto`
+  covers the A733; `off` reverts), with the 1 ms GIL switch and 512-frame speaker stream that
+  come with it. Unpinned, the scheduler ran the mic callback on the A55s 88% of the time and
+  the pose process 75%. Measured on ember-001 over 90 s idle: Ember's process 78% → 30% of a
+  core (mic thread 38% → 14%), pose 79% → 60% and back at 10 fps.
+- The mic callback's level meters and fan filter do the same math with fewer passes
+  (identical output; 1.45 → 1.23 ms a block on an A76, 4.5 → 3.7 ms on an A55).
 - Faster replies: camera frames go to Gemini at low media resolution (~64 instead of ~258
   tokens per 320x240 frame; `BAYMAX_VIDEO_RESOLUTION=default` reverts), so a session's context
   grows about 3x slower. remember_voice called again while already listening answers at once:

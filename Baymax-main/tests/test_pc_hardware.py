@@ -268,11 +268,12 @@ class BigLittleCpuTests(unittest.TestCase):
             self.assertIsNone(pc_hardware.use_performance_cpus())
         setter.assert_not_called()
 
-    def test_auto_pins_only_on_the_rk3588(self):
-        # Measured on the Orange Pi 5 Max only; the Orange Pi 4 Pro's A733 (2 fast cores
-        # for Ember and both vision processes) stays unpinned unless =on.
+    def test_auto_pins_only_on_the_measured_boards(self):
+        # The RK3588 (Orange Pi 5 Max) and the A733 (Orange Pi 4 Pro); another big.LITTLE
+        # board stays unpinned unless =on.
         setter = Mock()
         with patch.object(pc_hardware, "is_rk3588", return_value=False), \
+             patch.object(pc_hardware, "is_a733", return_value=False), \
              patch.object(pc_hardware, "performance_cpus", return_value={6, 7}), \
              patch.object(pc_hardware, "thread_ids", return_value=[100]), \
              patch.object(pc_hardware.os, "sched_setaffinity", setter, create=True), \
@@ -282,7 +283,7 @@ class BigLittleCpuTests(unittest.TestCase):
                 self.assertIsNone(pc_hardware.use_performance_cpus())
             setter.assert_not_called()
             printed.assert_not_called()
-            self.assertFalse(set(FAST_CORE_ENV) & set(os.environ))     # the 4 Pro by default: as before
+            self.assertFalse(set(FAST_CORE_ENV) & set(os.environ))     # an unmeasured board: as before
             self.switch.assert_not_called()
             with patch.dict(os.environ, {"BAYMAX_CPU_PINNING": "on"}):
                 self.assertEqual(pc_hardware.use_performance_cpus(), {6, 7})
@@ -290,6 +291,26 @@ class BigLittleCpuTests(unittest.TestCase):
                 self.assertEqual((os.environ[FAST], os.environ[SLOW]), ("6,7", "0,1,2,3,4,5"))
             self.assertEqual([c.args for c in setter.call_args_list], [(0, {6, 7}), (100, {6, 7})])
             self.assertIn("[CPU] Running on the fast cores 6,7", printed.call_args.args[0])
+
+    def test_the_orange_pi_4_pro_is_pinned_by_default(self):
+        """ember-001, unpinned: the mic callback ran on the A55s 88% of the time (38% of a
+        core, 14% once pinned) and the pose process 75% (about half its 10 fps)."""
+        self.assertTrue(pc_hardware.is_a733(["xunlong,orangepi-4-pro", "arm,sun60iw2p1"]))
+        self.assertFalse(pc_hardware.is_a733(["rockchip,rk3588"]))
+        setter = Mock()
+        with patch.object(pc_hardware, "is_rk3588", return_value=False), \
+             patch.object(pc_hardware, "is_a733", return_value=True), \
+             patch.object(pc_hardware, "performance_cpus", return_value={6, 7}), \
+             patch.object(pc_hardware, "thread_ids", return_value=[100]), \
+             patch.object(pc_hardware.os, "sched_setaffinity", setter, create=True), \
+             patch.object(pc_hardware.os, "sched_getaffinity", Mock(return_value=set(range(8))), create=True), \
+             patch("builtins.print"):
+            with patch.dict(os.environ, {"BAYMAX_CPU_PINNING": "off"}):
+                self.assertIsNone(pc_hardware.use_performance_cpus())
+            setter.assert_not_called()
+            with patch.dict(os.environ, {"BAYMAX_CPU_PINNING": "auto"}):
+                self.assertEqual(pc_hardware.use_performance_cpus(), {6, 7})
+                self.assertEqual((os.environ[FAST], os.environ[SLOW]), ("6,7", "0,1,2,3,4,5"))
 
     @patch.object(pc_hardware, "is_rk3588", Mock(return_value=True))
     def test_a_refused_pin_leaves_ember_on_all_cores(self):
