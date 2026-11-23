@@ -82,16 +82,24 @@ class EngageTests(unittest.TestCase):
         self.assertEqual(self.told, [engage.ENGAGED_NOTE])
 
     def test_transcript_variants_and_non_matches(self):
-        for text in ("Ember disengage", "amber, dis-engage", "OK EMBER... DISENGAGE please", "ember disengaged"):
+        for text in ("Ember disengage", "amber, dis-engage", "OK EMBER... DISENGAGE please", "ember disengaged",
+                     # Hindi conversations: Gemini may write either word in Devanagari.
+                     "एम्बर, डिसएंगेज।", "Ember डिसएंगेज", "अंबर, डिस-एंगेज", "एंबर डिसेंगेज", "एम्बर disengage",
+                     # Or the name in Urdu script (the word itself has not been seen in it yet).
+                     "ایمبر، disengage", "ایمبر डिसएंगेज", "امبر disengage."):
             ember = Engagement(listener_factory=FakeListener, audio_ready=lambda: True)
             ember.observe("user", {"id": 1, "text": text})
             self.assertTrue(ember.disengaged, text)
-        for text in ("disengage", "Ember, engage", "remember to disengage the brake", "Ember, how are you?"):
+        for text in ("disengage", "Ember, engage", "remember to disengage the brake", "Ember, how are you?",
+                     "डिसएंगेज", "एम्बर, कैसी हो?", "अंबरीश डिसएंगेज", "एम्बर एंगेज",
+                     "ایمبر میں رسوائی میں چائے بنا رہی ہوں۔", "امبرین disengage", "ایمبر engage"):
             ember = Engagement(listener_factory=FakeListener, audio_ready=lambda: True)
             ember.observe("user", {"id": 1, "text": text})
             self.assertFalse(ember.disengaged, text)
         self.say("Okay, I'll be quiet. Ember disengage.", speaker="ember")  # Ember's own words never count.
         self.assertFalse(self.ember.disengaged)
+        self.say("मैं बगीचे की बात कर रही थी। " * 200 + "एम्बर, डिसएंगेज")  # Said at the end of a long message.
+        self.assertTrue(self.ember.disengaged)
 
     def test_later_fragments_of_the_same_utterance_do_not_disengage_again(self):
         self.say("Ember disengage")
@@ -189,10 +197,19 @@ class EngageTests(unittest.TestCase):
         engage.register(gates=gates, listeners=[], tasks=[])
         self.assertEqual(gates, [engage.engagement.gate, book_gate])  # First, once.
         with patch.object(processing, "input_gates", [self.ember.gate]), \
-                patch.dict("os.environ", {"BAYMAX_MUTE_MIC_DURING_REPLY": "1"}):
+                patch.dict("os.environ", {"BAYMAX_MUTE_MIC_DURING_REPLY": "1", "BAYMAX_COMFORT_NOISE": "0"}):
             enhancer = InputEnhancer(processor=FakeDSP())
             self.assertFalse(np.any(enhancer.process(MIC)))  # Gemini gets silence.
             self.assertTrue(np.any(self.listeners[0].fed[-1]))
+        # MVP: generated room-level noise instead, never the mic; the wake listener still hears it.
+        with patch.object(processing, "input_gates", [self.ember.gate]):
+            enhancer = InputEnhancer(processor=FakeDSP(), comfort=processing.ComfortNoise(seed=0))
+            sent = enhancer.process(MIC)
+            self.assertTrue(np.any(sent))
+            self.assertFalse(np.array_equal(sent, MIC))
+            # About -70 dBFS (the start level: nothing is learned while disengaged); MIC is 1000.
+            self.assertLess(np.sqrt(np.mean(sent.astype(float) ** 2)), 100)
+            np.testing.assert_array_equal(self.listeners[0].fed[-1], MIC)
 
     def test_registered_on_mic_transcripts_and_sessions(self):
         from features.toolkits.fall_detection import session_tasks

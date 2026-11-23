@@ -49,13 +49,23 @@ python tests/run.py
 - Application tests retain `Baymax-main/check_release.py` as the robot/CI gate.
   That gate also discovers root overall checks, so source parsing, test ownership
   and the chat UI check participate in existing CI without a workflow change.
-- Existing CI filters miss root-only tests/docs/devops changes. Enable the full
-  workflow described in `tests/README.md`; until then run the root gate manually
-  and include its report. Do not claim automatic coverage that is not enabled.
+  Ownership and suite-selection checks (`tests/overall/test_validation.py`) run
+  only in CI (`GITHUB_ACTIONS=true`) and `tests/run.py`, not on a robot: robots
+  roll back a release whose gate fails.
+- Existing CI runs `check_release.py` for application, root test, chat UI and
+  `devops/` changes (the sampler, the robot updater and launchers, the SD-card
+  and Graphify tools), but not the SD-card or Graphify suites, and not for changes
+  only to root documentation. Enable the full workflow described in
+  `tests/README.md`; until then run the root gate manually and include its
+  report. Do not claim automatic coverage that is not enabled.
 - Node is needed for the chat UI check. Local machines without it record a skip;
   CI must have it. Explain every skip, failure or unavailable platform.
 - Every new `Baymax-main/tests/test_*.py` file must belong to exactly one suite.
   Update the matching `tests/**/suite.json`; the overall gate enforces coverage.
+  When a test exercises another feature's module (also through a
+  `realtime_gemini_10.py` function it runs) or imports another suite's test module,
+  add that file to the suite's `sources` so `--changed` selects the suite when it
+  changes.
 
 Reports/logs go to `.local-review/validation/`. Do not paste private sessions or
 credentials into a PR. A successful import, empty test suite, active service or

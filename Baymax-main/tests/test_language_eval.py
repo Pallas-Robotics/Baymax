@@ -5,6 +5,7 @@ import io
 import json
 from pathlib import Path
 import tempfile
+import os
 import unittest
 from unittest.mock import patch
 import wave
@@ -17,7 +18,8 @@ from test_live_eval import FakeSession, connector, server
 
 class LanguageEvaluationTests(unittest.TestCase):
     def test_real_mvp_session_includes_language_adaptation(self):
-        _, config = live_eval.mvp_session()
+        with patch.dict(os.environ):  # mvp_session() applies run_mvp.py's defaults to the environment
+            _, config = live_eval.mvp_session()
         prompt = config['system_instruction']
         self.assertIn('[LANGUAGE]', prompt)
         self.assertIn('switch with them on your next reply', prompt)

@@ -149,6 +149,23 @@ class MvpTests(unittest.TestCase):
         with patch('run_pc.main', side_effect=runtime):
             self.assertEqual(run_mvp.main([]), 0)
 
+    def test_mvp_sends_room_noise_not_digital_silence_by_default(self):
+        # With interruptions off the mic is muted while Ember speaks; zeros then held up
+        # Gemini's next turn. A value saved in .env still wins.
+        self.save()
+        os.environ.pop('BAYMAX_COMFORT_NOISE', None)
+        seen = []
+        def runtime():
+            seen.append(os.environ.get('BAYMAX_COMFORT_NOISE'))
+            return 0
+        with patch('run_pc.main', side_effect=runtime):
+            self.assertEqual(run_mvp.main([]), 0)
+            with (self.root / ".env").open("a") as config:
+                config.write("BAYMAX_COMFORT_NOISE=0\n")
+            os.environ.pop('BAYMAX_COMFORT_NOISE', None)
+            self.assertEqual(run_mvp.main([]), 0)
+        self.assertEqual(seen, ['1', '0'])
+
     def test_cancelled_setup_never_starts_capture(self):
         with patch.object(run_mvp, "configure_once", return_value=False), patch("run_pc.main") as start:
             self.assertEqual(run_mvp.main([]), 0)

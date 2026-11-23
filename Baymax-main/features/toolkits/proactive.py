@@ -21,6 +21,7 @@ import urllib.request
 
 import runtime_monitor as monitor
 from features.conversational_ability.engage import engagement
+from features.vision_process import Stopped
 
 ROOT = Path(__file__).resolve().parents[2]
 MODEL_URL = "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task"
@@ -140,6 +141,10 @@ def ensure_model(path=MODEL_PATH, fetch=None):
 
 
 class FaceLandmarks:
+    # features/vision_process.py places this child as face landmarks: where Ember runs on the
+    # RK3588's fast cores, on the slow ones at nice 10 (a greeting waits 0.8 s for a look anyway).
+    vision_role = "face"
+
     def __init__(self):
         import mediapipe as mp
         from mediapipe.tasks import python as tasks
@@ -161,8 +166,10 @@ class FaceLandmarks:
 
 
 def remote_face():
-    """FaceLandmarks in its own process, so inference cannot stall the mic or Gemini I/O."""
+    """FaceLandmarks in its own process, so inference cannot stall the mic or Gemini I/O.
+    The model is fetched here first: the child gets a limited time to start (vision_process)."""
     from features.vision_process import Remote
+    ensure_model()
     return Remote(FaceLandmarks)
 
 
@@ -232,6 +239,7 @@ class Proactive:
         self.thread = None
         self.greeted_startup = False
         self.startup_attempts = 0
+        self.video_sent = threading.Event()  # set by the core once Gemini has a camera frame
         self.sleep = asyncio.sleep
         self.last_greeting = None
         self.wanted = False        # New eye contact waiting to be delivered to Gemini.
@@ -267,6 +275,17 @@ class Proactive:
                     self.step(face)
                     # No face in view: check once a second; a look must hold 0.8 s anyway.
                     fps = self.fps if face is not None else min(self.fps, 1.0)
+                except Stopped as error:
+                    # The face process died, or hung and was stopped: every later frame would
+                    # fail the same way, so stop here with one message, not one per frame.
+                    self.state = "Unavailable: stopped"
+                    print(f"[PRESENCE] Eye-contact greetings stopped until Ember restarts ({error}).",
+                          flush=True)
+                    try:
+                        landmarks.close()
+                    except Exception:
+                        pass
+                    return
                 except Exception as error:
                     print(f"[PRESENCE] Frame skipped: {error}", flush=True)
             time.sleep(max(0.0, 1.0 / fps - (self.clock() - started)))
@@ -309,7 +328,12 @@ class Proactive:
             # Once per run. A session that drops right after connecting cancels this
             # task before the hello counts, so the next session tries once more.
             self.startup_attempts += 1
-            await self.sleep(4.0)  # Allow the existing 3 s video sender its first frame.
+            # Greet once Gemini has a picture of the room, or after 4 s without one
+            # (no camera, or the pose process still loading on a cold boot).
+            for _ in range(16):
+                if self.video_sent.is_set():
+                    break
+                await self.sleep(0.25)
             # A stray/ambient transcript during boot must not permanently suppress
             # the requested startup statement.
             sent = await self._say(session, startup_note(self.wall()))

@@ -3,9 +3,10 @@
 Ember is a voice companion with Gemini conversation, optional eyes and camera,
 CPU/NPU pose processing, memories and callable information/support tools.
 
-**OPi4 V1 is under review.** Offline checks do not establish perfect operation on
-every Orange Pi. See the [feature log](docs/features/FEATURE_LOG.md) for implemented
-features, source locations, tests and hardware checks still pending.
+**OPi4 V1 is merged; its combined live checks are pending.** Offline checks do not
+establish perfect operation on every Orange Pi. See the
+[feature log](docs/features/FEATURE_LOG.md) for implemented features, source
+locations, tests and hardware checks still pending.
 
 ## Board comparison
 
@@ -14,6 +15,27 @@ features, source locations, tests and hardware checks still pending.
 | Orange Pi 4 Pro (A733) | DietPi SD image or documented Debian setup | MediaPipe CPU, isolated child process | ARM64/offline checks passed; combined V1 live/fresh-card checks pending |
 | Orange Pi 5 Max (RK3588) | Board-specific Armbian/clickables setup | CPU fallback; optional NPU after conversion/checks | Combined V1 hardware checks remain necessary |
 | Other boards | Not established by this PR | Board-specific | No blanket support claim |
+
+One codebase and one dependency file serve both boards; what differs is decided
+on the board at runtime (the NPU, fast-core pinning) or by how it is set up:
+
+| | Orange Pi 4 Pro | Orange Pi 5 Max |
+|---|---|---|
+| OS | DietPi (Debian 13) SD image from [OPI4-Flash](devops/opi4-flash/README.md), or Debian 13 | Armbian Debian 13 with the vendor 6.1 kernel (needed only for the NPU) |
+| Fast-core pinning (`BAYMAX_CPU_PINNING=auto`, the default) | on: Ember and its pose process share the A733's two Cortex-A76 cores, cpu6-7 (measured on ember-001: Ember's process 78% → 30% of a core, pose 79% → 60% and back at 10 fps) | on: Ember stays on the RK3588's four Cortex-A76 cores, cpu4-7 (measured); where its pose and face processes run: [ORANGE_PI_SETUP.md, Fast cores](Baymax-main/ORANGE_PI_SETUP.md#fast-cores) |
+| Face recognition (`BAYMAX_PEOPLE_RECOGNITION`, on in `run_mvp.py`) | SFace on the CPU (YuNet + SFace download at first start into the shared `.models`) | SFace + AuraFace on the NPU once `convert_face_rknn.py` has passed; SFace alone until then |
+| Face and voice recognition processes | the A55s (cpu0-5) at nice 10 (measured) | the A55s (cpu0-3) at nice 10 (measured) |
+| Voice recognition | needs `.models/voice/` (ECAPA + Silero ONNX, made by `convert_voice_model.py` on a PC) copied to `~/ember-deployment/shared/.models/voice/`; off until then | the same, copied into the checkout |
+| Updates | the image's `ember-update`, following a branch (default `release`) | opt-in: `devops/mvp/update.py` before each start of the autostart service (needs the git checkout, `install_autostart.py` and `BAYMAX_AUTO_UPDATE=1`; `BAYMAX_UPDATE_BRANCH`, default `release`); otherwise `git pull` by hand |
+
+Where this came from: JoeKojima/Baymax PR #29 (`opi4-demo`, the Orange Pi 4 Pro
+demo), PR #22 (`codex/opi4-flash`, the SD-image builder), the Orange Pi 5 Max
+branches `orangepi5-npu` and `memory-incremental-saves`, `orangepi-features`
+(opi4-demo with Svanik's PRs #23-#28 and #30 and the voice volume control) and the
+reconnect fix from `reconnect-any-disconnect`, merged in November 2026. This
+repository deliberately diverges from Baymax's `startup-greeting` (LattePanda)
+branch: shared fixes are ported by hand. The x86/LattePanda, macOS, Windows and
+Docker code is still in the tree but is not what this repository targets.
 
 Start with the [board installation guide](Baymax-main/ORANGE_PI_SETUP.md) and
 [device comparison](docs/DEMO_DEVICES.md). Use a suitable power supply, USB
@@ -27,8 +49,9 @@ git clone https://github.com/Pallas-Robotics/Baymax.git
 cd Baymax
 ```
 
-For development, use `main` and a feature branch. Before V1 is merged, its review
-branch is `opi4-chat-timing`. The normal on-board update channel is `release`.
+For development, use `main` and a feature branch. V1, reviewed on
+`opi4-chat-timing`, is merged into `main`. The normal on-board update channel is
+`release`.
 Complete the board guide's system packages, Python environment, device selection
 and Gemini-key setup first. Both boards use
 `Baymax-main/requirements-orange-pi.txt`.
@@ -83,8 +106,8 @@ The reusable builder is in [devops/opi4-flash](devops/opi4-flash/README.md).
 It builds a private, per-card image on a Linux host/VM. Select the runtime branch,
 Wi-Fi, Gemini key and time zone; retain the private access file. It does not write
 a physical card. Use an image writer's verification step when flashing.
-The separate **SD CARD Flash** PR adds the public walkthrough and read-only image
-verifier. The 4 Pro image is not a 5 Max image. Fresh-card hardware validation is
+For the build, verification and card-writing walkthrough with the read-only image
+verifier, see [SD CARD Flash](docs/SD_CARD_FLASH.md). The 4 Pro image is not a 5 Max image. Fresh-card hardware validation is
 separate from checksum and unit tests.
 
 ## Tests and future edits
@@ -102,9 +125,11 @@ python tests/run.py --changed origin/main
 Feature commands include overall checks. Shared/unknown changes select all
 suites. [tests/README.md](tests/README.md) explains ownership, reports and how to
 add tests. Existing CI also runs `Baymax-main/check_release.py`; it preserves
-separate core/toolkit results and includes root overall checks. Explain skips and
-platform failures. Passing offline tests is not permission to merge/deploy or
-proof of live hardware behavior; use [the live checklist](Baymax-main/TESTING_PROTOCOL.md).
+separate core/toolkit results and includes root overall checks (the
+suite-ownership checks run only in CI and `tests/run.py`, not in a robot's update
+gate). Explain skips and platform failures. Passing offline tests is not
+permission to merge/deploy or proof of live hardware behavior; use [the live
+checklist](Baymax-main/TESTING_PROTOCOL.md).
 Full root/deployment CI is provided as a workflow template awaiting a maintainer
 with workflow-write access; see the tests guide's CI activation section.
 

@@ -1,0 +1,728 @@
+"""Face and voice recognition in the live runtime (features/person_recognition): child
+processes, the mic feed, tools, spoken prompts and registration. No camera, mic, models
+or Gemini: children run fake models; sessions are fakes."""
+import asyncio
+import functools
+import os
+from pathlib import Path
+import sys
+import tempfile
+import textwrap
+import threading
+import time
+import unittest
+from unittest.mock import patch
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from features.person_recognition import face_process, people as people_module, voice_process  # noqa: E402
+from features.person_recognition.people import People, arrival_prompt, describe_away, identity_answer  # noqa: E402
+from features.vision_process import Remote, Stopped  # noqa: E402
+
+ROOT = Path(__file__).resolve().parents[1]
+
+FAKE = textwrap.dedent('''
+    class Echo:
+        """A model that replies with its own result (raw_results), placed as voice."""
+        vision_role = "voice"
+        raw_results = True
+        device = "CPU"
+
+        def detect(self, item):
+            return {"echo": item, "pid": __import__("os").getpid()}
+''')
+
+
+class Clock:
+    def __init__(self, now=1000.0):
+        self.now = now
+
+    def __call__(self):
+        return self.now
+
+
+class RawResultsChildTests(unittest.TestCase):
+    """vision_process: a raw_results model's replies come back as they are (dicts, not Points)."""
+
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        Path(directory.name, "fake_people_model.py").write_text(FAKE)
+        old = os.environ.get("PYTHONPATH")
+        os.environ["PYTHONPATH"] = directory.name + (os.pathsep + old if old else "")
+        self.addCleanup(lambda: os.environ.__setitem__("PYTHONPATH", old) if old else os.environ.pop("PYTHONPATH"))
+        sys.path.insert(0, directory.name)
+        self.addCleanup(sys.path.remove, directory.name)
+
+    def test_raw_results_and_own_process(self):
+        import fake_people_model
+        with Remote(fake_people_model.Echo) as remote:
+            reply = remote.call(("audio", [b"\x00\x01", 1.5]))
+            self.assertEqual(reply["echo"], ("audio", [b"\x00\x01", 1.5]))
+            self.assertNotEqual(reply["pid"], os.getpid())
+            self.assertEqual(remote.device, "CPU")
+
+    def test_voice_and_face_children_go_to_the_slow_cores(self):
+        import pc_hardware
+        self.assertEqual(pc_hardware.VISION_PLACES["voice"], ("slow", 10))
+        self.assertEqual(pc_hardware.VISION_PLACES["face"], ("slow", 10))
+        self.assertEqual(face_process.FaceChild.vision_role, "face")
+        self.assertEqual(voice_process.VoiceChild.vision_role, "voice")
+        self.assertTrue(face_process.FaceChild.raw_results and voice_process.VoiceChild.raw_results)
+
+
+class FakeRemote:
+    def __init__(self, replies=None):
+        self.calls = []
+        self.replies = replies or {}
+        self.closed = False
+        self.fail = False
+
+    def call(self, item, timeout=None):
+        self.calls.append(item)
+        if self.fail:
+            raise Stopped("vision process stopped (exited)")
+        handler = self.replies.get(item[0])
+        return handler(item) if callable(handler) else handler
+
+    def close(self):
+        self.closed = True
+
+
+class RemoteFaceModelsTests(unittest.TestCase):
+    def test_the_frame_crosses_once_per_cycle(self):
+        remote = FakeRemote({"detect": ["det"], "refine": "refined", "fingerprint": "look", "embed": "emb"})
+        models = face_process.RemoteFaceModels(paths=None, remote=remote)
+        frame = object()
+        self.assertEqual(models.detect(frame, 0.5), ["det"])
+        self.assertEqual(models.fingerprint(frame, "det"), "look")
+        self.assertEqual(models.refine(frame, "det"), "refined")
+        self.assertEqual(models.embed(frame, "refined"), "emb")
+        self.assertEqual(remote.calls, [("detect", frame, 0.5), ("fingerprint", "det"), ("refine", "det"),
+                                        ("embed", "refined")])
+        models.close()
+        self.assertTrue(remote.closed)
+
+    def test_child_keeps_the_frame_for_follow_up_calls(self):
+        class Models:
+            def detect(self, frame, scale):
+                return [("found in", frame, scale)]
+
+            def embed(self, frame, det):
+                return ("embedded", frame, det)
+        child = face_process.FaceChild.__new__(face_process.FaceChild)
+        child.models, child.frame = Models(), None
+        self.assertIsNone(child.detect(("embed", "det")))       # nothing to work on yet
+        self.assertEqual(child.detect(("detect", "F", 0.5)), [("found in", "F", 0.5)])
+        self.assertEqual(child.detect(("embed", "det")), ("embedded", "F", "det"))
+        with self.assertRaises(ValueError):
+            child.detect(("nonsense", None))
+
+
+def reply(results=(), learned=(), in_speech=False):
+    return {"results": list(results), "learned": list(learned), "in_speech": in_speech, "learning": False}
+
+
+class VoiceFeedTests(unittest.TestCase):
+    def setUp(self):
+        self.clock = Clock()
+        self.remote = FakeRemote({"audio": reply(), "learn": reply()})
+        self.seen, self.learned = [], []
+        self.feed = voice_process.VoiceFeed(lambda: self.remote, on_result=self.seen.append,
+                                            on_learned=self.learned.append, clock=self.clock)
+        self.feed.remote = self.remote
+
+    def test_feed_is_an_append_and_drops_the_oldest_when_full(self):
+        for i in range(voice_process.MAX_QUEUED + 5):
+            self.feed.feed(bytes([i % 256]), ember_speaking=i % 2)
+        self.assertEqual(len(self.feed.queue), voice_process.MAX_QUEUED)
+        self.assertEqual(self.feed.dropped, 5)
+        self.assertEqual(self.feed.queue[0][0], bytes([5]))
+        self.assertIs(self.feed.queue[1][1], False)
+
+    def test_batches_go_to_the_child_and_results_come_back(self):
+        result = {"level": "sure", "person_id": "p_1", "name": "Stella", "score": 0.7, "seconds": 2.1,
+                  "ms": 90, "stage": "early"}
+        self.remote.replies["audio"] = reply([result], in_speech=True)
+        self.feed.feed(b"a", False)
+        self.feed.feed(b"b", True)
+        self.feed._step()
+        (command, batch), = self.remote.calls
+        self.assertEqual(command, "audio")
+        self.assertEqual([(c, s) for c, s, _ in batch], [(b"a", False), (b"b", True)])
+        self.assertEqual(self.seen, [result])
+        self.assertTrue(self.feed.in_speech)
+        self.assertEqual(self.feed.latest[0], result)
+        self.feed._step()                       # nothing queued: no call
+        self.assertEqual(len(self.remote.calls), 1)
+
+    def test_learning_command_and_its_result(self):
+        self.remote.replies["learn"] = reply(learned=[{"status": "saved", "name": "Stella"}])
+        self.feed.learn("Stella")
+        self.feed._step()
+        self.assertEqual(self.remote.calls, [("learn", "Stella", False)])
+        self.assertEqual(self.learned, [{"status": "saved", "name": "Stella"}])
+
+    def test_speaker_waits_for_an_utterance_in_progress_and_ignores_old_results(self):
+        self.assertIsNone(self.feed.speaker(wait=0))
+        result = {"level": "maybe", "person_id": "p_1", "name": "Stella"}
+        self.feed.in_speech = True
+
+        def finish():
+            time.sleep(0.05)
+            with self.feed.changed:
+                self.feed.latest, self.feed.results, self.feed.in_speech = (result, self.clock()), 1, False
+                self.feed.changed.notify_all()
+        threading.Thread(target=finish).start()
+        self.assertEqual(self.feed.speaker(wait=2), result)
+        self.clock.now += 60
+        self.assertIsNone(self.feed.speaker(wait=0))
+
+    def test_a_stopped_child_is_restarted_later_not_at_once(self):
+        self.remote.fail = True
+        self.feed.feed(b"a", False)
+        stop = self.feed.stop
+        calls = iter([False, True])
+        with patch.object(stop, "wait", side_effect=lambda timeout: next(calls)), \
+                patch("builtins.print"):
+            self.feed._run()
+        self.assertIsNone(self.feed.remote)
+        self.assertTrue(self.remote.closed)
+        self.assertEqual(self.feed.failed_at, self.clock.now)
+
+
+
+class VoiceLearningFromConversationTests(unittest.TestCase):
+    """A known face alone in view + a voice Ember doesn't know yet = that person talking."""
+
+    def child(self, has_voice=False):
+        import numpy as np
+        from features.person_recognition import voices
+        child = voice_process.VoiceChild.__new__(voice_process.VoiceChild)
+        added = []
+        thresholds = self.thresholds = []
+
+        class Identifier:
+            def has_voice(self, person_id):
+                return has_voice
+
+            def add_samples(self, person_id, embeddings, check_consistency=True, threshold=None):
+                added.append((person_id, len(embeddings), check_consistency))
+                thresholds.append(threshold)
+                return len(embeddings)
+        child.identifier, child.results, child.learned, child.adopted = Identifier(), [], [], []
+        child.recent, child.pending, child.next_id = __import__("collections").OrderedDict(), {}, 0
+        rng = np.random.default_rng(0)
+        base = voices._normalize(rng.normal(size=192))
+        voice = lambda: voices._normalize(base + 0.3 * voices._normalize(rng.normal(size=192)))
+        return child, added, voice
+
+    def test_a_first_voice_needs_three_clips_that_sound_alike(self):
+        from features.person_recognition import voices
+        child, added, voice = self.child()
+        for i in range(3):
+            child._result(voices.VoiceMatch("unknown", embedding=voice(), seconds=2.5), "final")
+            child._adopt("p_1", child.next_id)
+        self.assertEqual(added, [("p_1", 3, False)])
+        self.assertEqual([a.get("collected") for a in child.adopted], [1, 2, None])
+
+    def test_strangers_clips_are_not_saved_as_a_first_voice(self):
+        import numpy as np
+        from features.person_recognition import voices
+        child, added, voice = self.child()
+        rng = np.random.default_rng(1)
+        for embedding in (voice(), voices._normalize(rng.normal(size=192)), voices._normalize(rng.normal(size=192))):
+            child._result(voices.VoiceMatch("unknown", embedding=embedding, seconds=2.5), "final")
+            child._adopt("p_1", child.next_id)
+        self.assertEqual(added, [])
+        self.assertIn("don't sound like one person", child.adopted[-1]["note"])
+
+    def test_later_clips_go_through_the_stricter_voice_check(self):
+        from features.person_recognition import voices
+        child, added, voice = self.child(has_voice=True)
+        child._result(voices.VoiceMatch("maybe", embedding=voice(), seconds=2.5), "final")
+        child._adopt("p_1", child.next_id)
+        child._adopt("p_1", 999)                          # unknown id: nothing
+        self.assertEqual(added, [("p_1", 1, True)])
+        self.assertEqual(self.thresholds, [voices.ADOPT_MATCH])
+
+    def test_a_first_voice_is_found_among_other_peoples_clips(self):
+        """A group conversation: the person in view and two others off camera take turns.
+        Only the clips of the one speaker heard most are saved."""
+        import numpy as np
+        from features.person_recognition import voices
+        child, added, voice = self.child()
+        rng = np.random.default_rng(2)
+        stranger = lambda: voices._normalize(rng.normal(size=192))
+        saved = []
+        child.identifier.add_samples = lambda pid, embeddings, check_consistency=True, threshold=None: (
+            saved.extend(embeddings) or len(embeddings))
+        for embedding in (voice(), stranger(), voice(), stranger(), voice()):
+            child._result(voices.VoiceMatch("unknown", embedding=embedding, seconds=2.5), "final")
+            child._adopt("p_1", child.next_id)
+        self.assertEqual(len(saved), 3)
+        self.assertTrue(all(float(e @ saved[0]) > 0.8 for e in saved))
+
+    def test_only_final_results_are_kept_for_learning(self):
+        from features.person_recognition import voices
+        child, added, voice = self.child()
+        child._result(voices.VoiceMatch("unknown", embedding=voice(), seconds=2.1), "early")
+        self.assertEqual(list(child.recent), [])
+
+    def test_ember_adopts_only_with_one_known_face_in_view(self):
+        from types import SimpleNamespace
+        people = People(clock=Clock())
+        people.identifier = FakeIdentifier()
+        people.voice = SimpleNamespace(adopt=lambda pid, rid: adopted.append((pid, rid)))
+        adopted = []
+        result = {"level": "unknown", "person_id": None, "name": None, "score": 0.1, "stage": "final",
+                  "seconds": 3.0, "ms": 800, "id": 7}
+        cases = [([SimpleNamespace(person_id="p_1")], result, [("p_1", 7)]),
+                 ([SimpleNamespace(person_id="p_1"), SimpleNamespace(person_id=None)], result, []),   # two faces
+                 ([SimpleNamespace(person_id=None)], result, []),                                    # a stranger
+                 ([SimpleNamespace(person_id="p_1")], {**result, "seconds": 1.2}, []),               # too short
+                 ([SimpleNamespace(person_id="p_1")], {**result, "stage": "early"}, []),
+                 ([SimpleNamespace(person_id="p_1")], {**result, "level": "maybe", "person_id": "p_2"}, [])]
+        for tracks, case, expected in cases:
+            with self.subTest(tracks=len(tracks), case=case), patch("builtins.print"):
+                adopted.clear()
+                people.identifier.tracks = tracks
+                people._voice_result(case)
+                self.assertEqual(adopted, expected)
+        sure = {**result, "level": "sure", "person_id": "p_1", "name": "Joe", "score": 0.5}
+        with patch("builtins.print"):
+            adopted.clear()
+            people.identifier.tracks = [SimpleNamespace(person_id="p_1")]
+            people.clock.now += 61                         # the cases above offered a clip just now
+            people._voice_result({**sure, "id": 8})
+            people.clock.now += 30
+            people._voice_result({**sure, "id": 9})       # sampled at most once a minute
+            people.clock.now += 31
+            people._voice_result({**sure, "id": 10})
+            self.assertEqual(adopted, [("p_1", 8), ("p_1", 10)])
+        # A sure voice offers its person to a "maybe" face (faces.confirm_by_voice); unsure
+        # and early results never do.
+        self.assertEqual(people.identifier.voice_confirmed, ["p_1", "p_1", "p_1"])
+        with patch("builtins.print"):
+            people._voice_result({**sure, "stage": "early", "id": 11})
+            people._voice_result({**sure, "level": "maybe", "id": 12})
+        self.assertEqual(people.identifier.voice_confirmed, ["p_1", "p_1", "p_1"])
+        with patch.dict(os.environ, {"BAYMAX_VOICE_LEARNING": "0"}), patch("builtins.print"):
+            adopted.clear()
+            people.identifier.tracks = [SimpleNamespace(person_id="p_1")]
+            people._voice_result(result)
+            self.assertEqual(adopted, [])
+
+class FakeIdentifier:
+    def __init__(self, known=None, in_view=()):
+        self.known = known or {}
+        self.names_in_view = list(in_view)
+        self.tool_calls = []
+        self.tracks = []
+        self.store = FakeStore(self.known)
+        self.arrivals = []
+        self.introductions = []
+        self.voice_confirmed = []
+
+    def confirm_by_voice(self, person_id):
+        self.voice_confirmed.append(person_id)
+        return False
+
+    def describe_in_view(self):
+        return "Stella is in front of you." if self.names_in_view else "Nobody is in front of your camera right now."
+
+    def describe_visits(self):
+        return None
+
+    def present_names(self):
+        return list(self.names_in_view)
+
+    def find_person(self, name):
+        return self.known.get(name)
+
+    def in_view(self):
+        return [track for track in self.tracks]
+
+    def handle_tool_call(self, name, args):
+        self.tool_calls.append((name, args))
+        return {"status": "remembered", "name": args.get("name")}
+
+    def pending_arrival(self):
+        return self.arrivals.pop(0) if self.arrivals else None
+
+    def pending_introduction(self):
+        return self.introductions.pop(0) if self.introductions else None
+
+
+class FakeStore:
+    def __init__(self, known):
+        self.known = known
+
+    def get(self, person_id):
+        return next((p for p in self.known.values() if p.get("id") == person_id), None)
+
+    def _update(self, change):
+        data = {"people": list(self.known.values())}
+        result = change(data)
+        self.known.clear()
+        self.known.update({p["name"]: p for p in data["people"]})
+        return result
+
+
+class FakeVoice:
+    def __init__(self, result=None):
+        self.result = result
+        self.learning = []
+
+    def speaker(self, wait=1.5):
+        self.waits = getattr(self, "waits", []) + [wait]
+        return self.result
+
+    def learn(self, name, allow_new=False):
+        self.learning.append(name)
+
+
+class ToolTests(unittest.TestCase):
+    def setUp(self):
+        self.people = People(clock=Clock())
+
+    def test_not_ready_yet(self):
+        self.assertIn("error", self.people.execute("who_is_here", {}))
+
+    def test_who_is_here_answers_from_latest_results(self):
+        self.people.identifier = FakeIdentifier(in_view=["Stella"])
+        self.people.voice = FakeVoice({"level": "sure", "name": "Stella"})
+        answer = self.people.execute("who_is_here", {})
+        self.assertEqual(answer["in_front_of_you"], "Stella is in front of you.")
+        self.assertEqual(answer["talking"], {"speaker": "Stella", "confidence": "sure", "by": "voice"})
+
+    def test_identify_speaker(self):
+        self.people.identifier = FakeIdentifier()
+        self.assertIn("note", self.people.execute("identify_speaker", {}))      # voice off, nobody in view
+        self.people.voice = FakeVoice({"level": "maybe", "name": "Stella"})
+        self.assertEqual(self.people.execute("identify_speaker", {})["confidence"], "not sure")
+        self.people.voice = FakeVoice(None)
+        self.assertIsNone(self.people.execute("identify_speaker", {})["speaker"])
+
+    def test_remember_voice_needs_a_known_face_in_view(self):
+        stella = {"id": "p_1", "name": "Stella"}
+        self.people.identifier = FakeIdentifier(known={"Stella": stella})
+        self.people.voice = voice = FakeVoice()
+        self.assertEqual(self.people.execute("remember_voice", {"name": "Bob"})["status"], "not_saved")
+        self.assertEqual(self.people.execute("remember_voice", {"name": "Stella"})["status"], "not_saved")
+        self.people.identifier.names_in_view = ["Stella"]
+        self.assertEqual(self.people.execute("remember_voice", {"name": "Stella"})["status"], "listening")
+        self.assertEqual(voice.learning, ["Stella"])
+        stella["voice_embeddings"] = [[0.1]]            # adding to a known voice: no face needed
+        self.people.identifier.names_in_view = []
+        self.people.listening_for.clear()               # (that first listen has finished)
+        self.assertEqual(self.people.execute("remember_voice", {"name": "Stella"})["status"], "listening")
+
+    def test_remember_voice_again_while_listening_answers_at_once(self):
+        """ember-001: 8 remember_voice calls in a minute, each a round trip; replies took 7-31 s."""
+        stella = {"id": "p_1", "name": "Stella"}
+        self.people.identifier = FakeIdentifier(known={"Stella": stella}, in_view=["Stella"])
+        self.people.voice = voice = FakeVoice()
+        with patch("builtins.print"):
+            self.assertEqual(self.people.execute("remember_voice", {"name": "Stella"})["status"], "listening")
+            self.assertEqual(self.people.execute("remember_voice", {"name": "Stella"})["status"],
+                             "already_listening")
+            self.assertEqual(voice.learning, ["Stella"])           # listening once
+            self.people._voice_learned({"status": "saved", "name": "Stella"})
+            self.assertEqual(self.people.execute("remember_voice", {"name": "Stella"})["status"], "listening")
+            self.people.clock.now += people_module.voices.LEARN_TIMEOUT_S + 1
+            self.assertEqual(self.people.execute("remember_voice", {"name": "Stella"})["status"], "listening")
+        self.assertEqual(voice.learning, ["Stella"] * 3)
+
+    def test_no_saving_under_a_placeholder_name(self):
+        self.people.identifier = identifier = FakeIdentifier(known={"Stella": {"id": "p_1", "name": "Stella"}},
+                                                             in_view=["Stella"])
+        self.people.voice = voice = FakeVoice()
+        for name in ("User", "the user", " someone ", "Unknown.", "", None, "me"):
+            with self.subTest(name=name):
+                self.assertEqual(self.people.execute("remember_person", {"name": name})["status"], "not_saved")
+                self.assertEqual(self.people.execute("remember_voice", {"name": name})["status"], "not_saved")
+        self.assertEqual(identifier.tool_calls, [])
+        self.assertEqual(voice.learning, [])
+        self.people.execute("remember_person", {"name": "Useria"})       # a real name that starts like one
+        self.assertEqual(identifier.tool_calls, [("remember_person", {"name": "Useria"})])
+
+    def test_a_placeholder_named_face_gets_its_real_name(self):
+        from types import SimpleNamespace
+        self.people.identifier = identifier = FakeIdentifier(known={"User": {"id": "p_9", "name": "User"}})
+        identifier.tracks = [SimpleNamespace(person_id="p_9")]
+        with patch("builtins.print"):
+            result = self.people.execute("remember_person", {"name": "Joe"})
+        self.assertEqual(result["status"], "remembered")
+        self.assertEqual(identifier.store.get("p_9")["name"], "Joe")
+        self.assertEqual(identifier.tool_calls, [])       # renamed, not saved a second time
+
+    def test_a_known_voice_after_a_while_is_an_arrival_once(self):
+        clock = Clock()
+        people = People(clock=clock)
+        people.identifier = FakeIdentifier()
+        sure = {"level": "sure", "person_id": "p_1", "name": "Stella", "score": 0.6, "stage": "final",
+                "seconds": 2.0, "ms": 700}
+        with patch("builtins.print"):
+            people._voice_result(sure)
+            people._voice_result(sure)                    # same visit: still one arrival
+        self.assertEqual([a["by"] for a in people.voice_arrivals], ["voice"])
+        people.voice_arrivals.clear()
+        clock.now += 30
+        with patch("builtins.print"):
+            people._voice_result(sure)                    # heard 30 s ago: not "back"
+            people._voice_result({**sure, "level": "maybe"})
+        self.assertEqual(people.voice_arrivals, [])
+        clock.now += people_module.GREET_AFTER_S + 1
+        with patch("builtins.print"):
+            people._voice_result(sure)
+        self.assertEqual(len(people.voice_arrivals), 1)
+        self.assertTrue(arrival_prompt(people.voice_arrivals[0]).startswith(
+            "[ARRIVED] Stella is here: you recognized their voice."))
+
+    def test_face_tools_go_to_the_identifier(self):
+        self.people.identifier = identifier = FakeIdentifier()
+        self.people.execute("remember_person", {"name": "Stella"})
+        self.assertEqual(identifier.tool_calls, [("remember_person", {"name": "Stella"})])
+
+    def test_voice_results_are_logged_without_words(self):
+        from io import StringIO
+        out = StringIO()
+        with patch("sys.stdout", out):
+            people_module.log_voice_result({"level": "maybe", "name": "Stella", "score": 0.31, "stage": "final",
+                                            "seconds": 3.2, "ms": 950})
+        self.assertEqual(out.getvalue().strip(),
+                         "[VOICE] might be Stella (score 0.31, final, 3.2 s of speech, 950 ms)")
+
+    def test_a_maybe_voice_with_the_same_face_in_view_is_sure(self):
+        maybe = {"level": "maybe", "person_id": "p_1", "name": "Joe", "score": 0.3}
+        joe, ann = {"id": "p_1", "name": "Joe"}, {"id": "p_2", "name": "Ann"}
+        self.assertEqual(identity_answer(maybe)["confidence"], "not sure")
+        self.assertEqual(identity_answer(maybe, [joe]),
+                         {"speaker": "Joe", "confidence": "sure", "by": "voice and face"})
+        self.assertEqual(identity_answer(maybe, [ann])["speaker"], "Ann")     # a clear face beats a maybe voice
+        might_be_joe = {"id": None, "name": None, "maybe": "p_1", "maybe_name": "Joe"}
+        self.assertEqual(identity_answer(maybe, [might_be_joe]),
+                         {"speaker": "Joe", "confidence": "sure", "by": "voice and face"})
+
+    def test_face_or_voice_is_enough_and_neither_confuses_the_other(self):
+        """ember-001: greeted as Joe by face, then "who is this?" got "I haven't heard enough
+        of your voice yet" because only the voice was asked."""
+        joe = {"id": "p_1", "name": "Joe"}
+        unknown_voice = {"level": "unknown", "person_id": None, "name": None}
+        for voice in (None, unknown_voice, {"level": "maybe", "person_id": "p_9", "name": "Bo"}):
+            with self.subTest(voice=voice):
+                answer = identity_answer(voice, [joe])
+                self.assertEqual((answer["speaker"], answer["confidence"], answer["by"]), ("Joe", "sure", "face"))
+                self.assertIn("never say you don't know their voice", answer["note"])
+        sure_joe = {"level": "sure", "person_id": "p_1", "name": "Joe"}
+        self.assertEqual(identity_answer(sure_joe), {"speaker": "Joe", "confidence": "sure", "by": "voice"})
+        self.assertEqual(identity_answer(sure_joe, [joe])["by"], "voice and face")
+        stranger = {"id": None, "name": None}
+        answer = identity_answer(sure_joe, [stranger])             # Joe off camera, a stranger in view
+        self.assertEqual(answer["speaker"], "Joe")
+        ann = {"id": "p_2", "name": "Ann"}
+        answer = identity_answer(sure_joe, [ann])
+        self.assertEqual(answer["speaker"], "Joe")
+        self.assertIn("Ann is in front of you", answer["note"])
+
+    def test_recently_recognized_carries_over_only_with_no_face_in_view(self):
+        recent = ("p_1", "Joe")
+        for voice in (None, {"level": "unknown"}):
+            answer = identity_answer(voice, [], recent)
+            self.assertEqual((answer["speaker"], answer["confidence"]), ("Joe", "probably"))
+        self.assertIsNone(identity_answer(None, [{"id": None, "name": None}], recent)["speaker"])  # a stranger now
+        self.assertIsNone(identity_answer(None, [], None)["speaker"])
+        two = [{"id": "p_1", "name": "Joe"}, {"id": None, "name": None}]
+        answer = identity_answer(None, two, recent)
+        self.assertIsNone(answer["speaker"])
+        self.assertIn("Joe among them", answer["note"])
+
+    def test_identify_speaker_waits_for_the_voice_only_when_nothing_else_answers(self):
+        """ember-001: "who is this?" waited the full 1.5 s for the voice, then said
+        "probably" anyway: a 3.4 s reply."""
+        from types import SimpleNamespace
+        clock = Clock()
+        people = People(clock=clock)
+        people.identifier = identifier = FakeIdentifier(known={"Joe": {"id": "p_1", "name": "Joe"}})
+        people.voice = voice = FakeVoice(None)
+        with patch("builtins.print"):
+            identifier.tracks = [SimpleNamespace(person_id="p_1", maybe_id=None)]
+            people.execute("identify_speaker", {})               # Joe's face in view: no wait
+            identifier.tracks = []
+            identifier._last_present = {"p_1": clock.now}
+            people.execute("identify_speaker", {})               # just recognised: a short wait
+            clock.now += people_module.RECENT_S + 1
+            people.execute("identify_speaker", {})               # nothing else to go on: the full wait
+            people.execute("who_is_here", {})                    # never waits
+        self.assertEqual(voice.waits, [0.0, people_module.RECENT_WAIT_S, 1.5, 0.0])
+
+    def test_tools_combine_faces_voices_and_who_was_just_here(self):
+        from types import SimpleNamespace
+        clock = Clock()
+        people = People(clock=clock)
+        people.identifier = identifier = FakeIdentifier(known={"Joe": {"id": "p_1", "name": "Joe"}})
+        identifier.tracks = [SimpleNamespace(person_id="p_1", maybe_id=None)]
+        people.voice = FakeVoice(None)
+        with patch("builtins.print"):
+            self.assertEqual(people.execute("identify_speaker", {})["speaker"], "Joe")
+            identifier._last_present = {"p_1": clock.now}
+            identifier.tracks = []                       # turned away / out of view a moment
+            clock.now += 30
+            self.assertEqual(people.execute("identify_speaker", {})["confidence"], "probably")
+            clock.now += people_module.RECENT_S
+            self.assertIsNone(people.execute("identify_speaker", {})["speaker"])
+
+    def test_memories_that_say_who_the_user_is_are_left_out(self):
+        lines = ["The user's name is Nadi.", "User's name is Nadi.", "The user is called Joe.",
+                 "The speaker introduced himself as Joe."]
+        kept = ["Joe is preparing a demo for tomorrow.", "The user is tired tonight.",
+                "The user's friend's name is James."]
+        with patch.dict(os.environ, {"BAYMAX_PEOPLE_RECOGNITION": "1"}):
+            self.assertEqual([t for t in lines + kept if not people_module.identity_memory(t)], kept)
+        with patch.dict(os.environ, {"BAYMAX_PEOPLE_RECOGNITION": "0"}):
+            self.assertFalse(any(people_module.identity_memory(t) for t in lines))
+        source = (ROOT / "realtime_gemini_10.py").read_text()
+        self.assertEqual(source.count("person_recognition.identity_memory("), 3)   # prompt, recall, summary
+        self.assertIn("person_recognition.SUMMARY_NOTE", source)
+        self.assertIn("person_recognition.MEMORY_NOTE", source)
+
+    def test_answers_and_prompts(self):
+        self.assertEqual(identity_answer(None)["speaker"], None)
+        self.assertEqual(identity_answer({"level": "unknown"})["speaker"], None)
+        self.assertEqual(describe_away(None), None)
+        self.assertEqual(describe_away(30 * 3600), "yesterday")
+        self.assertEqual(describe_away(5 * 3600), "about 5 hours ago")
+        text = arrival_prompt({"name": "Stella", "label": "Stella (Margaret's daughter)", "away": 7200,
+                               "last_seen": 1.0, "is_primary": False})
+        self.assertTrue(text.startswith("[ARRIVED] Stella (Margaret's daughter) just came into view."))
+        self.assertIn("You last saw Stella about 2 hours ago.", text)
+        self.assertIn("first time", arrival_prompt({"name": "Stella", "away": None, "last_seen": None}))
+
+
+class FakeSession:
+    def __init__(self):
+        self.sent = []
+
+    async def send_client_content(self, turns, turn_complete):
+        self.sent.append((turns["parts"][0]["text"], turn_complete))
+
+
+class SpokenPromptTests(unittest.TestCase):
+    def run_task(self, people, seconds, can_speak):
+        session, stop = FakeSession(), asyncio.Event()
+
+        async def main():
+            task = asyncio.create_task(people.session_task(session, stop))
+            await asyncio.sleep(seconds)
+            stop.set()
+            await task
+        with patch.object(people_module.People, "_can_speak", lambda self: can_speak()), \
+                patch.object(people_module, "monitor"), patch("builtins.print"), \
+                patch.object(people_module.asyncio, "sleep", side_effect=self.fast_sleep):
+            asyncio.run(main())
+        return session.sent
+
+    _real_sleep = asyncio.sleep
+
+    async def fast_sleep(self, seconds):
+        await SpokenPromptTests._real_sleep(0.001)
+
+    def test_arrival_waits_for_a_free_moment_and_is_spoken(self):
+        people = People(clock=Clock())
+        people.identifier = FakeIdentifier()
+        people.identifier.arrivals = [{"person_id": "p_1", "name": "Stella", "label": "Stella", "away": None, "last_seen": None}]
+        allowed = {"now": False}
+        sent = []
+
+        async def main():
+            session, stop = FakeSession(), asyncio.Event()
+            task = asyncio.create_task(people.session_task(session, stop))
+            await asyncio.sleep(0.02)
+            self.assertEqual(session.sent, [])            # busy: held
+            allowed["now"] = True
+            await asyncio.sleep(0.02)
+            stop.set()
+            await task
+            sent.extend(session.sent)
+        with patch.object(people_module.People, "_can_speak", lambda self: allowed["now"]), \
+                patch.object(people_module, "monitor"), patch("builtins.print"), \
+                patch.object(people_module.asyncio, "sleep", side_effect=self.fast_sleep):
+            asyncio.run(main())
+        self.assertEqual(len(sent), 1)
+        self.assertTrue(sent[0][0].startswith("[ARRIVED] Stella just came into view."))
+        self.assertIs(sent[0][1], True)
+
+    def test_an_arrival_too_old_to_greet_is_dropped(self):
+        clock = Clock()
+        people = People(clock=clock)
+        people.identifier = FakeIdentifier()
+        people.identifier.arrivals = [{"person_id": "p_1", "name": "Stella", "label": "Stella", "away": None, "last_seen": None}]
+
+        def can_speak():
+            clock.now += people_module.ARRIVAL_WAIT_S + 1   # time passes while Ember is busy
+            return False
+        self.assertEqual(self.run_task(people, 0.05, can_speak), [])
+
+    def test_introductions_and_learned_voices(self):
+        people = People(clock=Clock())
+        people.identifier = FakeIdentifier()
+        people.identifier.introductions = ["[NEW PERSON] Someone you don't recognize..."]
+        people._voice_learned({"status": "saved", "name": "Stella"})
+        sent = self.run_task(people, 0.05, lambda: True)
+        self.assertEqual(len(sent), 1)                       # one opener per OPENER_GAP_S
+        self.assertTrue(sent[0][0].startswith("[VOICE LEARNED] You've learned Stella's voice."))
+
+    def test_can_speak_respects_the_gap_and_disengagement(self):
+        clock = Clock()
+        people = People(clock=clock)
+        with patch("features.toolkits.everyday.tools.available_to_speak", return_value=True), \
+                patch.dict(os.environ, {"BAYMAX_PEOPLE_GREETINGS": "1"}):
+            self.assertTrue(people._can_speak())
+            people.last_opener = clock.now
+            self.assertFalse(people._can_speak())
+            clock.now += people_module.OPENER_GAP_S
+            self.assertTrue(people._can_speak())
+            with patch.dict(os.environ, {"BAYMAX_PEOPLE_GREETINGS": "0"}):
+                self.assertFalse(people._can_speak())
+
+
+class RegistrationTests(unittest.TestCase):
+    def test_tools_and_instruction_only_when_enabled(self):
+        from features.toolkits import gemini_tools
+        config = {"system_instruction": "base", "tools": []}
+        for flag, expected in (("1", True), ("0", False)):
+            with patch.dict(os.environ, {"BAYMAX_PEOPLE_RECOGNITION": flag}):
+                result = gemini_tools.extend_config(config)
+            names = {d["name"] for tool in result["tools"] for d in tool.get("function_declarations", [])}
+            self.assertEqual(people_module.NAMES <= names, expected)
+            self.assertEqual("[RECOGNIZING PEOPLE]" in result["system_instruction"], expected)
+
+    def test_execute_routes_to_people(self):
+        from features.toolkits import gemini_tools
+        with patch.dict(os.environ, {"BAYMAX_PEOPLE_RECOGNITION": "1"}), \
+                patch.object(people_module.people, "execute", return_value={"ok": 1}) as execute:
+            self.assertEqual(gemini_tools.execute("who_is_here", {}), {"ok": 1})
+        execute.assert_called_once_with("who_is_here", {})
+
+    def test_hooks_are_registered_and_cheap(self):
+        from features.toolkits.fall_detection import frame_observers, session_tasks
+        self.assertIn(people_module.people.observe, frame_observers)
+        self.assertIn(people_module.people.session_task, session_tasks)
+        with patch.dict(os.environ, {"BAYMAX_PEOPLE_RECOGNITION": "0"}):
+            people = People()
+            people.observe("frame")                       # off: no thread, nothing kept
+            self.assertIsNone(people.thread)
+            self.assertIsNone(people.frame)
+        people.feed_audio(b"x", False)                    # no voice yet: nothing happens
+
+    def test_mic_callback_feeds_voice_recognition(self):
+        source = (ROOT / "realtime_gemini_10.py").read_text()
+        start = source.index("def audio_callback(")
+        callback = source[start:source.index("NOISE SUPPRESSION DISABLED", start)]
+        self.assertIn("_people.feed_audio(raw_bytes, _gemini_speaking or bool(_playback_buffer))", callback)
+        self.assertIn('os.environ.setdefault("BAYMAX_PEOPLE_RECOGNITION", "1")', (ROOT / "run_mvp.py").read_text())
+
+
+if __name__ == "__main__":
+    unittest.main()

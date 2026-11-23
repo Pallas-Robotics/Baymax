@@ -120,6 +120,33 @@ class ProactiveTests(unittest.TestCase):
             self.assertFalse(self.greeter.allowed())
         self.assertTrue(self.greeter.allowed())
 
+    def test_startup_greeting_waits_for_video_at_most_4_s(self):
+        session = SimpleNamespace(send_client_content=AsyncMock())
+
+        def run(video):
+            self.greeter.greeted_startup, self.greeter.startup_attempts = False, 0
+            self.greeter.video_sent.clear()
+            waits = []
+
+            async def sleep(seconds):
+                waits.append(seconds)
+                if len(waits) == 3 and video:
+                    self.greeter.video_sent.set()       # the first frame reached Gemini
+                if len(waits) > 30:
+                    shutdown.set()
+            shutdown = asyncio.Event()
+            self.greeter.sleep = sleep
+            with patch.dict("os.environ", {"BAYMAX_STARTUP_GREETING": "1"}):
+                asyncio.run(self.greeter.session_task(session, shutdown))
+            return session.send_client_content.await_args_list[0].kwargs["turns"]["parts"][0]["text"], waits
+        text, waits = run(video=True)
+        self.assertEqual(waits[:4], [0.25] * 3 + [0.2])  # greeted 0.75 s in, as soon as video was sent
+        self.assertIn("[STARTUP]", text)
+        session.send_client_content.reset_mock()
+        _, waits = run(video=False)
+        self.assertEqual(waits[:17], [0.25] * 16 + [0.2])  # no camera: the old 4 s, then hello anyway
+        session.send_client_content.assert_awaited()
+
     def test_session_task_says_hello_once_and_delivers_greetings(self):
         sent = []
         session = SimpleNamespace(send_client_content=AsyncMock(
@@ -226,6 +253,53 @@ class ProactiveTests(unittest.TestCase):
         greeter = Proactive(landmarks_factory=broken)
         greeter._run()
         self.assertTrue(greeter.state.startswith("Unavailable"))
+
+    def test_the_face_model_is_fetched_before_its_process_starts(self):
+        # The vision process stops a child that has not loaded in 60 s; a slow first
+        # download must not count against that.
+        order = []
+        with patch.object(proactive, "ensure_model", side_effect=lambda: order.append("download")), \
+                patch("features.vision_process.Remote", side_effect=lambda factory: order.append("start")):
+            proactive.remote_face()
+        self.assertEqual(order, ["download", "start"])
+
+    def test_a_stopped_face_process_ends_watching_with_one_message(self):
+        # The vision process's watchdog stops a hung face child. Every later frame then
+        # failed too ("vision process stopped ([Errno 32] Broken pipe)") and was logged as
+        # skipped, 1-4 times a second, until Ember restarted.
+        from features.vision_process import Stopped
+        results = iter([None, RuntimeError("ValueError: bad frame"), None,
+                        Stopped("vision process hung: no reply in 5 s, so it was stopped")]
+                       + [Stopped("vision process stopped ([Errno 32] Broken pipe)")] * 5)
+        frames, closed = [], []
+
+        def detect(frame):
+            frames.append(frame)
+            result = next(results)
+            if isinstance(result, Exception):
+                raise result
+            return result
+        greeter = Proactive(landmarks_factory=lambda: SimpleNamespace(detect=detect, close=lambda: closed.append(1)),
+                            clock=lambda: 0.0)
+        sleeps = []
+
+        def sleep(seconds):
+            sleeps.append(seconds)
+            if len(sleeps) == 8:
+                raise StopIteration                      # the old loop never ended
+            greeter.frame = object()
+        greeter.frame = object()
+        with patch.object(proactive.time, "sleep", sleep), patch("builtins.print") as printed:
+            greeter._run()
+        logged = [str(c.args[0]) for c in printed.call_args_list if c.args]
+        self.assertEqual(len(frames), 4)                 # none after the process stopped
+        self.assertEqual(closed, [1])
+        self.assertEqual(greeter.state, "Unavailable: stopped")
+        self.assertEqual([line for line in logged if "Frame skipped" in line],
+                         ["[PRESENCE] Frame skipped: ValueError: bad frame"])   # a model's error: next frame
+        self.assertEqual([line for line in logged if "stopped" in line],
+                         ["[PRESENCE] Eye-contact greetings stopped until Ember restarts "
+                          "(vision process hung: no reply in 5 s, so it was stopped)."])
 
     def test_face_checks_slow_to_once_a_second_while_nobody_is_in_view(self):
         faces = iter([None, None, object()])

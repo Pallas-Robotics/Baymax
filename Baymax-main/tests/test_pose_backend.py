@@ -439,6 +439,27 @@ class CreateBackendTests(unittest.TestCase):
         self.assertEqual(cpu.detect.call_count, 2)
         self.assertEqual(len(self.logs), 3)                      # logged once
 
+    def test_the_switch_tells_the_vision_process_before_it_loads_mediapipe(self):
+        # In the pose child that frame imports and loads MediaPipe (seconds on the board):
+        # the vision process's watchdog must give it a start's time, not a frame's 5 s.
+        write_models(self.temp.name)
+        engine, order = FakeEngine(), []
+
+        def cpu_factory():
+            order.append("cpu")
+            return SimpleNamespace(name=backend.CPU_NAME, device="CPU", detect=lambda frame, ms: None)
+        chosen = backend.create_pose_backend(env={"BAYMAX_POSE_MODEL_DIR": self.temp.name}, log=self.logs.append,
+                                             cpu_factory=cpu_factory, probe=lambda env, forced: None,
+                                             engine_factory=lambda d, l, c: engine)
+        frame = np.zeros((480, 640, 3), np.uint8)
+        with patch.object(backend, "loading_model", side_effect=lambda: order.append("loading")):
+            chosen.detect(frame, 5)                              # the NPU works: nothing to say
+            self.assertEqual(order, [])
+            engine.detector = Mock(side_effect=RuntimeError("NPU timeout"))
+            chosen.detect(frame, 6)
+            chosen.detect(frame, 7)
+        self.assertEqual(order, ["loading", "cpu"])              # once, before the load
+
     def test_mediapipe_backend_makes_the_runtime_calls(self):
         landmarker = Mock()
         landmarker.detect_for_video.return_value = SimpleNamespace(pose_landmarks=[["lm"]])
@@ -486,7 +507,7 @@ class DefaultOffRk3588Tests(unittest.TestCase):
                 (drivers / name).mkdir(parents=True)
             self.assertEqual(pc_hardware.npu_drivers(str(drivers)), ["RKNPU"])
 
-    def test_rknnlite_is_imported_only_by_the_engine(self):
+    def test_rknnlite_is_imported_only_by_the_npu_engines(self):
         offenders = []
         sources = []
         for folder, dirs, files in os.walk(ROOT):
@@ -501,11 +522,13 @@ class DefaultOffRk3588Tests(unittest.TestCase):
                          [node.module or ""] if isinstance(node, ast.ImportFrom) else [])
                 if any(name.split(".")[0] == "rknnlite" for name in names):
                     offenders.append(path.relative_to(ROOT).as_posix())   # "/" on Windows too
-        self.assertEqual(sorted(offenders), ["features/pose/engines.py"])
-        engine = (ROOT / "features/pose/engines.py").read_text(encoding="utf-8")
-        tree = ast.parse(engine)
-        top_level = [n for n in tree.body if isinstance(n, (ast.Import, ast.ImportFrom))]
-        self.assertFalse(any("rknnlite" in ast.dump(n) for n in top_level))   # lazily, inside a function
+        # Pose's engine and the face recognizer's NPU model (person_recognition/face_npu.py)
+        engines = ["features/person_recognition/face_npu.py", "features/pose/engines.py"]
+        self.assertEqual(sorted(offenders), engines)
+        for engine in engines:
+            tree = ast.parse((ROOT / engine).read_text(encoding="utf-8"))
+            top_level = [n for n in tree.body if isinstance(n, (ast.Import, ast.ImportFrom))]
+            self.assertFalse(any("rknnlite" in ast.dump(n) for n in top_level), engine)   # lazily
 
     def test_importing_the_feature_loads_no_runtime(self):
         code = ("import sys; import features.pose.backend, features.pose.pipeline, features.pose.engines, "

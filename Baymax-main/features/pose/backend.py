@@ -32,7 +32,10 @@ runtime) and =onnx runs the port on ONNX Runtime (development). Any other value 
 mistyped override: MediaPipe on the CPU with a warning, never the NPU. The port uses
 the confidences in mediapipe_options, like MediaPipe. Every choice is printed once with
 the reason the NPU was skipped. If the NPU fails during use, the backend switches to
-MediaPipe for the rest of the run and prints the traceback once.
+MediaPipe for the rest of the run and prints the traceback once. In the pose child that
+frame imports and loads MediaPipe, so it first tells the vision process
+(features.vision_process.loading_model), whose watchdog then gives the frame the start's
+time limit instead of a frame's.
 """
 import os
 from pathlib import Path
@@ -42,6 +45,7 @@ import time
 import traceback
 
 from features.pose import models
+from features.vision_process import loading_model
 
 ENV_BACKEND = "BAYMAX_POSE_BACKEND"
 ENV_CORE = "BAYMAX_POSE_NPU_CORE"
@@ -153,6 +157,9 @@ class FallbackBackend(_Backend):
                 failed.close()
             except Exception:
                 pass
+            # In the pose child this frame now imports and loads MediaPipe (1.2-1.3 s on the
+            # 5 Max when cached, longer from a cold SD card): the start's limit, not 5 s.
+            loading_model()
             self.active = factory()
             return self.active.detect(frame_bgr, timestamp_ms)
 

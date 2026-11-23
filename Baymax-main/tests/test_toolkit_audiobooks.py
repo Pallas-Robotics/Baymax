@@ -273,7 +273,7 @@ class AudiobookTests(unittest.TestCase):
             voice_seen.append(voice_active)
             return book[0]
         with patch("features.conversational_ability.processing.output_sources", [source]), \
-                patch.dict("os.environ", {"BAYMAX_MUTE_MIC_DURING_REPLY": "1"}):
+                patch.dict("os.environ", {"BAYMAX_MUTE_MIC_DURING_REPLY": "1", "BAYMAX_COMFORT_NOISE": "0"}):
             enhancer = InputEnhancer(processor=FakeDSP())
             silence = bytes(2048)
             mixed = enhancer.mix_output(silence)
@@ -293,7 +293,7 @@ class AudiobookTests(unittest.TestCase):
             calls.append(samples)
             return True
         with patch("features.conversational_ability.processing.input_gates", [gate]), \
-                patch.dict("os.environ", {"BAYMAX_MUTE_MIC_DURING_REPLY": "1"}):
+                patch.dict("os.environ", {"BAYMAX_MUTE_MIC_DURING_REPLY": "1", "BAYMAX_COMFORT_NOISE": "0"}):
             enhancer = InputEnhancer(processor=FakeDSP())
             near = np.full(960, 1000, dtype=np.int16)
             self.assertFalse(np.any(enhancer.process(near)))
@@ -482,7 +482,7 @@ class DownloadCacheTests(unittest.TestCase):
         return Response()
 
     def cached(self):
-        return sorted(str(path.relative_to(self.cache)) for path in self.cache.rglob("*"))
+        return sorted(path.relative_to(self.cache).as_posix() for path in self.cache.rglob("*"))
 
     def test_each_track_replaces_the_last_and_another_program_clears_the_old_one(self):
         recording = {"id": "rain sounds", "sections": [{"file": "Rain 1.mp3"}, {"file": "Rain 2.mp3"}]}
