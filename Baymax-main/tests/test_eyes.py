@@ -258,6 +258,43 @@ class EyeTests(unittest.TestCase):
         leds.draw_pair(THINKING[0][0], BLANK)
         self.assertEqual(len(board.writes), count)
 
+    def test_orange_pi_spi_sends_the_same_registers_at_1_mhz(self):
+        from features.eyes import driver
+        writes, ioctls, closed = [], [], []
+        with patch.object(driver.os, 'write', lambda fd, data: writes.append((fd, data)) or len(data)), \
+                patch.object(driver.os, 'close', closed.append):
+            leds = driver.SpiLedControl('/dev/spidev3.1', opener=lambda path, flags: 7,
+                                        ioctl=lambda fd, request, arg: ioctls.append((fd, request, arg)))
+            leds.set_intensity(0, 3)
+            leds.set_intensity(1, 3)
+            leds.draw_pair(THINKING[0][0], BLANK)
+            leds.exit()
+        self.assertEqual(ioctls, [(7, 0x40016B01, b'\x00'), (7, 0x40046B04, (1_000_000).to_bytes(4, 'little'))])
+        registers = {}
+        for fd, data in writes:
+            self.assertEqual((fd, len(data)), (7, 4))          # one 32-bit transfer per register write
+            for device, (opcode, value) in zip((1, 0), (data[0:2], data[2:4])):
+                if opcode:                                       # 0 = no-op for the other matrix
+                    registers[device, opcode] = value
+        for device in (0, 1):
+            self.assertEqual(registers[device, 15], 0)
+            self.assertEqual(registers[device, 10], 3)
+        self.assertEqual(tuple(registers[1, r + 1] for r in range(8)), THINKING[0][0])
+        self.assertEqual(tuple(registers[0, r + 1] for r in range(8)), BLANK)
+        self.assertEqual(closed, [7])
+
+    def test_spidev_ports_use_spi_unless_a_test_board_is_given(self):
+        from features.eyes import driver
+        with patch.object(driver, 'SpiLedControl') as spi:
+            leds, close = driver.open_leds('/dev/spidev3.1')
+        spi.assert_called_once_with('/dev/spidev3.1')
+        self.assertIs(close, spi.return_value.exit)
+        board = Board()
+        with patch.object(driver, 'SpiLedControl') as spi:
+            leds, close = driver.open_leds('/dev/spidev3.1', lambda port: board)
+        spi.assert_not_called()
+        self.assertIsInstance(leds, LedControl)
+
     def test_failed_row_transfer_is_retried(self):
         leds = LedControl(Board())
         with patch.object(leds, 'transfer', side_effect=[OSError('disconnect'), None]) as transfer:

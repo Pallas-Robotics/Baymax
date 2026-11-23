@@ -13,6 +13,10 @@ settings = load(sys.argv[2])
 assert 'VERSION_ID="13"' in (root / 'etc/os-release').read_text()
 assert 'sun60i-a733-orangepi-4-pro.dtb' in (root / 'boot/dietpiEnv.txt').read_text()
 assert list((root / 'usr/lib/modules').rglob('aic8800_fdrv.ko.xz')), 'Wi-Fi driver missing'
+boot_env = (root / 'boot/dietpiEnv.txt').read_text().splitlines()
+assert 'overlay_path=allwinner' in boot_env, 'LED eyes: SPI3 overlay path'
+assert any(l.startswith('overlays=') and 'spi3-cs0-cs1-spidev' in l.split('=', 1)[1].split() for l in boot_env), 'LED eyes: SPI3 overlay'
+assert 'GROUP="dialout"' in (root / 'etc/udev/rules.d/60-ember-eyes.rules').read_text()
 assert (root / 'usr/lib/firmware/aic8800/SDIO/aic8800D80').is_dir()
 assert 'ember:x:1001:1001:' in (root / 'etc/passwd').read_text()
 assert 'AUTO_SETUP_NET_WIFI_ENABLED=1' in (root / 'boot/dietpi.txt').read_text()
