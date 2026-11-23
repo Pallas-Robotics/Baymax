@@ -72,6 +72,29 @@ class SessionTests(unittest.TestCase):
         self.now += 2 * 3600
         self.assertEqual(self.build()["session_resumption"], {})
 
+    def test_network_failure_before_setup_keeps_the_handle(self):
+        session.remember(update("h1"), clock=lambda: self.now)
+        for _ in range(3):
+            self.assertEqual(self.build()["session_resumption"], {"handle": "h1"})
+            session.not_tried()
+
+    def test_retry_backoff_caps_and_device_errors_are_separate(self):
+        failures, delays = 0, []
+        for _ in range(8):
+            delay, failures = session.retry_plan(OSError("network unavailable"), 1, failures)
+            delays.append(delay)
+        self.assertEqual(delays, [.3, .6, 1.2, 2.4, 4.8, 4.8, 4.8, 4.8])
+        self.assertEqual(session.retry_plan(OSError(), 61, failures), (.3, 1))
+        self.assertIsNone(session.retry_plan(RuntimeError("device failure"), 0, 0)[0])
+
+    def test_mixed_exception_group_does_not_hide_a_device_failure(self):
+        pure = ExceptionGroup("network", [ConnectionError(), ExceptionGroup("nested", [TimeoutError()])])
+        mixed = ExceptionGroup("mixed", [ConnectionError(), RuntimeError("device")])
+        self.assertEqual(session.retry_plan(pure, 1, 0), (.3, 1))
+        self.assertIsNone(session.retry_plan(mixed, 1, 0)[0])
+        self.assertTrue(session.connection_not_started(pure))
+        self.assertFalse(session.connection_not_started(mixed))
+
     def test_each_part_can_be_disabled_and_input_is_not_mutated(self):
         base = {"response_modalities": ["AUDIO"]}
         with patch.dict(os.environ, {"BAYMAX_SESSION_RESUMPTION": "0", "BAYMAX_CONTEXT_COMPRESSION": "0"}):

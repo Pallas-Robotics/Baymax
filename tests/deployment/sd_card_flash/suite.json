@@ -1,0 +1,15 @@
+{
+  "name": "sd_card_flash",
+  "sources": [
+    "devops/opi4-flash/**",
+    "docs/SD_CARD_FLASH.md"
+  ],
+  "python": [
+    {
+      "directory": "devops/opi4-flash",
+      "patterns": [
+        "test_*.py"
+      ]
+    }
+  ]
+}

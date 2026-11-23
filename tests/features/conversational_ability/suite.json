@@ -1,0 +1,27 @@
+{
+  "name": "conversational_ability",
+  "sources": [
+    "Baymax-main/features/toolkits/wakeword.py",
+    "Baymax-main/features/conversational_ability/**",
+    "Baymax-main/runtime_monitor.py",
+    "Baymax-main/static/**"
+  ],
+  "python": [
+    {
+      "directory": "Baymax-main/tests",
+      "patterns": [
+        "test_address_gate.py",
+        "test_conversation_timing.py",
+        "test_conversational_ability.py",
+        "test_engage.py",
+        "test_residual_echo.py",
+        "test_runtime_monitor.py",
+        "test_session.py",
+        "test_voice_volume.py",
+        "test_waiting_cue.py",
+        "test_toolkit_engage.py",
+        "test_toolkit_conversation.py"
+      ]
+    }
+  ]
+}

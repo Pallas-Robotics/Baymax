@@ -1,19 +1,52 @@
 <!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Ember dev monitor</title><style>
-:root{font-family:system-ui,sans-serif;background:#171c19;color:#e9ede8;color-scheme:dark}*{box-sizing:border-box}body{margin:0}main{max-width:900px;margin:auto;padding:36px 24px}h1{margin:0;font-size:32px}h1 span{color:#ffb783}p{color:#adbaaf;line-height:1.5}a{color:#ffb783}.card{background:#212a24;border:1px solid #3a483e;border-radius:16px;padding:22px;margin:20px 0}#state{font-size:20px;text-transform:capitalize;color:#ffceaa}#detail{margin:8px 0}.grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}.pill{border:1px solid #46564a;border-radius:8px;padding:12px}.chat{height:420px;overflow:auto;display:flex;flex-direction:column;gap:14px;padding:12px 4px;overflow-anchor:none}.message{max-width:85%;border:1px solid #46564a;border-radius:14px;padding:12px 16px;background:#29372d;flex-shrink:0}.message.user{align-self:flex-end;background:#423327;border-color:#725137}.message.ember{align-self:flex-start}.message header{font-size:12px;color:#b9c4bb;margin-bottom:7px}.message .words{white-space:pre-wrap;overflow-wrap:anywhere;color:#f0f3ef;line-height:1.5}.reply-timing{font-size:10px;color:#9eada2;margin-top:9px;line-height:1.5}.live{color:#ffb783;font-size:11px;margin-left:8px}.message.activity{align-self:center;max-width:95%;background:#1c251f;border:1px dashed #46564a;border-radius:9px;padding:7px 12px}.message.activity header{font-size:10px;margin-bottom:3px;font-weight:400}.message.activity .words{font-size:12px;color:#aebbb1;line-height:1.4}time{color:#adbaaf;margin-right:14px}.hint{font-size:13px}@media(max-width:550px){.grid{grid-template-columns:1fr}}
-</style></head><body><main><h1><span>Ember</span> dev monitor</h1><p>Live activity from the running Ember process. <a href="/">Device setup</a></p>
-<section class="card" aria-live="polite"><div id="state">Connecting to monitor…</div><p id="detail"></p><div id="activities"></div><p id="fresh" class="hint"></p></section>
+:root{font-family:system-ui,sans-serif;background:#171c19;color:#e9ede8;color-scheme:dark}*{box-sizing:border-box}body{margin:0}main{max-width:900px;margin:auto;padding:36px 24px}h1{margin:0;font-size:32px}h1 span{color:#ffb783}p{color:#adbaaf;line-height:1.5}a{color:#ffb783}.card{background:#212a24;border:1px solid #3a483e;border-radius:16px;padding:22px;margin:20px 0}#state{font-size:20px;text-transform:capitalize;color:#ffceaa}#detail{margin:8px 0}.grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}.pill{border:1px solid #46564a;border-radius:8px;padding:12px}.chat{height:420px;overflow:auto;display:flex;flex-direction:column;gap:14px;padding:12px 4px;overflow-anchor:none}.message{max-width:85%;border:1px solid #46564a;border-radius:14px;padding:12px 16px;background:#29372d;flex-shrink:0}.message.user{align-self:flex-end;background:#423327;border-color:#725137}.message.ember{align-self:flex-start}.message header{font-size:12px;color:#b9c4bb;margin-bottom:7px}.message .words{white-space:pre-wrap;overflow-wrap:anywhere;color:#f0f3ef;line-height:1.5}.reply-timing{white-space:pre-line;font-size:12px;color:#9eada2;margin-top:9px;line-height:1.5}.live{color:#ffb783;font-size:11px;margin-left:8px}.message.activity{align-self:center;max-width:95%;background:#1c251f;border:1px dashed #46564a;border-radius:9px;padding:7px 12px}.message.activity header{font-size:10px;margin-bottom:3px;font-weight:400}.message.activity .words{font-size:12px;color:#aebbb1;line-height:1.4}time{color:#adbaaf;margin-right:14px}.hint{font-size:13px}@media(max-width:550px){.grid{grid-template-columns:1fr}}
+.timing-scroll{overflow-x:auto}.timing-scroll:focus-visible{outline:2px solid #ffb783;outline-offset:4px}.timing-table{width:100%;min-width:730px;border-collapse:collapse;font-size:12px;font-variant-numeric:tabular-nums}.timing-table th{text-align:left;color:#e9ede8;font-weight:600}.timing-table th,.timing-table td{padding:10px 8px;vertical-align:top;border-bottom:1px solid #46564a}.timing-table td{color:#c6d1c8;line-height:1.7}.timing-table td div:first-child{color:#f0f3ef}.timing-table td:first-child{min-width:155px}#speechIndicator{font-size:18px;font-weight:600;color:#c6d1c8}#speechIndicator[data-active="true"]{color:#ffceaa}</style></head><body><main><h1><span>Ember</span> dev monitor</h1><p>Live activity from the running Ember process. <a href="/">Device setup</a></p>
+<section class="card" aria-live="polite"><div id="state">Connecting to monitor…</div><p id="detail"></p><p id="speechIndicator" role="status">Local speech detector: waiting for audio…</p><p id="speechTimes" class="hint"></p><p id="speakerHealth" class="hint"></p><div id="activities"></div><p id="fresh" class="hint"></p></section>
 <div class="grid"><div class="pill">Memory: <span id="memory">Disabled in version-8 demo</span></div><div class="pill">Google search: <span id="search">Not implemented</span></div></div>
 <p class="hint">Fall detection: <span id="fallStatus">Disabled</span></p>
 <section class="card" id="audioCard" hidden><h2>Microphone</h2><p id="audioMode"></p><p id="audioLevels" class="hint"></p><p class="hint">Input levels and speech estimate only; no voice identity is inferred.</p></section>
 <p id="echoDiagnostic" class="hint" role="status"></p>
+
 <section class="card"><h2>Live conversation</h2><div id="conversation" class="chat" role="log" aria-live="polite" aria-atomic="false"><p id="emptyConversation">Start Ember and speak to see what it hears here.</p></div><p class="hint">Speech appears as Gemini sends transcription fragments. A fragment may contain part of a word or several words. Conversation is the focus. Each toolkit has one small message that updates from start to end. Scroll up to pause automatic scrolling.</p></section>
+<details class="card"><summary id="timingHeading">Timing history</summary>
+<p class="hint">Local speech times are estimates from cleaned audio. Transcript and reply times are arrivals from Gemini, not its internal processing times. Playback is the first nonzero reply sample scheduled at the speaker, not an acoustic measurement. All times use this browser’s timezone.</p>
+<div class="timing-scroll" tabindex="0" role="region" aria-label="Recent conversation timing"><table class="timing-table"><thead><tr><th scope="col">Turn / delay</th><th scope="col">Local speech</th><th scope="col">Transcript received</th><th scope="col">Reply received</th><th scope="col">Speaker playback</th></tr></thead><tbody id="timingRows"><tr><td colspan="5">Waiting for a new conversation turn. Timing starts after the runtime restarts.</td></tr></tbody></table></div>
+<p class="hint">Speech estimate: ≥60 ms of voice probability ≥70% and cleaned level ≥−45 dBFS; end after 400 ms of silence. Ambiguous speech matches show no speech-to-reply delay. No new audio recordings.</p></details>
 <p class="hint">“Thinking” means waiting for Gemini’s response, not access to its private reasoning. “Speaking” means audio is being generated or remains in the playback buffer. Listening can continue during a reply. This page shows live user and Ember speech transcripts locally, alongside activity names. Keys, tool arguments, location coordinates, audio and video are not included in monitor telemetry.</p>
 </main><script>
 const token='__TOKEN__', $=id=>document.getElementById(id);
+const timingClock=new Intl.DateTimeFormat(undefined,{hour:'2-digit',minute:'2-digit',second:'2-digit',fractionalSecondDigits:3});
+function timingTime(value){return Number.isFinite(value)?timingClock.format(new Date(value*1000)):'—';}
+function timingDelay(value){return Number.isFinite(value)?(value/1000).toFixed(3)+' s':'—';}
+function renderSpeech(data){
+ const speech=data.speech_detection, indicator=$('speechIndicator');
+ const available=speech?.available&&data.state!=='offline';
+ const label=!available?'Local speech detector unavailable':speech.active?'Speech detected locally':speech.awaiting_transcript?'Speech ended locally · waiting for Gemini transcript':'No local speech detected';
+ if(indicator.textContent!==label)indicator.textContent=label;
+ indicator.dataset.active=available&&speech.active?'true':'false';
+ const detail=speech?.speech_start?'Local estimate · start '+timingTime(speech.speech_start)+' · end '+timingTime(speech.speech_end):'Updates from microphone audio, independently of Gemini transcription. Local estimates can mistake noise for speech.';
+ if($('speechTimes').textContent!==detail)$('speechTimes').textContent=detail;
+ $('speakerHealth').textContent=speech?'Speaker underruns since restart: '+speech.output_underflows+' · A nonzero count can explain stuttering.':'';
+}
+function renderTiming(data){
+ const body=$('timingRows'), rows=(data.conversation_timing||[]).slice(-6).reverse();
+ if(!rows.length)return;
+ body.replaceChildren();
+ for(const turn of rows){const row=document.createElement('tr'), delays=turn.delays||{};
+  const cells=[['#'+turn.id+(turn.interrupted?' · interrupted':''),'Speech → playback: '+timingDelay(delays.audible_ms),turn.association],
+   ['Start '+timingTime(turn.speech_start),'End '+timingTime(turn.speech_end)],
+   ['First '+timingTime(turn.transcript_first),'Last '+timingTime(turn.transcript_last),'Speech end → first: '+timingDelay(delays.recognition_ms)],
+   ['Text '+timingTime(turn.reply_text),'Audio '+timingTime(turn.reply_audio),'Transcript → audio: '+timingDelay(delays.transcript_to_reply_ms)],
+   [timingTime(turn.playback),'Audio → playback: '+timingDelay(delays.playback_wait_ms)]];
+  for(const lines of cells){const cell=document.createElement('td');for(const text of lines){const line=document.createElement('div');line.textContent=text;cell.append(line);}row.append(cell);}body.append(row);
+ }
+}
 let session=null; const messages=new Map();
 function nearBottom(el){return el.scrollHeight-el.scrollTop-el.clientHeight<70;}
 function speechRows(data){
  const rows=(data.transcripts||[]).map(m=>({...m,key:'speech:'+m.id}));
+ const timings=new Map((data.conversation_timing||[]).filter(t=>t.user_id!==undefined).map(t=>[t.user_id,t]));
+ let turn=null;for(const row of rows){if(row.speaker==='user')turn=timings.get(row.id)||null;row.turnTiming=turn;}
  let lower=-Infinity,start=null;
  const apply=(end,interrupted=false)=>{if(start===null)return;const candidates=rows.filter(m=>m.speaker==='ember'&&m.time>lower&&m.time<=end);if(candidates.length){if(start!==null)candidates[0].speechStarted=start;const last=candidates[candidates.length-1];if(Number.isFinite(end)){last.replyEnded=end;last.interrupted=interrupted;}}};
  for(const event of data.events||[]){if(event.state==='speaking'&&start===null)start=event.time;
@@ -21,9 +54,38 @@ function speechRows(data){
  if(start!==null)apply(Infinity);
  return rows;
 }
+function activityRows(data){
+ const calls=new Map(),other=[];
+ for(const event of data.events||[]){
+  if(event.state==='calling_tool'||event.state==='speaking'||event.state==='thinking'&&event.message?.startsWith('Toolkit finished'))continue;
+  if(event.state==='toolkit'&&event.id){const previous=calls.get(event.id);calls.set(event.id,{...previous,...event,time:previous?.time??event.started_at??event.time});}
+  else other.push(event);
+ }
+ return [...other,...calls.values()].map(e=>({...e,key:'event:'+(e.id||e.time+':'+e.state+':'+e.message),activity:true,
+  text:e.name?e.name+' · '+(e.finished_at?'finished · '+timingDelay((e.finished_at-e.started_at)*1000):'running')+(e.background?' · background':''):e.state==='thinking'?'Thinking…':e.state==='listening'?'Listening':e.message}));
+}
+function chatTiming(message,data){
+ if(message.activity){return message.name?['Started '+timingTime(message.started_at)+(message.finished_at?' · Finished '+timingTime(message.finished_at):'')]:[];}
+ const turn=message.turnTiming,lines=[];
+ if(turn){const delays=turn.delays||{};
+  if(message.speaker==='user'){
+   lines.push('Local speech '+timingTime(turn.speech_start)+' → '+timingTime(turn.speech_end));
+   lines.push('Transcript first '+timingTime(turn.transcript_first)+' · last '+timingTime(turn.transcript_last));
+   if(Number.isFinite(delays.recognition_ms))lines.push('Speech end → transcript '+timingDelay(delays.recognition_ms));
+   if(!turn.reply_audio&&!turn.reply_complete){const since=turn.speech_end??turn.transcript_first;const now=data.heartbeat;if(Number.isFinite(since)&&Number.isFinite(now))lines.push('Waiting for reply · '+timingDelay(Math.max(0,now-since)*1000));}
+   if(turn.association!=='Local speech estimate')lines.push(turn.association);
+  }else{
+   lines.push('Reply received · text '+timingTime(turn.reply_text)+' · audio '+timingTime(turn.reply_audio));
+   lines.push('Speaker playback '+timingTime(turn.playback)+' · audio → playback '+timingDelay(delays.playback_wait_ms));
+   lines.push('Transcript → reply '+timingDelay(delays.transcript_to_reply_ms)+' · speech end → playback '+timingDelay(delays.audible_ms));
+  }
+ }
+ if(message.replyEnded)lines.push((message.interrupted?'Reply interrupted ':'Reply ended ')+timingTime(message.replyEnded));
+ return lines;
+}
 function renderConversation(data){
  const container=$('conversation'),follow=nearBottom(container);
- const items=[...speechRows(data),...(data.events||[]).filter(e=>e.state!=='calling_tool'&&e.state!=='speaking').map(e=>({...e,key:'event:'+(e.id||e.time+':'+e.state+':'+e.message),activity:true,text:e.name?e.name+' · Started '+new Date(e.started_at*1000).toLocaleTimeString()+(e.finished_at?' · Ended '+new Date(e.finished_at*1000).toLocaleTimeString():' · running')+(e.background?' · background':''):e.state==='thinking'?'Thinking…':e.state==='listening'?'Listening':e.message}))].sort((a,b)=>a.time-b.time);
+ const items=[...speechRows(data),...activityRows(data)].sort((a,b)=>a.time-b.time);
  if(data.pid&&session!==data.pid){session=data.pid;messages.clear();container.replaceChildren();}
  if(!items.length){if(!container.querySelector('#emptyConversation')){container.replaceChildren();const p=document.createElement('p');p.id='emptyConversation';p.textContent='Start Ember and speak to see what it hears here.';container.append(p);}return;}
  container.querySelector('#emptyConversation')?.remove();
@@ -32,8 +94,8 @@ function renderConversation(data){
  let previous=null;
  for(const message of items){let entry=messages.get(message.key);if(!entry){const element=document.createElement('article');element.className='message '+(message.activity?'activity':message.speaker==='user'?'user':'ember');const header=document.createElement('header'),label=document.createElement('strong'),live=document.createElement('span'),words=document.createElement('div');const name=message.activity?(message.state==='toolkit'?'Toolkit':message.state.replaceAll('_',' ')):(message.speaker==='user'?'You':'Ember');label.textContent=name+' · '+new Date(message.time*1000).toLocaleTimeString();live.className='live';words.className='words';header.append(label,live);const timing=document.createElement('div');timing.className='reply-timing';element.append(header,words,timing);entry={element,words,live,timing};messages.set(message.key,entry);}
  const expected=previous?previous.nextSibling:container.firstChild;if(expected!==entry.element)container.insertBefore(entry.element,expected);previous=entry.element;
- if(entry.words.textContent!==message.text)entry.words.textContent=message.text;entry.live.textContent=message.live?'● live':'';const timing=[];if(message.speechStarted)timing.push('Speaking started '+new Date(message.speechStarted*1000).toLocaleTimeString());if(message.replyEnded)timing.push((message.interrupted?'Reply interrupted ':'Reply ended ')+new Date(message.replyEnded*1000).toLocaleTimeString());entry.timing.textContent=timing.join(' · ');entry.timing.hidden=!timing.length;}
+ if(entry.words.textContent!==message.text)entry.words.textContent=message.text;entry.live.textContent=message.live?'● live':'';const timing=chatTiming(message,data);const timingText=timing.join('\n');if(entry.timing.textContent!==timingText)entry.timing.textContent=timingText;entry.timing.hidden=!timing.length;}
  if(follow)container.scrollTop=container.scrollHeight;
 }
-async function update(){try{const response=await fetch('/api/runtime',{signal:AbortSignal.timeout(5000),method:'POST',headers:{'Content-Type':'application/json','X-devUI-Token':token},body:'{}'});if(!response.ok)throw Error('Monitor connection unavailable; refresh this page.');const data=await response.json();$('state').textContent=data.state.replaceAll('_',' ');$('detail').textContent=data.detail?.startsWith('Reply complete')?'Reply complete':data.detail;$('activities').replaceChildren();for(const [name,activity] of Object.entries(data.activities||{})){const p=document.createElement('p');p.textContent='Calling toolkit '+name+(activity.background?' · background preload':'');$('activities').append(p);}$('fresh').textContent=data.heartbeat?'Last update: '+new Date(data.heartbeat*1000).toLocaleTimeString():'';$('memory').textContent=data.capabilities?.memory||'Disabled in version-8 demo';$('search').textContent=data.capabilities?.google_search||'Not implemented';const fall=data.capabilities?.fall_detection;$('fallStatus').textContent=fall?fall.state+' · '+fall.backend+(fall.fps!==null?' · '+fall.fps+' FPS':'')+(fall.inference_ms!==null?' · '+fall.inference_ms+' ms':''):'Disabled';const audio=data.metrics?.audio_input;$('audioCard').hidden=!audio;if(audio){$('audioMode').textContent=audio.state;$('audioLevels').textContent=audio.raw?'Raw: '+audio.raw.rms_dbfs+' dBFS · Clean: '+audio.clean.rms_dbfs+' dBFS · Input clipping: '+audio.raw.clipped_percent+'% · Speech estimate: '+Math.round(audio.speech_probability*100)+'% · Gain: '+audio.gain_db+' dB · Listen during replies: '+(audio.full_duplex?'on':'off')+(audio.echo_guard?' · Speaker echo protection: active':'')+(audio.aec_delay_ms!==undefined?' · AEC delay: '+audio.aec_delay_ms+' ms':'')+(audio.residual_echo?' · Residual echo: '+audio.residual_echo.state+' · Correlation: '+audio.residual_echo.correlation:''):'';}$('echoDiagnostic').textContent=data.echo_diagnostics?.transcript_match?.suspected?'Possible speaker echo: heard words overlap recent Ember speech. Speech was retained.':'';renderConversation(data);}catch(e){$('state').textContent='Monitor disconnected';$('detail').textContent=e.message;}finally{setTimeout(update,250);}}
+async function update(){try{const response=await fetch('/api/runtime',{signal:AbortSignal.timeout(5000),method:'POST',headers:{'Content-Type':'application/json','X-devUI-Token':token},body:'{}'});if(!response.ok)throw Error('Monitor connection unavailable; refresh this page.');const data=await response.json();$('state').textContent=data.state.replaceAll('_',' ');$('detail').textContent=data.detail?.startsWith('Reply complete')?'Reply complete':data.detail;$('activities').replaceChildren();for(const [name,activity] of Object.entries(data.activities||{})){const p=document.createElement('p');p.textContent='Calling toolkit '+name+(activity.background?' · background preload':'');$('activities').append(p);}$('fresh').textContent=data.heartbeat?'Last update: '+new Date(data.heartbeat*1000).toLocaleTimeString():'';$('memory').textContent=data.capabilities?.memory||'Disabled in version-8 demo';$('search').textContent=data.capabilities?.google_search||'Not implemented';const fall=data.capabilities?.fall_detection;$('fallStatus').textContent=fall?fall.state+' · '+fall.backend+(fall.fps!==null?' · '+fall.fps+' FPS':'')+(fall.inference_ms!==null?' · '+fall.inference_ms+' ms':''):'Disabled';const audio=data.metrics?.audio_input;$('audioCard').hidden=!audio;if(audio){$('audioMode').textContent=audio.state;$('audioLevels').textContent=audio.raw?'Raw: '+audio.raw.rms_dbfs+' dBFS · Clean: '+audio.clean.rms_dbfs+' dBFS · Input clipping: '+audio.raw.clipped_percent+'% · Speech estimate: '+Math.round(audio.speech_probability*100)+'% · Gain: '+audio.gain_db+' dB · Listen during replies: '+(audio.full_duplex?'on':'off')+(audio.echo_guard?' · Speaker echo protection: active':'')+(audio.aec_delay_ms!==undefined?' · AEC delay: '+audio.aec_delay_ms+' ms':'')+(audio.residual_echo?' · Residual echo: '+audio.residual_echo.state+' · Correlation: '+audio.residual_echo.correlation:''):'';}$('echoDiagnostic').textContent=data.echo_diagnostics?.transcript_match?.suspected?'Possible speaker echo: heard words overlap recent Ember speech. Speech was retained.':'';renderSpeech(data);renderTiming(data);renderConversation(data);}catch(e){$('state').textContent='Monitor disconnected';$('detail').textContent=e.message;}finally{setTimeout(update,250);}}
 update();</script></body></html>

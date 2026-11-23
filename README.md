@@ -1,76 +1,123 @@
 # Ember for Orange Pi
 
-Ember's v10 MVP runtime (conversation/personality, local eyes, audio cleanup,
-engage/disengage, reminders, audiobooks, live radio and Internet Archive recordings,
-gentle daily check-ins, brain games, "look closely", a voice volume the person can
-change, app integration, memory and built-in fall detection) for the **Orange Pi 4
-Pro** and the **Orange Pi 5 Max**: one
-codebase and one dependency file (`Baymax-main/requirements-orange-pi.txt`) for
-both boards. What differs is decided on the board itself at runtime (the NPU,
-fast-core pinning) or by how the board is set up. Live device checks remain
-pending on both boards.
+Ember is a voice companion with Gemini conversation, optional eyes and camera,
+CPU/NPU pose processing, memories and callable information/support tools.
 
-| | Orange Pi 4 Pro | Orange Pi 5 Max |
-|---|---|---|
-| SoC / CPU | Allwinner A733: 2x Cortex-A76 + 6x Cortex-A55 | Rockchip RK3588: 4x Cortex-A76 + 4x Cortex-A55 |
-| NPU for pose | none: MediaPipe on the CPU | optional: the RK3588 NPU after the on-board conversion and accuracy check; MediaPipe on the CPU otherwise |
-| OS | DietPi (Debian 13) SD image from [OPI4-Flash](devops/opi4-flash/README.md), or Debian 13 | Armbian Debian 13 with the vendor 6.1 kernel (needed only for the NPU) |
-| Setup | the SD image, or [MVP.md](Baymax-main/MVP.md) | a git checkout of `release`, [clickables](devops/clickables/README.md) and [ORANGE_PI_SETUP.md](Baymax-main/ORANGE_PI_SETUP.md) |
-| Wi-Fi setup hotspot | optional, installed by hand ([deploy/host](Baymax-main/deploy/host/README.md); not part of the SD image; untested on a board) | no |
-| Fast-core pinning (`BAYMAX_CPU_PINNING=auto`) | off (unmeasured; `on` tries it) | on (measured) |
-| Updates | the image's `ember-update`, following a branch (default `release`) | opt-in: `devops/mvp/update.py` before each start of the autostart service (needs the git checkout, `install_autostart.py` and `BAYMAX_AUTO_UPDATE=1`; `BAYMAX_UPDATE_BRANCH`, default `release`); otherwise `git pull` by hand |
+**OPi4 V1 is under review.** Offline checks do not establish perfect operation on
+every Orange Pi. See the [feature log](docs/features/FEATURE_LOG.md) for implemented
+features, source locations, tests and hardware checks still pending.
 
-On both boards pose and face inference run in their own processes
-(`Baymax-main/features/vision_process.py`), pose tracking runs at 10 fps with
-MediaPipe's lite model by default (`camera.pose_model` in `device.toml`; a set-up
-Orange Pi 5 Max NPU runs the checked full model instead), the live view is drawn only
-while someone watches it, and memories are saved while Ember runs. See
-[the board guide](docs/DEMO_DEVICES.md) and [ORANGE_PI_SETUP.md](Baymax-main/ORANGE_PI_SETUP.md).
+## Board comparison
 
-Where this came from: JoeKojima/Baymax PR #29 (`opi4-demo`, the Orange Pi 4 Pro
-demo), PR #22 (`codex/opi4-flash`, the SD-image builder), the Orange Pi 5 Max
-branches `orangepi5-npu` and `memory-incremental-saves`, `orangepi-features`
-(opi4-demo with Svanik's PRs #23-#28 and #30 and the voice volume control) and the
-reconnect fix from `reconnect-any-disconnect` (one commit), merged in November 2026. This
-repository deliberately diverges from Baymax's `startup-greeting` (LattePanda)
-branch: shared fixes are ported by hand. The x86/LattePanda, macOS, Windows and Docker
-code is still in the tree, unchanged, but is not what this repository targets.
+| Board | Installation | Pose processing | Validation limits |
+|---|---|---|---|
+| Orange Pi 4 Pro (A733) | DietPi SD image or documented Debian setup | MediaPipe CPU, isolated child process | ARM64/offline checks passed; combined V1 live/fresh-card checks pending |
+| Orange Pi 5 Max (RK3588) | Board-specific Armbian/clickables setup | CPU fallback; optional NPU after conversion/checks | Combined V1 hardware checks remain necessary |
+| Other boards | Not established by this PR | Board-specific | No blanket support claim |
+
+Start with the [board installation guide](Baymax-main/ORANGE_PI_SETUP.md) and
+[device comparison](docs/DEMO_DEVICES.md). Use a suitable power supply, USB
+microphone/speaker, and an optional supported camera. Eyes need their own verified
+serial wiring/configuration.
+
+## Get and start the application
+
+```bash
+git clone https://github.com/Pallas-Robotics/Baymax.git
+cd Baymax
+```
+
+For development, use `main` and a feature branch. Before V1 is merged, its review
+branch is `opi4-chat-timing`. The normal on-board update channel is `release`.
+Complete the board guide's system packages, Python environment, device selection
+and Gemini-key setup first. Both boards use
+`Baymax-main/requirements-orange-pi.txt`.
+
+The device entry point is `Baymax-main/run_mvp.py`, which wraps v10 startup,
+device readiness and the eye lifecycle. Setup/Monitor are available through the
+[clickables](devops/clickables/README.md) or local `devUI.py`. The runtime needs
+connectivity for Gemini conversation; enabling a configured runtime can send
+microphone/camera context to Gemini and save local session data. Keep private
+keys/settings and runtime data out of Git.
+
+## Features and layout
+
+```text
+Baymax-main/          Runtime, setup/debugger and device configuration
+  features/          Conversational ability, eyes, pose and grouped toolkits
+devops/              Installation, SD builder, graph tools and editing protocol
+docs/features/       Organized feature log and Graphify guide
+graphify-out/        Interactive graph, report and feature-log viewer
+tests/               Overall gate and feature/deployment suite definitions
+test/                Standalone chat UI regression check
+```
+
+Ember's shared persona follows the speaker's language, follows language switches
+and mixed-language speech, and keeps English internal messages from changing the
+conversation language. This is model guidance; see the measured limitations below.
+
+Conversation and audio live under `features/conversational_ability`; eyes and pose
+have their own packages; toolkits group everyday, family, information and media
+behavior. Existing memory/runtime hooks retain their working entry points.
+Reserved person-recognition/Memory Palace namespaces are not proof of completed
+identity recognition. See the feature log for the precise boundaries.
+
+The chat debugger shows local speech activity before a Gemini transcript,
+updating per-turn speech/transcript/reply/playback timings, and one centered
+updating bubble per toolkit call. Speech and DAC timings are estimates.
+
+[Multilingual simulations](Baymax-main/evals/languages/README.md) exercise native
+conversation, language switches and Hindi-English mixing. The
+[language matrix](docs/features/LANGUAGES.md) separates Google's 99 candidate
+entries from actual model/config-specific validation; none are claimed validated
+until live runs and language/audio review are complete.
+The [Pi simulation report](docs/features/OPI4_LANGUAGE_RESULTS.md) records 80/81
+automated response runs passing, one Polish switching failure, and separate
+synthetic-speech transcription failures. It tested the language instruction in
+a temporary copy; the same instruction is now included in `Baymax-main/features/persona.py`.
+The running robot was not replaced.
 
 ## Orange Pi 4 Pro SD image
 
-See [OPI4-Flash](devops/opi4-flash/README.md) for a private SD-image builder with
-three first-boot choices: the branch to follow (default `release`), preconfigured
-Wi-Fi and Gemini key. Builds generate their own device credentials; no personalized
-images are included. The image is for the Orange Pi 4 Pro only; the Orange Pi 5 Max
-uses the clickables setup.
+The reusable builder is in [devops/opi4-flash](devops/opi4-flash/README.md).
+It builds a private, per-card image on a Linux host/VM. Select the runtime branch,
+Wi-Fi, Gemini key and time zone; retain the private access file. It does not write
+a physical card. Use an image writer's verification step when flashing.
+The separate **SD CARD Flash** PR adds the public walkthrough and read-only image
+verifier. The 4 Pro image is not a 5 Max image. Fresh-card hardware validation is
+separate from checksum and unit tests.
 
-## Included Conversational Ability
+## Tests and future edits
 
-Responsive listening and turn-taking, layered on #11. See
-[the feature](Baymax-main/features/conversational_ability/README.md) for echo
-cancellation, noise suppression, brief replies and enablement, the voice volume
-("Ember, speak louder", 1-10, saved on the board) and reconnecting after any
-disconnect from Gemini (also a network that goes silent) without replaying the rest
-of a cut-off reply. Memory Palace (Baymax PR #13) is separate from v10's
-conversation memory, which is on here.
+Read [devops/EDITING_PROTOCOL.md](devops/EDITING_PROTOCOL.md) before editing.
+Use an environment with the application's test dependencies:
 
-## Feature organization and toolkits
+```bash
+python tests/run.py                              # full repository validation
+python tests/run.py --feature conversational_ability
+python tests/run.py --feature eyes --feature pose
+python tests/run.py --changed origin/main
+```
 
-Baymax PR #11 stacked on PR #7 for Windows, Intel/Apple Silicon macOS, Linux/Orange Pi setup, devices, clickables and local monitoring. PR #11's review diff contains feature organization and callable toolkit behavior. Downloading the whole branch includes the compatibility foundation automatically.
+Feature commands include overall checks. Shared/unknown changes select all
+suites. [tests/README.md](tests/README.md) explains ownership, reports and how to
+add tests. Existing CI also runs `Baymax-main/check_release.py`; it preserves
+separate core/toolkit results and includes root overall checks. Explain skips and
+platform failures. Passing offline tests is not permission to merge/deploy or
+proof of live hardware behavior; use [the live checklist](Baymax-main/TESTING_PROTOCOL.md).
+Full root/deployment CI is provided as a workflow template awaiting a maintainer
+with workflow-write access; see the tests guide's CI activation section.
 
-- `Baymax-main/features/` organizes `memory_palace/`, `person_recognition/` and `toolkits/` as sibling namespaces. Memory/person folders reserve integration boundaries; prompt/identity/recall changes are scoped to PR #13.
-- Location/weather uses IPWho/Open-Meteo with clarification, caching and bounded provider errors; weather questions go straight to `get_weather`. `BAYMAX_TOOLKIT_ENABLED=0` disables toolkit declarations/preloading.
-- Radio and recordings (`listen`: Radio Browser stations, openly licensed Internet Archive audio) play through the audiobook player; gentle daily check-ins (morning, afternoon, evening); brain games played only when asked; "look closely" sends Gemini one sharper camera still on request. Each has its own switch, described in the [toolkit guide](Baymax-main/features/toolkits/README.md). A fall check-in or a due reminder pauses whatever plays so the answer reaches Gemini.
-- Optional fall detection uses the existing camera (in v10 it reuses the core's pose instead of running a second model), is disabled by default and adds no caregiver alerts. It runs on the CPU unless the optional Orange Pi 5 NPU pose setup has been done (`Baymax-main/features/pose`).
-- Public information tools and explicit local headline/feed profiles are opt-in, with Setup controls and documented sources, data flows and tests. Desktop v8 and robot v10 retain existing handlers and tool-response IDs.
+Every feature also follows the [performance protocol](devops/performance/README.md):
+compare baseline, feature and combined load for CPU/RAM, NPU telemetry,
+temperature and added speech-response latency, with explicit board-specific
+budgets. Feature test commands include the sampler's offline checks; actual
+measurements run separately on the Orange Pi.
 
-Extract the whole branch and open `devops/clickables` → your OS → **1 - Setup**. Then Save key/devices and use **Monitor → Start Ember → Stop Ember**. On Intel macOS, Setup selects the Intel profile inherited from #7 automatically. Actual Intel/Apple Silicon Mac and ARM installations/devices remain pending.
+## Graphify
 
-- [Feature layout](Baymax-main/features/README.md)
-- [Toolkit guide](Baymax-main/features/toolkits/README.md)
-- [Public-tool experiment](Baymax-main/features/toolkits/EXPERIMENTAL.md)
-- [CPU fall toolkit](Baymax-main/features/toolkits/FALL_DETECTION.md)
-- [Clickables](devops/clickables/README.md)
-- [Testing protocol](Baymax-main/TESTING_PROTOCOL.md)
-
-Run `python check_release.py` from `Baymax-main` for separate core/toolkit offline results. Pull requests and pushes to `release` run it on GitHub (`.github/workflows/offline-checks.yml`), including a Linux ARM64 job with `requirements-orange-pi.txt` (GitHub's runner, not an Orange Pi). `Baymax-main/evals/live_eval.py` plays scripted turns into real Gemini sessions from a PC, without a robot ([evals](Baymax-main/evals/README.md); needs a key, not yet run on this repository). Offline success does not establish real-device, live Gemini or provider accuracy, or authorize deployment. The toolkit work changed no production startup/service. Deliberately starting the runtime sends microphone/camera data to Gemini and records audio locally; toolkit documentation describes additional provider calls.
+Open [the graph](graphify-out/graph.html) locally after downloading the checkout;
+its **Organized feature log** link opens the inventory. GitHub displays HTML as
+source. [The guide](docs/features/GRAPHIFY.md) explains regeneration and confidence
+limits. Graphify is optional developer documentation, outside the robot runtime.
+Private data, recordings, model assets and generated SD images are excluded.

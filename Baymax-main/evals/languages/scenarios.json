@@ -1,0 +1,1152 @@
+[
+  {
+    "name": "en",
+    "language": "en",
+    "about": "Natural response, follow-up and switch to English.",
+    "steps": [
+      {
+        "text": "Ember, what color is a clear daytime sky?",
+        "tts_voice": "en",
+        "expected_languages": [
+          "en"
+        ],
+        "expect": {
+          "reply": "blue",
+          "no_tools": true,
+          "max_latency_s": 15
+        }
+      },
+      {
+        "text": "And what color is grass usually?",
+        "tts_voice": "en",
+        "expected_languages": [
+          "en"
+        ],
+        "expect": {
+          "reply": "green",
+          "no_tools": true,
+          "max_latency_s": 15
+        }
+      },
+      {
+        "text": "Ember, what color is a ripe banana usually?",
+        "tts_voice": "en",
+        "expected_languages": [
+          "en"
+        ],
+        "expect": {
+          "reply": "yellow",
+          "no_tools": true,
+          "max_latency_s": 15
+        }
+      }
+    ]
+  },
+  {
+    "name": "es",
+    "language": "es",
+    "about": "Natural response, follow-up and switch to English.",
+    "steps": [
+      {
+        "text": "Ember, ¿de qué color es el cielo despejado durante el día?",
+        "tts_voice": "es",
+        "expected_languages": [
+          "es"
+        ],
+        "expect": {
+          "reply": "azul",
+          "no_tools": true,
+          "max_latency_s": 15
+        }
+      },
+      {
+        "text": "¿Y de qué color suele ser la hierba?",
+        "tts_voice": "es",
+        "expected_languages": [
+          "es"
+        ],
+        "expect": {
+          "reply": "verde",
+          "no_tools": true,
+          "max_latency_s": 15
+        }
+      },
+      {
+        "text": "Ember, what color is a ripe banana usually?",
+        "tts_voice": "en",
+        "expected_languages": [
+          "en"
+        ],
+        "expect": {
+          "reply": "yellow",
+          "no_tools": true,
+          "max_latency_s": 15
+        }
+      }
+    ]
+  },
+  {
+    "name": "fr",
+    "language": "fr",
+    "about": "Natural response, follow-up and switch to English.",
+    "steps": [
+      {
+        "text": "Ember, de quelle couleur est le ciel dégagé pendant la journée ?",
+        "tts_voice": "fr",
+        "expected_languages": [
+          "fr"
+        ],
+        "expect": {
+          "reply": "bleu",
+          "no_tools": true,
+          "max_latency_s": 15
+        }
+      },
+      {
+        "text": "Et de quelle couleur est généralement l’herbe ?",
+        "tts_voice": "fr",
+        "expected_languages": [
+          "fr"
+        ],
+        "expect": {
+          "reply": "vert",
+          "no_tools": true,
+          "max_latency_s": 15
+        }
+      },
+      {
+        "text": "Ember, what color is a ripe banana usually?",
+        "tts_voice": "en",
+        "expected_languages": [
+          "en"
+        ],
+        "expect": {
+          "reply": "yellow",
+          "no_tools": true,
+          "max_latency_s": 15
+        }
+      }
+    ]
+  },
+  {
+    "name": "de",
+    "language": "de",
+    "about": "Natural response, follow-up and switch to English.",
+    "steps": [
+      {
+        "text": "Ember, welche Farbe hat ein klarer Himmel am Tag?",
+        "tts_voice": "de",
+        "expected_languages": [
+          "de"
+        ],
+        "expect": {
+          "reply": "blau",
+          "no_tools": true,
+          "max_latency_s": 15
+        }
+      },
+      {
+        "text": "Und welche Farbe hat Gras normalerweise?",
+        "tts_voice": "de",
+        "expected_languages": [
+          "de"
+        ],
+        "expect": {
+          "reply": "grün",
+          "no_tools": true,
+          "max_latency_s": 15
+        }
+      },
+      {
+        "text": "Ember, what color is a ripe banana usually?",
+        "tts_voice": "en",
+        "expected_languages": [
+          "en"
+        ],
+        "expect": {
+          "reply": "yellow",
+          "no_tools": true,
+          "max_latency_s": 15
+        }
+      }
+    ]
+  },
+  {
+    "name": "it",
+    "language": "it",
+    "about": "Natural response, follow-up and switch to English.",
+    "steps": [
+      {
+        "text": "Ember, di che colore è il cielo sereno durante il giorno?",
+        "tts_voice": "it",
+        "expected_languages": [
+          "it"
+        ],
+        "expect": {
+          "reply": "azzurr|blu",
+          "no_tools": true,
+          "max_latency_s": 15
+        }
+      },
+      {
+        "text": "E di che colore è di solito l’erba?",
+        "tts_voice": "it",
+        "expected_languages": [
+          "it"
+        ],
+        "expect": {
+          "reply": "verd",
+          "no_tools": true,
+          "max_latency_s": 15
+        }
+      },
+      {
+        "text": "Ember, what color is a ripe banana usually?",
+        "tts_voice": "en",
+        "expected_languages": [
+          "en"
+        ],
+        "expect": {
+          "reply": "yellow",
+          "no_tools": true,
+          "max_latency_s": 15
+        }
+      }
+    ]
+  },
+  {
+    "name": "pt-BR",
+    "language": "pt-BR",
+    "about": "Natural response, follow-up and switch to English.",
+    "steps": [
+      {
+        "text": "Ember, qual é a cor do céu limpo durante o dia?",
+        "tts_voice": "pt-br",
+        "expected_languages": [
+          "pt-BR"
+        ],
+        "expect": {
+          "reply": "azul",
+          "no_tools": true,
+          "max_latency_s": 15
+        }
+      },
+      {
+        "text": "E qual costuma ser a cor da grama?",
+        "tts_voice": "pt-br",
+        "expected_languages": [
+          "pt-BR"
+        ],
+        "expect": {
+          "reply": "verd",
+          "no_tools": true,
+          "max_latency_s": 15
+        }
+      },
+      {
+        "text": "Ember, what color is a ripe banana usually?",
+        "tts_voice": "en",
+        "expected_languages": [
+          "en"
+        ],
+        "expect": {
+          "reply": "yellow",
+          "no_tools": true,
+          "max_latency_s": 15
+        }
+      }
+    ]
+  },
+  {
+    "name": "pt-PT",
+    "language": "pt-PT",
+    "about": "Natural response, follow-up and switch to English.",
+    "steps": [
+      {
+        "text": "Ember, de que cor é o céu limpo durante o dia?",
+        "tts_voice": "pt-pt",
+        "expected_languages": [
+          "pt-PT"
+        ],
+        "expect": {
+          "reply": "azul",
+          "no_tools": true,
+          "max_latency_s": 15
+        }
+      },
+      {
+        "text": "E de que cor costuma ser a relva?",
+        "tts_voice": "pt-pt",
+        "expected_languages": [
+          "pt-PT"
+        ],
+        "expect": {
+          "reply": "verd",
+          "no_tools": true,
+          "max_latency_s": 15
+        }
+      },
+      {
+        "text": "Ember, what color is a ripe banana usually?",
+        "tts_voice": "en",
+        "expected_languages": [
+          "en"
+        ],
+        "expect": {
+          "reply": "yellow",
+          "no_tools": true,
+          "max_latency_s": 15
+        }
+      }
+    ]
+  },
+  {
+    "name": "hi",
+    "language": "hi",
+    "about": "Natural response, follow-up and switch to English.",
+    "steps": [
+      {
+        "text": "एम्बर, साफ़ दिन में आसमान का रंग कैसा होता है?",
+        "tts_voice": "hi",
+        "expected_languages": [
+          "hi"
+        ],
+        "expect": {
+          "reply": "नील|आसमानी",
+          "no_tools": true,
+          "max_latency_s": 15
+        }
+      },
+      {
+        "text": "और घास आम तौर पर किस रंग की होती है?",
+        "tts_voice": "hi",
+        "expected_languages": [
+          "hi"
+        ],
+        "expect": {
+          "reply": "हर[ाीे]",
+          "no_tools": true,
+          "max_latency_s": 15
+        }
+      },
+      {
+        "text": "Ember, what color is a ripe banana usually?",
+        "tts_voice": "en",
+        "expected_languages": [
+          "en"
+        ],
+        "expect": {
+          "reply": "yellow",
+          "no_tools": true,
+          "max_latency_s": 15
+        }
+      }
+    ]
+  },
+  {
+    "name": "ja",
+    "language": "ja",
+    "about": "Natural response, follow-up and switch to English.",
+    "steps": [
+      {
+        "text": "エンバー、晴れた昼間の空は何色ですか？",
+        "tts_voice": "ja",
+        "expected_languages": [
+          "ja"
+        ],
+        "expect": {
+          "reply": "青|あお|ブルー",
+          "no_tools": true,
+          "max_latency_s": 15
+        }
+      },
+      {
+        "text": "では、草は普通何色ですか？",
+        "tts_voice": "ja",
+        "expected_languages": [
+          "ja"
+        ],
+        "expect": {
+          "reply": "緑|みどり|グリーン",
+          "no_tools": true,
+          "max_latency_s": 15
+        }
+      },
+      {
+        "text": "Ember, what color is a ripe banana usually?",
+        "tts_voice": "en",
+        "expected_languages": [
+          "en"
+        ],
+        "expect": {
+          "reply": "yellow",
+          "no_tools": true,
+          "max_latency_s": 15
+        }
+      }
+    ]
+  },
+  {
+    "name": "ko",
+    "language": "ko",
+    "about": "Natural response, follow-up and switch to English.",
+    "steps": [
+      {
+        "text": "엠버, 맑은 낮의 하늘은 무슨 색인가요?",
+        "tts_voice": "ko",
+        "expected_languages": [
+          "ko"
+        ],
+        "expect": {
+          "reply": "파[란랑랗]|푸른|푸르",
+          "no_tools": true,
+          "max_latency_s": 15
+        }
+      },
+      {
+        "text": "그러면 풀은 보통 무슨 색인가요?",
+        "tts_voice": "ko",
+        "expected_languages": [
+          "ko"
+        ],
+        "expect": {
+          "reply": "초록|녹색",
+          "no_tools": true,
+          "max_latency_s": 15
+        }
+      },
+      {
+        "text": "Ember, what color is a ripe banana usually?",
+        "tts_voice": "en",
+        "expected_languages": [
+          "en"
+        ],
+        "expect": {
+          "reply": "yellow",
+          "no_tools": true,
+          "max_latency_s": 15
+        }
+      }
+    ]
+  },
+  {
+    "name": "zh-Hans",
+    "language": "zh-Hans",
+    "about": "Natural response, follow-up and switch to English.",
+    "steps": [
+      {
+        "text": "Ember，晴朗的白天天空是什么颜色？",
+        "tts_voice": "cmn",
+        "expected_languages": [
+          "zh-Hans"
+        ],
+        "expect": {
+          "reply": "蓝|藍",
+          "no_tools": true,
+          "max_latency_s": 15
+        }
+      },
+      {
+        "text": "那草通常是什么颜色？",
+        "tts_voice": "cmn",
+        "expected_languages": [
+          "zh-Hans"
+        ],
+        "expect": {
+          "reply": "绿|綠",
+          "no_tools": true,
+          "max_latency_s": 15
+        }
+      },
+      {
+        "text": "Ember, what color is a ripe banana usually?",
+        "tts_voice": "en",
+        "expected_languages": [
+          "en"
+        ],
+        "expect": {
+          "reply": "yellow",
+          "no_tools": true,
+          "max_latency_s": 15
+        }
+      }
+    ]
+  },
+  {
+    "name": "zh-Hant",
+    "language": "zh-Hant",
+    "about": "Natural response, follow-up and switch to English.",
+    "steps": [
+      {
+        "text": "Ember，晴朗的白天天空是什麼顏色？",
+        "tts_voice": "cmn",
+        "expected_languages": [
+          "zh-Hant"
+        ],
+        "expect": {
+          "reply": "藍|蓝",
+          "no_tools": true,
+          "max_latency_s": 15
+        }
+      },
+      {
+        "text": "那草通常是什麼顏色？",
+        "tts_voice": "cmn",
+        "expected_languages": [
+          "zh-Hant"
+        ],
+        "expect": {
+          "reply": "綠|绿",
+          "no_tools": true,
+          "max_latency_s": 15
+        }
+      },
+      {
+        "text": "Ember, what color is a ripe banana usually?",
+        "tts_voice": "en",
+        "expected_languages": [
+          "en"
+        ],
+        "expect": {
+          "reply": "yellow",
+          "no_tools": true,
+          "max_latency_s": 15
+        }
+      }
+    ]
+  },
+  {
+    "name": "ar",
+    "language": "ar",
+    "about": "Natural response, follow-up and switch to English.",
+    "steps": [
+      {
+        "text": "إمبر، ما لون السماء الصافية في النهار؟",
+        "tts_voice": "ar",
+        "expected_languages": [
+          "ar"
+        ],
+        "expect": {
+          "reply": "أزرق|زرق",
+          "no_tools": true,
+          "max_latency_s": 15
+        }
+      },
+      {
+        "text": "وما لون العشب عادة؟",
+        "tts_voice": "ar",
+        "expected_languages": [
+          "ar"
+        ],
+        "expect": {
+          "reply": "أخضر|خضر",
+          "no_tools": true,
+          "max_latency_s": 15
+        }
+      },
+      {
+        "text": "Ember, what color is a ripe banana usually?",
+        "tts_voice": "en",
+        "expected_languages": [
+          "en"
+        ],
+        "expect": {
+          "reply": "yellow",
+          "no_tools": true,
+          "max_latency_s": 15
+        }
+      }
+    ]
+  },
+  {
+    "name": "ru",
+    "language": "ru",
+    "about": "Natural response, follow-up and switch to English.",
+    "steps": [
+      {
+        "text": "Эмбер, какого цвета ясное дневное небо?",
+        "tts_voice": "ru",
+        "expected_languages": [
+          "ru"
+        ],
+        "expect": {
+          "reply": "голуб|син",
+          "no_tools": true,
+          "max_latency_s": 15
+        }
+      },
+      {
+        "text": "А какого цвета обычно трава?",
+        "tts_voice": "ru",
+        "expected_languages": [
+          "ru"
+        ],
+        "expect": {
+          "reply": "зел[её]н",
+          "no_tools": true,
+          "max_latency_s": 15
+        }
+      },
+      {
+        "text": "Ember, what color is a ripe banana usually?",
+        "tts_voice": "en",
+        "expected_languages": [
+          "en"
+        ],
+        "expect": {
+          "reply": "yellow",
+          "no_tools": true,
+          "max_latency_s": 15
+        }
+      }
+    ]
+  },
+  {
+    "name": "bn",
+    "language": "bn",
+    "about": "Natural response, follow-up and switch to English.",
+    "steps": [
+      {
+        "text": "এমবার, পরিষ্কার দিনে আকাশের রং কী?",
+        "tts_voice": "bn",
+        "expected_languages": [
+          "bn"
+        ],
+        "expect": {
+          "reply": "নীল",
+          "no_tools": true,
+          "max_latency_s": 15
+        }
+      },
+      {
+        "text": "আর ঘাস সাধারণত কী রঙের হয়?",
+        "tts_voice": "bn",
+        "expected_languages": [
+          "bn"
+        ],
+        "expect": {
+          "reply": "সবুজ",
+          "no_tools": true,
+          "max_latency_s": 15
+        }
+      },
+      {
+        "text": "Ember, what color is a ripe banana usually?",
+        "tts_voice": "en",
+        "expected_languages": [
+          "en"
+        ],
+        "expect": {
+          "reply": "yellow",
+          "no_tools": true,
+          "max_latency_s": 15
+        }
+      }
+    ]
+  },
+  {
+    "name": "nl",
+    "language": "nl",
+    "about": "Natural response, follow-up and switch to English.",
+    "steps": [
+      {
+        "text": "Ember, welke kleur heeft een heldere hemel overdag?",
+        "tts_voice": "nl",
+        "expected_languages": [
+          "nl"
+        ],
+        "expect": {
+          "reply": "blauw",
+          "no_tools": true,
+          "max_latency_s": 15
+        }
+      },
+      {
+        "text": "En welke kleur heeft gras meestal?",
+        "tts_voice": "nl",
+        "expected_languages": [
+          "nl"
+        ],
+        "expect": {
+          "reply": "groen",
+          "no_tools": true,
+          "max_latency_s": 15
+        }
+      },
+      {
+        "text": "Ember, what color is a ripe banana usually?",
+        "tts_voice": "en",
+        "expected_languages": [
+          "en"
+        ],
+        "expect": {
+          "reply": "yellow",
+          "no_tools": true,
+          "max_latency_s": 15
+        }
+      }
+    ]
+  },
+  {
+    "name": "id",
+    "language": "id",
+    "about": "Natural response, follow-up and switch to English.",
+    "steps": [
+      {
+        "text": "Ember, apa warna langit yang cerah pada siang hari?",
+        "tts_voice": "id",
+        "expected_languages": [
+          "id"
+        ],
+        "expect": {
+          "reply": "biru",
+          "no_tools": true,
+          "max_latency_s": 15
+        }
+      },
+      {
+        "text": "Lalu apa warna rumput biasanya?",
+        "tts_voice": "id",
+        "expected_languages": [
+          "id"
+        ],
+        "expect": {
+          "reply": "hijau",
+          "no_tools": true,
+          "max_latency_s": 15
+        }
+      },
+      {
+        "text": "Ember, what color is a ripe banana usually?",
+        "tts_voice": "en",
+        "expected_languages": [
+          "en"
+        ],
+        "expect": {
+          "reply": "yellow",
+          "no_tools": true,
+          "max_latency_s": 15
+        }
+      }
+    ]
+  },
+  {
+    "name": "mr",
+    "language": "mr",
+    "about": "Natural response, follow-up and switch to English.",
+    "steps": [
+      {
+        "text": "एम्बर, स्वच्छ दिवशी आकाशाचा रंग कोणता असतो?",
+        "tts_voice": "mr",
+        "expected_languages": [
+          "mr"
+        ],
+        "expect": {
+          "reply": "निळ|नीळ",
+          "no_tools": true,
+          "max_latency_s": 15
+        }
+      },
+      {
+        "text": "आणि गवताचा रंग साधारणपणे कोणता असतो?",
+        "tts_voice": "mr",
+        "expected_languages": [
+          "mr"
+        ],
+        "expect": {
+          "reply": "हिरव",
+          "no_tools": true,
+          "max_latency_s": 15
+        }
+      },
+      {
+        "text": "Ember, what color is a ripe banana usually?",
+        "tts_voice": "en",
+        "expected_languages": [
+          "en"
+        ],
+        "expect": {
+          "reply": "yellow",
+          "no_tools": true,
+          "max_latency_s": 15
+        }
+      }
+    ]
+  },
+  {
+    "name": "pl",
+    "language": "pl",
+    "about": "Natural response, follow-up and switch to English.",
+    "steps": [
+      {
+        "text": "Ember, jaki kolor ma bezchmurne niebo w ciągu dnia?",
+        "tts_voice": "pl",
+        "expected_languages": [
+          "pl"
+        ],
+        "expect": {
+          "reply": "niebies|błękit",
+          "no_tools": true,
+          "max_latency_s": 15
+        }
+      },
+      {
+        "text": "A jaki kolor ma zazwyczaj trawa?",
+        "tts_voice": "pl",
+        "expected_languages": [
+          "pl"
+        ],
+        "expect": {
+          "reply": "zielon",
+          "no_tools": true,
+          "max_latency_s": 15
+        }
+      },
+      {
+        "text": "Ember, what color is a ripe banana usually?",
+        "tts_voice": "en",
+        "expected_languages": [
+          "en"
+        ],
+        "expect": {
+          "reply": "yellow",
+          "no_tools": true,
+          "max_latency_s": 15
+        }
+      }
+    ]
+  },
+  {
+    "name": "ro",
+    "language": "ro",
+    "about": "Natural response, follow-up and switch to English.",
+    "steps": [
+      {
+        "text": "Ember, ce culoare are cerul senin în timpul zilei?",
+        "tts_voice": "ro",
+        "expected_languages": [
+          "ro"
+        ],
+        "expect": {
+          "reply": "albastr",
+          "no_tools": true,
+          "max_latency_s": 15
+        }
+      },
+      {
+        "text": "Și ce culoare are de obicei iarba?",
+        "tts_voice": "ro",
+        "expected_languages": [
+          "ro"
+        ],
+        "expect": {
+          "reply": "verde",
+          "no_tools": true,
+          "max_latency_s": 15
+        }
+      },
+      {
+        "text": "Ember, what color is a ripe banana usually?",
+        "tts_voice": "en",
+        "expected_languages": [
+          "en"
+        ],
+        "expect": {
+          "reply": "yellow",
+          "no_tools": true,
+          "max_latency_s": 15
+        }
+      }
+    ]
+  },
+  {
+    "name": "ta",
+    "language": "ta",
+    "about": "Natural response, follow-up and switch to English.",
+    "steps": [
+      {
+        "text": "எம்பர், தெளிவான பகலில் வானம் என்ன நிறத்தில் இருக்கும்?",
+        "tts_voice": "ta",
+        "expected_languages": [
+          "ta"
+        ],
+        "expect": {
+          "reply": "நீல",
+          "no_tools": true,
+          "max_latency_s": 15
+        }
+      },
+      {
+        "text": "புல் பொதுவாக என்ன நிறத்தில் இருக்கும்?",
+        "tts_voice": "ta",
+        "expected_languages": [
+          "ta"
+        ],
+        "expect": {
+          "reply": "பச்சை",
+          "no_tools": true,
+          "max_latency_s": 15
+        }
+      },
+      {
+        "text": "Ember, what color is a ripe banana usually?",
+        "tts_voice": "en",
+        "expected_languages": [
+          "en"
+        ],
+        "expect": {
+          "reply": "yellow",
+          "no_tools": true,
+          "max_latency_s": 15
+        }
+      }
+    ]
+  },
+  {
+    "name": "te",
+    "language": "te",
+    "about": "Natural response, follow-up and switch to English.",
+    "steps": [
+      {
+        "text": "ఎంబర్, పగటిపూట నిర్మలమైన ఆకాశం ఏ రంగులో ఉంటుంది?",
+        "tts_voice": "te",
+        "expected_languages": [
+          "te"
+        ],
+        "expect": {
+          "reply": "నీల",
+          "no_tools": true,
+          "max_latency_s": 15
+        }
+      },
+      {
+        "text": "మరి గడ్డి సాధారణంగా ఏ రంగులో ఉంటుంది?",
+        "tts_voice": "te",
+        "expected_languages": [
+          "te"
+        ],
+        "expect": {
+          "reply": "ఆకుపచ్చ|పచ్చ",
+          "no_tools": true,
+          "max_latency_s": 15
+        }
+      },
+      {
+        "text": "Ember, what color is a ripe banana usually?",
+        "tts_voice": "en",
+        "expected_languages": [
+          "en"
+        ],
+        "expect": {
+          "reply": "yellow",
+          "no_tools": true,
+          "max_latency_s": 15
+        }
+      }
+    ]
+  },
+  {
+    "name": "th",
+    "language": "th",
+    "about": "Natural response, follow-up and switch to English.",
+    "steps": [
+      {
+        "text": "เอ็มเบอร์ ท้องฟ้าในวันที่อากาศแจ่มใสเป็นสีอะไร",
+        "tts_voice": "th",
+        "expected_languages": [
+          "th"
+        ],
+        "expect": {
+          "reply": "ฟ้า|น้ำเงิน",
+          "no_tools": true,
+          "max_latency_s": 15
+        }
+      },
+      {
+        "text": "แล้วหญ้าปกติเป็นสีอะไร",
+        "tts_voice": "th",
+        "expected_languages": [
+          "th"
+        ],
+        "expect": {
+          "reply": "เขียว",
+          "no_tools": true,
+          "max_latency_s": 15
+        }
+      },
+      {
+        "text": "Ember, what color is a ripe banana usually?",
+        "tts_voice": "en",
+        "expected_languages": [
+          "en"
+        ],
+        "expect": {
+          "reply": "yellow",
+          "no_tools": true,
+          "max_latency_s": 15
+        }
+      }
+    ]
+  },
+  {
+    "name": "tr",
+    "language": "tr",
+    "about": "Natural response, follow-up and switch to English.",
+    "steps": [
+      {
+        "text": "Ember, açık bir gündüz gökyüzü ne renktir?",
+        "tts_voice": "tr",
+        "expected_languages": [
+          "tr"
+        ],
+        "expect": {
+          "reply": "mavi",
+          "no_tools": true,
+          "max_latency_s": 15
+        }
+      },
+      {
+        "text": "Peki çimen genellikle ne renktir?",
+        "tts_voice": "tr",
+        "expected_languages": [
+          "tr"
+        ],
+        "expect": {
+          "reply": "yeşil",
+          "no_tools": true,
+          "max_latency_s": 15
+        }
+      },
+      {
+        "text": "Ember, what color is a ripe banana usually?",
+        "tts_voice": "en",
+        "expected_languages": [
+          "en"
+        ],
+        "expect": {
+          "reply": "yellow",
+          "no_tools": true,
+          "max_latency_s": 15
+        }
+      }
+    ]
+  },
+  {
+    "name": "uk",
+    "language": "uk",
+    "about": "Natural response, follow-up and switch to English.",
+    "steps": [
+      {
+        "text": "Ембер, якого кольору ясне денне небо?",
+        "tts_voice": "uk",
+        "expected_languages": [
+          "uk"
+        ],
+        "expect": {
+          "reply": "блакит|син",
+          "no_tools": true,
+          "max_latency_s": 15
+        }
+      },
+      {
+        "text": "А якого кольору зазвичай трава?",
+        "tts_voice": "uk",
+        "expected_languages": [
+          "uk"
+        ],
+        "expect": {
+          "reply": "зелен",
+          "no_tools": true,
+          "max_latency_s": 15
+        }
+      },
+      {
+        "text": "Ember, what color is a ripe banana usually?",
+        "tts_voice": "en",
+        "expected_languages": [
+          "en"
+        ],
+        "expect": {
+          "reply": "yellow",
+          "no_tools": true,
+          "max_latency_s": 15
+        }
+      }
+    ]
+  },
+  {
+    "name": "vi",
+    "language": "vi",
+    "about": "Natural response, follow-up and switch to English.",
+    "steps": [
+      {
+        "text": "Ember, bầu trời quang đãng ban ngày có màu gì?",
+        "tts_voice": "vi",
+        "expected_languages": [
+          "vi"
+        ],
+        "expect": {
+          "reply": "xanh",
+          "no_tools": true,
+          "max_latency_s": 15
+        }
+      },
+      {
+        "text": "Vậy cỏ thường có màu gì?",
+        "tts_voice": "vi",
+        "expected_languages": [
+          "vi"
+        ],
+        "expect": {
+          "reply": "xanh lá|xanh lục",
+          "no_tools": true,
+          "max_latency_s": 15
+        }
+      },
+      {
+        "text": "Ember, what color is a ripe banana usually?",
+        "tts_voice": "en",
+        "expected_languages": [
+          "en"
+        ],
+        "expect": {
+          "reply": "yellow",
+          "no_tools": true,
+          "max_latency_s": 15
+        }
+      }
+    ]
+  },
+  {
+    "name": "hi-en-mixed",
+    "language": "hi",
+    "mixed": true,
+    "about": "Hindi-English mixed speech; human review must check both languages, not just a keyword.",
+    "steps": [
+      {
+        "text": "Ember, आज sky बहुत blue है। तुम्हें कैसा लगता है?",
+        "tts_voice": "hi",
+        "expected_languages": [
+          "hi",
+          "en"
+        ],
+        "expect": {
+          "no_tools": true,
+          "max_latency_s": 15
+        }
+      },
+      {
+        "text": "Ember, अब सिर्फ हिंदी में बताओ कि घास किस रंग की होती है।",
+        "tts_voice": "hi",
+        "expected_languages": [
+          "hi"
+        ],
+        "expect": {
+          "reply": "हर[ाीे]",
+          "no_tools": true,
+          "max_latency_s": 15
+        }
+      }
+    ]
+  }
+]

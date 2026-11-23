@@ -1,0 +1,22 @@
+{
+  "name": "overall",
+  "sources": [
+    "Baymax-main/check_release.py",
+    "tests/**"
+  ],
+  "python": [
+    {
+      "directory": "Baymax-main/tests",
+      "patterns": [
+        "test_check_release.py",
+        "test_public_core_integration.py"
+      ]
+    },
+    {
+      "directory": "tests/overall",
+      "patterns": [
+        "test_*.py"
+      ]
+    }
+  ]
+}

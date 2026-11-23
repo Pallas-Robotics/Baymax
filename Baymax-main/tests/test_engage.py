@@ -124,6 +124,26 @@ class EngageTests(unittest.TestCase):
         self.listeners[0].ready = False
         self.assertTrue(self.ember.gate(MIC))
 
+    def test_loading_wake_listener_cannot_leave_microphone_withheld_forever(self):
+        now = [100.0]
+        self.ember.clock = lambda: now[0]
+        self.say("Ember disengage")
+        self.listeners[0].ready = False
+        self.assertTrue(self.ember.gate(MIC))
+        now[0] += 5.1
+        self.assertFalse(self.ember.gate(MIC))
+        self.assertFalse(self.ember.disengaged)
+        self.assertEqual(self.told, [engage.UNAVAILABLE_NOTE])
+
+    def test_wake_pair_can_span_two_final_results_but_not_an_old_utterance(self):
+        previous = {"result": [{"word": "ember", "conf": .95, "start": 0, "end": .3}]}
+        current = {"result": [{"word": "engage", "conf": .96, "start": .6, "end": 1.0}]}
+        self.assertEqual(heard(current, True, previous=previous), "ember engage")
+        current["result"][0]["start"] = 4.0
+        self.assertIsNone(heard(current, True, previous=previous))
+        current["result"][0].update(start=.6, conf=.6)
+        self.assertIsNone(heard(current, True, previous=previous))
+
     def test_without_audio_cleanup_disengage_is_refused(self):
         self.ember.audio_ready = lambda: False
         self.say("Ember disengage")
@@ -222,6 +242,40 @@ class EngageTests(unittest.TestCase):
                 listener.feed(np.zeros(1024, dtype=np.int16))
             self.assertTrue(wait_for(lambda: woke == ["ember engage"]))
         self.assertEqual(made, [engage.VOCABULARY])
+
+    def test_custom_engage_rules_receive_previous_final_result(self):
+        import scipy.signal
+        from features.toolkits import wakeword
+        class SplitRecognizer:
+            count = 0
+            def AcceptWaveform(self, pcm):
+                self.count += 1
+                return True
+            def Result(self):
+                word = 'ember' if self.count == 1 else 'engage'
+                return json.dumps({'result': [{'word': word, 'conf': 1.0,
+                    'start': self.count * .2, 'end': self.count * .2 + .1}]})
+        with patch.object(wakeword, '_vosk_recognizer', lambda vocabulary: SplitRecognizer()):
+            woke = []
+            listener = engage._listener(woke.append)
+            listener.start()
+            self.assertTrue(wait_for(lambda: listener.ready))
+            listener.feed(np.zeros(1024, dtype=np.int16))
+            listener.feed(np.zeros(1024, dtype=np.int16))
+            self.assertTrue(wait_for(lambda: woke == ['ember engage']))
+
+    def test_wake_worker_failure_is_reported_to_the_microphone_gate(self):
+        import scipy.signal
+        from features.toolkits.wakeword import WakeListener
+        class BrokenRecognizer:
+            def AcceptWaveform(self, pcm):
+                raise RuntimeError('decoder failed')
+        listener = WakeListener(lambda phrase: None, recognizer_factory=BrokenRecognizer)
+        listener.start()
+        self.assertTrue(wait_for(lambda: listener.ready))
+        listener.feed(np.zeros(1024, dtype=np.int16))
+        self.assertTrue(wait_for(lambda: listener.failed))
+        self.assertFalse(listener.ready)
 
 
 class Recognizer:

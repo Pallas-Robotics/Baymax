@@ -279,13 +279,16 @@ def image_file(path):
 class Recorder:
     """Collects one turn's server messages: transcripts, audio, tool calls, completion."""
 
-    def __init__(self):
+    def __init__(self, capture_audio=False):
         self.turn = None
+        self.capture_audio = capture_audio
         self.changed = asyncio.Event()
         self.speech_ended = None
         self.closed = False
 
     def start(self):
+        self.audio_pcm = bytearray()
+        self.audio_rate = 24000
         self.turn = {"heard": "", "reply": "", "tools": [], "audio_bytes": 0, "latency_s": None,
                      "complete": False, "timed_out": False}
         self.speech_ended = None
@@ -330,6 +333,18 @@ async def _receive(session, recorder, tool_results, real_tools):
                         if turn["latency_s"] is None and recorder.speech_ended is not None:
                             turn["latency_s"] = round(time.perf_counter() - recorder.speech_ended, 2)
                         turn["audio_bytes"] += len(part.inline_data.data or b"")
+                        if recorder.capture_audio:
+                            mime = part.inline_data.mime_type or ''
+                            if not mime.startswith('audio/pcm'):
+                                raise ValueError('Reply review recording requires PCM output')
+                            rate = re.search(r'rate=(\d+)', mime)
+                            rate = int(rate[1]) if rate else 24000
+                            if recorder.audio_pcm and rate != recorder.audio_rate:
+                                raise ValueError('Reply audio rate changed during a turn')
+                            recorder.audio_rate = rate
+                            recorder.audio_pcm.extend(part.inline_data.data or b'')
+                            if len(recorder.audio_pcm) > 24000 * 2 * 120:
+                                raise ValueError('Reply review recording exceeded two-minute limit')
                 if content.turn_complete and (turn["audio_bytes"] or turn["reply"]):
                     turn["complete"] = True
             recorder.changed.set()
@@ -380,9 +395,9 @@ async def wait_for_turn(recorder, timeout=TURN_TIMEOUT_S, settle=1.0):
 
 
 async def run_scenario(connect, model, config, scenario, real_tools=False, speak=synthesize,
-                       turn_timeout=TURN_TIMEOUT_S):
+                       turn_timeout=TURN_TIMEOUT_S, audio_dir=None):
     """Fresh session for one run. Returns its turns with failures per turn."""
-    recorder = Recorder()
+    recorder = Recorder(capture_audio=audio_dir is not None)
     turns = []
     async with connect(model=model, config=config) as session:
         receiver = asyncio.create_task(receive(session, recorder, scenario.get("tool_results", {}), real_tools))
@@ -398,6 +413,15 @@ async def run_scenario(connect, model, config, scenario, real_tools=False, speak
                     receiver.result()  # Raise the connection error.
                 turn = dict(recorder.turn, step=step.get("say") or step.get("text"))
                 turn["failures"] = check(step.get("expect", {}), turn)
+                if audio_dir is not None and recorder.audio_pcm:
+                    path = Path(audio_dir) / f'turn-{len(turns) + 1}.wav'
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    with wave.open(str(path), 'wb') as output:
+                        output.setnchannels(1)
+                        output.setsampwidth(2)
+                        output.setframerate(recorder.audio_rate)
+                        output.writeframes(recorder.audio_pcm)
+                    turn['audio_file'] = str(path.resolve())
                 turns.append(turn)
                 recorder.turn = None
         except Exception as error:

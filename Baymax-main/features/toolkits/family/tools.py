@@ -85,14 +85,26 @@ async def deliver_messages(session):
 
 
 async def refresh_profile(session):
-    """New notes summarised mid-conversation: tell Ember now (the next session has them in its instructions)."""
-    if not link.profile_changed.is_set():
+    """New notes summarised mid-conversation: tell Ember (the next session has them in its
+    instructions) once it is free, like messages: a note sent while Gemini is speaking,
+    thinking or calling a tool, or right after someone spoke, can cut off its reply. The
+    change stays pending until then."""
+    if not link.profile_changed.is_set() or not everyday.available_to_speak():
         return
     link.profile_changed.clear()
-    summary = await asyncio.to_thread(store.profile)
-    await session.send_client_content(turns={"role": "user", "parts": [{"text":
-        "[ABOUT THE PERSON] Their family updated what they wrote about the person. Keep this in mind from now "
-        "on; don't mention the update. " + (summary or "(cleared)")}]}, turn_complete=False)
+    try:
+        summary = await asyncio.to_thread(store.profile)
+        # Speech may have started while the profile was loading.
+        if not everyday.available_to_speak():
+            link.profile_changed.set()
+            return
+        await session.send_client_content(turns={"role": "user", "parts": [{"text":
+            "[ABOUT THE PERSON] Their family updated what they wrote about the person. Keep this in mind from now "
+            "on; don't mention the update. " + (summary or "(cleared)")}]}, turn_complete=False)
+    except BaseException:
+        # Also retain updates when a disconnect cancels the session task.
+        link.profile_changed.set()
+        raise
 
 
 async def session_task(session, shutdown_event):

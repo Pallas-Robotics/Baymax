@@ -1,0 +1,14 @@
+{
+  "name": "family",
+  "sources": [
+    "Baymax-main/features/toolkits/family/**"
+  ],
+  "python": [
+    {
+      "directory": "Baymax-main/tests",
+      "patterns": [
+        "test_toolkit_family.py"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,41 @@
+# Enable by copying to .github/workflows/feature-validation.yml with a credential
+# allowed to modify workflows. Runs all suites; feature selection is for local work.
+name: Repository validation
+on:
+  pull_request:
+  push:
+    branches: [main, release]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: validation-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  validate:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: Baymax-main/requirements-orange-pi.txt
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: System dependencies
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libportaudio2 libgl1 libegl1 libgles2 libsndfile1
+      - name: Python dependencies
+        run: python -m pip install -r Baymax-main/requirements-orange-pi.txt
+      - name: Validate all features and overall checks
+        run: python tests/run.py
+      - name: Publish validation summary
+        if: always()
+        run: cat .local-review/validation/report.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: repository-validation
+          path: .local-review/validation/

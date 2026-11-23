@@ -73,6 +73,12 @@ turn, tool call with a stub, card frames, timeout). It also confirms that a dry 
 declined prompt connects to nothing.
 
 ## Adding a scenario
+For multilingual conversations, language switching and the full provider-candidate
+catalog, use [languages/README.md](languages/README.md). `language_eval.py` reuses
+this harness, optionally saves synthetic reply WAVs for human review and compiles
+a model/config-specific language matrix. A regex match or fake-session test never
+counts as validated speech support.
+
 Add an entry to `scenarios.json`:
 - `name`, `about`, `steps` (each with an `expect`).
 - Optional `requires` and `tool_results`.

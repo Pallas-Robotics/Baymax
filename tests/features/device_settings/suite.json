@@ -1,0 +1,23 @@
+{
+  "name": "device_settings",
+  "sources": [
+    "Baymax-main/device_config.py",
+    "Baymax-main/devUI.py",
+    "Baymax-main/dev_settings.py",
+    "Baymax-main/pc_hardware.py",
+    "Baymax-main/macos_devices.py",
+    "Baymax-main/secret_config.py"
+  ],
+  "python": [
+    {
+      "directory": "Baymax-main/tests",
+      "patterns": [
+        "test_devUI_http.py",
+        "test_dev_settings.py",
+        "test_macos_devices.py",
+        "test_pc_hardware.py",
+        "test_secret_config.py"
+      ]
+    }
+  ]
+}

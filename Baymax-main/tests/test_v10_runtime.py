@@ -9,6 +9,7 @@ import threading
 import time
 from types import SimpleNamespace
 import unittest
+import runtime_monitor as monitor
 from unittest.mock import AsyncMock, Mock, patch
 
 from google import genai
@@ -100,7 +101,7 @@ class V10RuntimeTests(unittest.TestCase):
 
     def test_queued_replies_have_a_gap_but_chunks_and_idle_replies_do_not(self):
         namespace = {"_playback_buffer": b"", "_playback_lock": threading.Lock(),
-                     "RECEIVE_SAMPLE_RATE": 48000, "OUTPUT_CHANNELS": 1}
+                     "RECEIVE_SAMPLE_RATE": 48000, "OUTPUT_CHANNELS": 1, "monitor": monitor}
         append = load_function("_append_playback", namespace)
         flush = load_function("_flush_playback", namespace)
         first, second = b"\x01\x00" * 4, b"\x02\x00" * 4
@@ -118,7 +119,7 @@ class V10RuntimeTests(unittest.TestCase):
         enhancer = SimpleNamespace(full_duplex=True, rendered=Mock(), mix_output=lambda chunk: b"\x07\x00" * (len(chunk) // 2))
         namespace = {"_playback_buffer": b"", "_playback_lock": threading.Lock(), "_waiting_cue": None,
                      "_audio_enhancer": enhancer, "np": __import__("numpy"), "OUTPUT_CHANNELS": 1,
-                     "voice_volume": SimpleNamespace(apply=lambda chunk: chunk)}
+                     "voice_volume": SimpleNamespace(apply=lambda chunk: chunk), "monitor": monitor, "RECEIVE_SAMPLE_RATE": 48000}
         with patch("test_public_core_integration.CORE", V10):
             callback = load_function("_output_callback", namespace)
         out = __import__("numpy").empty((4, 1), dtype="int16")
@@ -163,7 +164,7 @@ class V10RuntimeTests(unittest.TestCase):
         with patch("test_public_core_integration.CORE", V10), \
                 patch("features.conversational_ability.session.on_server_message") as seen:
             receive = load_function("receive_audio", {"asyncio": asyncio, "time": time,
-                "_TurnTranscript": lambda *a: SimpleNamespace(flush=lambda: None)})
+                "_TurnTranscript": lambda *a: SimpleNamespace(flush=lambda: None), "monitor": monitor})
             with self.assertRaises(asyncio.CancelledError):
                 asyncio.run(receive(Session()))
         self.assertEqual(seen.call_args.args[0].session_resumption_update, update)
@@ -215,7 +216,7 @@ class ReconnectTests(unittest.TestCase):
         with patch("test_public_core_integration.CORE", V10):
             return load_function("receive_audio", {"asyncio": asyncio, "time": time,
                 "RECEIVE_FAILURES_BEFORE_RECONNECT": 3, "connection_lost": connection_lost,
-                "monitor": SimpleNamespace(emit=Mock()),
+                "monitor": SimpleNamespace(emit=Mock(), timing=Mock()),
                 "_TurnTranscript": lambda speaker: (transcripts or {}).get(speaker, SimpleNamespace(flush=lambda: None))})
 
     @staticmethod
@@ -335,7 +336,8 @@ class ReconnectTests(unittest.TestCase):
 
     def abandon_namespace(self, gate, audio=b"old reply", speaking=True):
         namespace = {"_playback_lock": threading.Lock(), "_playback_buffer": audio, "_cut_off_prompts": [],
-                     "_gemini_speaking_lock": threading.Lock(), "_gemini_speaking": speaking, "_address_gate": gate}
+                     "_gemini_speaking_lock": threading.Lock(), "_gemini_speaking": speaking, "_address_gate": gate,
+                     "monitor": SimpleNamespace(timing=Mock())}
         with patch("test_public_core_integration.CORE", V10):
             load_function("_flush_playback", namespace)
             load_function("_abandon_reply", namespace)
@@ -357,13 +359,14 @@ class ReconnectTests(unittest.TestCase):
 
     FALL_ALERT = {"turns": {"role": "user", "parts": [{"text": "[FALL ALERT] check on them"}]}, "turn_complete": True}
 
-    def run_connections(self, count, receive, failing=()):
+    def run_connections(self, count, receive, failing=(), setup_errors=(), build_config=dict):
         """The real run(), with its real cleanup, the real gate and the real watched
         session, for `count` connections. `receive(index, session, namespace)` is each
         connection's receive loop; every send on a connection in `failing` fails."""
         class Stop(BaseException):
             pass
         sessions = []
+        configs = []
 
         class Session:
             def __init__(self, index):
@@ -377,6 +380,8 @@ class ReconnectTests(unittest.TestCase):
 
         class Connect:
             async def __aenter__(self):
+                if len(configs) <= len(setup_errors):
+                    raise setup_errors[len(configs) - 1]
                 if len(sessions) == count:
                     raise Stop()
                 sessions.append(Session(len(sessions)))
@@ -387,6 +392,10 @@ class ReconnectTests(unittest.TestCase):
         async def forever(*args, **kwargs):
             await asyncio.Event().wait()
 
+        def connect(**kwargs):
+            configs.append(kwargs["config"])
+            return Connect()
+
         namespace = {
             "asyncio": asyncio, "time": SimpleNamespace(sleep=Mock(), monotonic=time.monotonic),
             "_playback_lock": threading.Lock(), "_playback_buffer": b"", "_cut_off_prompts": [],
@@ -394,8 +403,8 @@ class ReconnectTests(unittest.TestCase):
             "_initiation_ts_lock": threading.Lock(), "_last_robot_speech_ts": 0.0,
             "_address_gate": AddressGate(enabled=False), "monitor": Mock(), "public_toolkit": Mock(),
             "genai": SimpleNamespace(Client=lambda **kw: SimpleNamespace(aio=SimpleNamespace(
-                live=SimpleNamespace(connect=lambda **kw: Connect())))),
-            "API_KEY": "test", "MODEL": "m", "_build_config": dict, "_boot_status": Mock(),
+                live=SimpleNamespace(connect=connect)))),
+            "API_KEY": "test", "MODEL": "m", "_build_config": build_config, "_boot_status": Mock(),
             "_memory_embedder": None, "MEMORY_RETRIEVAL_ENABLED": False, "FALL_DETECTION_ENABLED": False,
             "FALL_ANGLE_THRESHOLD": 0, "FALL_STAY_DOWN_SECONDS": 0, "FALL_DETECTION_FPS": 0,
             "POSE_TRACKING_ENABLED": True, "RANDOM_INITIATION_ENABLED": False,
@@ -408,9 +417,41 @@ class ReconnectTests(unittest.TestCase):
         with patch("test_public_core_integration.CORE", V10):
             for name in ("_flush_playback", "_abandon_reply", "_send_cut_off_prompts", "_abort_connection", "run"):
                 load_function(name, namespace)
-        with patch("builtins.print"), patch("asyncio.sleep", AsyncMock()), self.assertRaises(Stop):
+        with patch("builtins.print"), patch("asyncio.sleep", AsyncMock()) as sleep, self.assertRaises(Stop):
             asyncio.run(namespace["run"]())
+        namespace["retry_delays"] = [call.args[0] for call in sleep.await_args_list]
+        namespace["configs"] = configs
         return sessions, namespace
+
+    def test_network_reconnect_uses_bounded_delay_without_audio_reset(self):
+        async def receive(*args):
+            raise ConnectionError("lost network")
+        _, namespace = self.run_connections(7, receive)
+        self.assertEqual(namespace["retry_delays"], [.3, .6, 1.2, 2.4, 4.8, 4.8, 4.8])
+        namespace["sd"]._terminate.assert_not_called()
+        namespace["time"].sleep.assert_not_called()
+
+    def test_device_failure_retains_reset_with_nonblocking_delays(self):
+        async def receive(*args):
+            raise RuntimeError("device failure")
+        _, namespace = self.run_connections(1, receive)
+        self.assertEqual(namespace["retry_delays"], [2, 5])
+        namespace["sd"]._terminate.assert_called_once()
+        namespace["sd"]._initialize.assert_called_once()
+        namespace["time"].sleep.assert_not_called()
+
+    def test_pre_setup_network_failure_preserves_resume_until_server_refusal(self):
+        from features.conversational_ability import session as state
+        state.forget()
+        self.addCleanup(state.forget)
+        state.remember(SimpleNamespace(new_handle="h1", resumable=True))
+        async def receive(*args):
+            raise errors.APIError(1008, {"message": "resume rejected"})
+        _, namespace = self.run_connections(1, receive,
+            setup_errors=(OSError("unreachable"), TimeoutError("setup timed out")),
+            build_config=lambda: state.extend_config({}))
+        self.assertEqual([c["session_resumption"] for c in namespace["configs"]],
+                         [{"handle": "h1"}, {"handle": "h1"}, {"handle": "h1"}, {}])
 
     async def cut_off_alert(self, index, session, namespace):
         """Gemini streams the fall check-in's reply; it is still queued when the line drops."""

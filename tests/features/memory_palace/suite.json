@@ -1,0 +1,16 @@
+{
+  "name": "memory_palace",
+  "sources": [
+    "Baymax-main/features/memory_palace/**",
+    "Baymax-main/semantic_embedder.py"
+  ],
+  "python": [
+    {
+      "directory": "Baymax-main/tests",
+      "patterns": [
+        "test_memory_saving.py",
+        "test_semantic_embedder.py"
+      ]
+    }
+  ]
+}

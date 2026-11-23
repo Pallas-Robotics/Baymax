@@ -1,0 +1,8 @@
+{
+  "name": "person_recognition",
+  "sources": [
+    "Baymax-main/features/person_recognition/**"
+  ],
+  "python": [],
+  "note": "Reserved integration namespace; run overall checks. Add dedicated tests when an identity engine is implemented."
+}

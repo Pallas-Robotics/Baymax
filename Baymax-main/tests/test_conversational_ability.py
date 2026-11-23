@@ -78,6 +78,12 @@ class AudioInputTests(unittest.TestCase):
                 result = extend_config({})
             self.assertEqual(result['realtime_input_config']['automatic_activity_detection']['start_of_speech_sensitivity'], 'START_SENSITIVITY_LOW')
 
+    def test_speech_end_sensitivity_can_be_set_for_device(self):
+        with patch.dict(os.environ, {'BAYMAX_AUDIO_ENHANCEMENT': '1',
+                                     'BAYMAX_SPEECH_END_SENSITIVITY': 'high'}):
+            result = extend_config({})
+        self.assertEqual(result['realtime_input_config']['automatic_activity_detection']['end_of_speech_sensitivity'], 'END_SENSITIVITY_HIGH')
+
     def test_chunking_preserves_every_sample_across_1024_sample_callbacks(self):
         dsp = FakeDSP()
         enhancer = InputEnhancer(processor=dsp)

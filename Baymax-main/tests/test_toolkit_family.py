@@ -157,17 +157,72 @@ class FamilyTests(unittest.TestCase):
             self.assertEqual("send_reply" in names, toolkit == "1")
 
         session = AsyncMock()
-        asyncio.run(family.refresh_profile(session))
-        session.send_client_content.assert_not_called()
-        self.link.profile_changed.set()
-        asyncio.run(family.refresh_profile(session))
+        with patch.object(family.everyday, "available_to_speak", return_value=True):
+            asyncio.run(family.refresh_profile(session))
+            session.send_client_content.assert_not_called()
+            self.link.profile_changed.set()
+            asyncio.run(family.refresh_profile(session))
         kwargs = session.send_client_content.call_args.kwargs
         self.assertFalse(kwargs["turn_complete"])
         self.assertIn("call her Ruthie", str(kwargs["turns"]))
 
+    def test_a_profile_change_waits_until_ember_is_free(self):
+        # Like a message: a note sent while Gemini is replying could cut the reply off.
+        self.store.set_profile("Ruth, 82; call her Ruthie.", "t1")
+        self.link.profile_changed.set()
+        session = AsyncMock()
+        with patch.object(family.everyday, "available_to_speak", return_value=False):
+            asyncio.run(family.refresh_profile(session))
+        session.send_client_content.assert_not_called()
+        self.assertTrue(self.link.profile_changed.is_set())     # still pending
+        with patch.object(family.everyday, "available_to_speak", return_value=True):
+            asyncio.run(family.refresh_profile(session))
+        self.assertIn("call her Ruthie", str(session.send_client_content.call_args))
+        self.assertFalse(self.link.profile_changed.is_set())
+
     def test_session_task_is_registered(self):
         from features.toolkits import fall_detection
         self.assertIn(family.session_task, fall_detection.session_tasks)
+
+    def test_profile_waits_if_speech_starts_during_lookup(self):
+        self.link.profile_changed.set()
+        session = AsyncMock()
+        with patch.object(family.everyday, "available_to_speak", side_effect=[True, False]):
+            asyncio.run(family.refresh_profile(session))
+        session.send_client_content.assert_not_awaited()
+        self.assertTrue(self.link.profile_changed.is_set())
+
+    def test_failed_profile_send_is_retried(self):
+        self.link.profile_changed.set()
+        session = AsyncMock()
+        session.send_client_content.side_effect = ConnectionError("offline")
+        with patch.object(family.everyday, "available_to_speak", return_value=True):
+            with self.assertRaises(ConnectionError):
+                asyncio.run(family.refresh_profile(session))
+            self.assertTrue(self.link.profile_changed.is_set())
+            session.send_client_content.side_effect = None
+            asyncio.run(family.refresh_profile(session))
+        self.assertEqual(session.send_client_content.await_count, 2)
+        self.assertFalse(self.link.profile_changed.is_set())
+
+    def test_new_profile_edit_during_delivery_stays_pending(self):
+        self.link.profile_changed.set()
+        session = AsyncMock()
+        async def new_edit(**kwargs):
+            self.link.profile_changed.set()
+        session.send_client_content.side_effect = new_edit
+        with patch.object(family.everyday, "available_to_speak", return_value=True):
+            asyncio.run(family.refresh_profile(session))
+        self.assertTrue(self.link.profile_changed.is_set())
+
+    def test_cancelled_profile_delivery_stays_pending(self):
+        self.link.profile_changed.set()
+        session = AsyncMock()
+        session.send_client_content.side_effect = asyncio.CancelledError()
+        with patch.object(family.everyday, "available_to_speak", return_value=True):
+            with self.assertRaises(asyncio.CancelledError):
+                asyncio.run(family.refresh_profile(session))
+        self.assertTrue(self.link.profile_changed.is_set())
 
 
 if __name__ == "__main__":

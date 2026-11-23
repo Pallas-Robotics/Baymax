@@ -1,5 +1,8 @@
 # Ember development instructions
 
+- Follow `devops/EDITING_PROTOCOL.md` for future edits and `tests/README.md` for
+  overall/feature validation. Keep suite ownership and the feature log current.
+
 - The documented desktop entry point is `Baymax-main/run_pc.py`, using Gemini Live version 8. Confirm the actual hardware entry point before claiming deployed parity; version 9 has additional behavior.
 - Preserve the base conversation prompt, Gemini models, audio sample rates and processing. Organize core systems under `Baymax-main/features/`: `memory_palace/`, `person_recognition/`, and callable capabilities in `toolkits/`. Put OS/device changes in `pc_hardware.py`.
 - Do not open extra microphone/camera streams in toolkit features. Do not commit credentials, recordings, runtime snapshots, local databases or virtual environments.

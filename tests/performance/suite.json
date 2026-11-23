@@ -1,0 +1,5 @@
+{
+  "name": "performance",
+  "sources": ["devops/performance/**"],
+  "python": [{"directory": "devops/performance", "patterns": ["test_*.py"]}]
+}

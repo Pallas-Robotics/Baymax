@@ -13,6 +13,14 @@ monitor. Robot v10 supports the same public tools through its adapter. See
 
 ## Conversational web discovery
 
+When built-in search is enabled on Gemini 2.5, an explicitly zero thinking budget
+is raised to 128 tokens, adapting Joe Kojima's `d2cca1f` fix. Zero thinking with
+search plus function tools reproduced a session close on the volume command;
+128 allowed both repeated volume tests to pass while retaining search. Existing
+nonzero budgets are preserved. Search off retains the original budget. This can
+add reasoning latency/quota compared with zero thinking; it does not add another
+session, model or provider.
+
 The existing Gemini Google Search tool can be used without an explicit search
 request when a public topic in an engaged conversation merits a relevant lookup.
 Ember is guided to share one sourced finding, connect it to the person's interest,
@@ -30,7 +38,7 @@ require live evaluation.
 
 - `location.py`: `Location.get()` estimates city/region via HTTPS IPWho (`ipwho.is`), cached for one hour. It does not return or save the public IP. `set_city(city, country_code, region)` resolves a city explicitly supplied by the user through Open-Meteo geocoding. Multiple results require clarification; nothing changes until one place matches.
 - `weather.py`: `Weather.get(units)` returns Open-Meteo current model-based conditions and today's forecast with timestamps, units and provider attribution. Cache lasts ten minutes; new coordinates or units have separate entries. Service failures return an error, not invented or expired conditions.
-- `gemini_tools.py`: declares `get_location`, `set_location`, and `get_weather` for Gemini Live, dispatches HTTP work off the audio event loop, and preloads default location/weather in a background thread at startup. Weather questions go straight to `get_weather`, which finds the location itself; `get_location`'s result carries a note saying it has no weather, because Gemini sometimes stopped after it and guessed the conditions.
+- `gemini_tools.py`: declares `get_location`, `set_location`, and `get_weather` for Gemini Live, dispatches HTTP work off the audio event loop, and preloads default location/weather in a background thread at startup. That thread then keeps them cached so a weather question never waits on a fetch: the weather is fetched again every 9 minutes (`WEATHER_REFRESH_S`, before the 10-minute copy expires; in each unit asked for at the user's location, Celsius at least) and the IP location every 54 minutes (`LOCATION_REFRESH_S`; not while a city the user gave is in use). A failed refresh keeps the copy that is still valid; routine refreshes add no monitor events. Weather questions go straight to `get_weather`, which finds the location itself; `get_location`'s result carries a note saying it has no weather, because Gemini sometimes stopped after it and guessed the conditions.
 
 No extra API key or package is required beyond the existing `requests` and Gemini SDK. No location data is written to disk by these tools. Confirmed cities last for the current process only. Gemini's existing transcript/recording behavior still applies.
 
@@ -38,7 +46,7 @@ IP location is approximate and can be wrong, particularly with a VPN or mobile n
 
 ### Data sent to services
 
-IPWho sees the requesting device's public IP. Open-Meteo receives approximate coordinates for weather and user-provided city/region queries for geocoding. Tool results (including approximate coordinates) go to Gemini so it can speak the answer. Tools do not send audio, images, Gemini keys or email credentials to these providers.
+IPWho sees the requesting device's public IP. Open-Meteo receives approximate coordinates for weather and user-provided city/region queries for geocoding. While the toolkit is on, Ember sends these lookups on its own to keep the cache fresh: about 27 IPWho and 160 Open-Meteo forecast requests a day per robot (more if both temperature units are used), whether or not anyone asks. Tool results (including approximate coordinates) go to Gemini so it can speak the answer. Tools do not send audio, images, Gemini keys or email credentials to these providers.
 
 ### Try it
 

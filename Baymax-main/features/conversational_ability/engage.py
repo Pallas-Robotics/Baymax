@@ -15,6 +15,7 @@ import copy
 import os
 import re
 import threading
+import time
 
 import runtime_monitor as monitor
 from . import processing
@@ -37,6 +38,7 @@ UNAVAILABLE_NOTE = ("[ENGAGE AND DISENGAGE] Disengage is not available on this r
 DISENGAGE = re.compile(r"\b(?:ember|amber)\b\W*\bdis\W?engage", re.IGNORECASE)
 VOCABULARY = ["ember", "engage", "disengage"]  # "disengage" so it is never heard as "engage".
 MIN_CONF = 0.9
+WAKE_START_TIMEOUT_S = 5.0
 
 
 def enabled():
@@ -54,13 +56,22 @@ def apply(config):
     return result
 
 
-def heard(result, final, level=None):
+def heard(result, final, level=None, previous=None):
     """'ember engage' when a final Vosk result has the pair with confident words, else None."""
     if not final:
         return None
     words = [(w.get("word"), w.get("conf", 0)) for w in result.get("result", [])]
     for (first, c1), (second, c2) in zip(words, words[1:]):
         if (first, second) == ("ember", "engage") and min(c1, c2) >= MIN_CONF:
+            return "ember engage"
+    before = (previous or {}).get("result", [])
+    after = result.get("result", [])
+    if before and after:
+        first, second = before[-1], after[0]
+        if (first.get("word"), second.get("word")) == ("ember", "engage") \
+                and min(first.get("conf", 0), second.get("conf", 0)) >= MIN_CONF \
+                and "end" in first and "start" in second \
+                and 0 <= second["start"] - first["end"] <= 3.0:
             return "ember engage"
     return None
 
@@ -80,6 +91,8 @@ def audio_ready():
 class Engagement:
     def __init__(self, listener_factory=_listener, audio_ready=audio_ready):
         self.listener_factory, self.audio_ready = listener_factory, audio_ready
+        self.clock = time.monotonic
+        self.listener_started_at = None
         self.lock = threading.Lock()
         self.disengaged = False
         self.listener = None
@@ -108,6 +121,7 @@ class Engagement:
                 self.listener = self.listener_factory(self.wake)
             listener = self.listener
         listener.clear()
+        self.listener_started_at = self.clock()
         listener.start()  # Loads the wake-word model on first use; the mic stays withheld meanwhile.
         print("[ENGAGE] Disengaged; only 'Ember engage' is heard.", flush=True)
         monitor.record("engagement", "Disengaged by voice; only 'Ember engage' is heard")
@@ -142,6 +156,10 @@ class Engagement:
         if listener is not None and listener.failed:
             # No Vosk model or library: never leave the person unable to wake Ember.
             self.engage("wake words unavailable", UNAVAILABLE_NOTE)
+            return False
+        if listener is not None and not listener.ready and self.listener_started_at is not None \
+                and self.clock() - self.listener_started_at >= WAKE_START_TIMEOUT_S:
+            self.engage("wake listener startup timed out", UNAVAILABLE_NOTE)
             return False
         if listener is not None:
             listener.feed(samples)  # Dropped until the model has loaded.

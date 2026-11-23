@@ -215,6 +215,14 @@ class WakeListener:
 
     def run(self):
         try:
+            self._run()
+        except Exception as error:
+            self.failed = True
+            self.ready = False
+            print(f"[WAKE] Wake listener failed ({error}); {self.unavailable}.", flush=True)
+
+    def _run(self):
+        try:
             recognizer = self.recognizer_factory()
         except Exception as error:
             self.failed = True
@@ -233,7 +241,7 @@ class WakeListener:
             # break the mapping to `history`); the book pausing stops the feed anyway.
             result = json.loads(recognizer.Result())
             phrase = (heard(result, True, self.level, previous) if self.rules is None
-                      else self.rules(result, True, self.level))
+                      else self.rules(result, True, self.level, previous))
             previous = None if phrase else result
             if not phrase and self.on_hint is not None and any(
                     w.get("word") != "[unk]" and w.get("conf", 0) >= HINT_CONF for w in result.get("result", [])):

@@ -1,0 +1,6 @@
+{
+  "structural_llm_tokens": 0,
+  "semantic_input_tokens": null,
+  "semantic_output_tokens": null,
+  "note": "Host semantic usage unavailable; no provider API key was used."
+}

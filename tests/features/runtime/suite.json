@@ -1,0 +1,16 @@
+{
+  "name": "runtime",
+  "sources": [
+    "Baymax-main/realtime_gemini_*.py",
+    "Baymax-main/evals/**"
+  ],
+  "python": [
+    {
+      "directory": "Baymax-main/tests",
+      "patterns": [
+        "test_live_eval.py",
+        "test_v10_runtime.py"
+      ]
+    }
+  ]
+}

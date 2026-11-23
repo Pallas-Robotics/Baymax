@@ -63,6 +63,38 @@ def forget():
         _state.update(handle=None, at=0.0, offered=0)
 
 
+def not_tried():
+    """Undo an offer when the network failed before Gemini accepted a connection.
+
+    Adapted from Joe Kojima's 7f21fab; server refusals still consume the offer.
+    """
+    with _lock:
+        _state["offered"] = 0
+
+
+def _leaves(error):
+    if isinstance(error, BaseExceptionGroup):
+        return [leaf for nested in error.exceptions for leaf in _leaves(nested)]
+    return [error]
+
+
+def retry_plan(error, lasted, quick_failures):
+    """Joe Kojima's bounded network backoff, adapted without proactive handover.
+
+    Sources: 30c7d7b and c3deba5. None retains the existing device-error reset.
+    Pure network failures never need a global PortAudio reset.
+    """
+    quick_failures = quick_failures + 1 if lasted < 60 else 1
+    if all(isinstance(e, OSError) or connection_lost(e) for e in _leaves(error)):
+        return min(0.3 * 2 ** min(quick_failures - 1, 16), 4.8), quick_failures
+    return None, quick_failures
+
+
+def connection_not_started(error):
+    """Only transport failures before setup preserve an untried resume handle."""
+    return all(isinstance(e, OSError) for e in _leaves(error))
+
+
 def extend_config(config, clock=time.monotonic):
     result = copy.deepcopy(config)
     if os.getenv("BAYMAX_CONTEXT_COMPRESSION", "1") != "0":

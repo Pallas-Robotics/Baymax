@@ -280,7 +280,7 @@ class V10ReceiveLoopTests(unittest.TestCase):
         self.heard = heard  # the user's transcript, now recorded through _transcript_add
         self.playback_states = []
         self.playback_starts = []
-        def append_playback(data, *, new_turn=False):
+        def append_playback(data, *, new_turn=False, timing_id=None):
             played.append(data)
             self.playback_states.append(namespace['_gemini_speaking'])
             self.playback_starts.append(new_turn)
@@ -289,7 +289,7 @@ class V10ReceiveLoopTests(unittest.TestCase):
             "asyncio": asyncio, "np": np, "_address_gate": g,
             "time": SimpleNamespace(monotonic=clock, perf_counter=time.perf_counter),
             "public_toolkit": SimpleNamespace(), "monitor": SimpleNamespace(emit=Mock(), transcribe=Mock(),
-                                                                           finish_transcripts=Mock()),
+                                                                           finish_transcripts=Mock(), timing=Mock()),
             "_transcript_add": lambda speaker, text: (said if speaker == "gemini" else heard).append(text.strip()),
             "_TurnTranscript": lambda *a: SimpleNamespace(add=Mock(), flush=Mock()),
             "_initiation_ts_lock": threading.Lock(), "_recent_user_words_lock": threading.Lock(),

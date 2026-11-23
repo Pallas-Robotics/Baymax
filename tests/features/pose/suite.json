@@ -1,0 +1,19 @@
+{
+  "name": "pose",
+  "sources": [
+    "Baymax-main/features/pose/**",
+    "Baymax-main/features/vision_process.py",
+    "Baymax-main/fall_detection/**"
+  ],
+  "python": [
+    {
+      "directory": "Baymax-main/tests",
+      "patterns": [
+        "test_pose_backend.py",
+        "test_pose_fall_defaults.py",
+        "test_toolkit_fall_detection.py",
+        "test_toolkit_vision_process.py"
+      ]
+    }
+  ]
+}

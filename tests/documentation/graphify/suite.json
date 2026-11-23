@@ -1,0 +1,19 @@
+{
+  "name": "graphify",
+  "sources": [
+    "devops/graphify/**",
+    "docs/features/**",
+    "graphify-out/**",
+    "README.md",
+    "AGENTS.md",
+    "devops/EDITING_PROTOCOL.md"
+  ],
+  "python": [
+    {
+      "directory": "devops/graphify",
+      "patterns": [
+        "test_*.py"
+      ]
+    }
+  ]
+}

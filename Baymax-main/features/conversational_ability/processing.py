@@ -54,11 +54,15 @@ def extend_config(config):
     if sensitivity not in ('low', 'high'):
         print('[AUDIO] Invalid speech-start sensitivity; using low.', flush=True)
         sensitivity = 'low'
+    end_sensitivity = os.getenv('BAYMAX_SPEECH_END_SENSITIVITY', 'low').strip().lower()
+    if end_sensitivity not in ('low', 'high'):
+        print('[AUDIO] Invalid speech-end sensitivity; using low.', flush=True)
+        end_sensitivity = 'low'
     result = copy.deepcopy(config)
     realtime = result.setdefault('realtime_input_config', {})
     realtime['automatic_activity_detection'] = {
         'disabled': False, 'start_of_speech_sensitivity': 'START_SENSITIVITY_' + sensitivity.upper(),
-        'end_of_speech_sensitivity': 'END_SENSITIVITY_LOW',
+        'end_of_speech_sensitivity': 'END_SENSITIVITY_' + end_sensitivity.upper(),
         'prefix_padding_ms': 0, 'silence_duration_ms': silence if silence is not None else 500}
     realtime['activity_handling'] = 'START_OF_ACTIVITY_INTERRUPTS' if interruptions else 'NO_INTERRUPTION'
     return result
@@ -319,6 +323,9 @@ class InputEnhancer:
                             'input_latency_ms': round(self.input_latency_ms, 1),
                             'output_latency_ms': round(self.output_latency_ms, 1),
                             'full_duplex': True}
+            monitor.timing.microphone(self.metrics['speech_probability'],
+                                      self.metrics['clean']['rms_dbfs'],
+                                      len(samples) / self.rate, self.input_latency_ms / 1000)
             return result
         except Exception:
             # Preserve microphone capture on DSP failure; restore half-duplex to

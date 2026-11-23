@@ -7,6 +7,9 @@ import os
 from pathlib import Path
 import threading
 import time
+from features.conversational_ability.timing import ConversationTiming
+
+timing = ConversationTiming()
 
 PATH = Path(__file__).with_name('.runtime-status.json')
 STOP_PATH = Path(__file__).with_name('.runtime-stop.json')
@@ -110,6 +113,8 @@ def transcribe(speaker, fragment):
             active_transcripts[speaker] = message
         message['text'] = (message['text'] + fragment)[-8000:]
         message['updated_at'] = time.time()
+        if speaker == 'user' and fragment.strip():
+            timing.transcript(speaker, message['id'])
         if speaker == 'user':
             from features.conversational_ability.echo import transcript_overlap
             now = time.time()
@@ -155,6 +160,8 @@ def snapshot(metrics=None):
                 'activities': dict(activities), 'events': [dict(event) for event in events], 'metrics': metrics or {},
                 'sensor_age_s': {name: round(time.monotonic() - seen, 1) for name, seen in dict(sensors).items()},
                 'transcripts': [dict(message) for message in transcripts],
+                'conversation_timing': timing.snapshot(),
+                'speech_detection': timing.speech_status(),
                 'capabilities': {'memory': 'Disabled in version-8 demo', 'google_search': _search_status(),
                                  'toolkit': 'Location, weather and optional experimental fall detection',
                                  'fall_detection': fall_status}}

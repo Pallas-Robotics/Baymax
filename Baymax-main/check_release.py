@@ -39,6 +39,11 @@ MANUAL_CHECKLIST = """## Core: live checks (pending until a person records evide
 - [ ] For each added/changed toolkit, record normal, invalid-input and failure cases,
       core integration, disabled behavior, dependencies and external data flows.
 
+## Every feature: performance evidence (pending)
+- [ ] Follow devops/performance/README.md: baseline/off, active/on and combined load on the target board.
+- [ ] Record CPU/RAM peaks, NPU telemetry or justified N/A, temperature and recognition/reply/playback p95.
+- [ ] Check explicit budgets and added p95 latency; record completed/missed turns, sensor gaps and repeat runs.
+
 ## Evidence and lead review
 - Tester, date, OS, devices and runtime/deployed baseline:
 - Core live result and evidence:
@@ -98,6 +103,12 @@ def collect_suites(test_dir):
         section = "toolkit" if path.name.startswith("test_toolkit") else "core"
         # Discover every new test module, not only today's fixed list.
         suites[section].addTests(unittest.TestLoader().discover(str(test_dir), pattern=path.name))
+    overall = ROOT.parent / 'tests/overall'
+    if Path(test_dir).resolve() == (ROOT / 'tests').resolve() and overall.is_dir():
+        suites['core'].addTests(unittest.TestLoader().discover(str(overall), pattern='test_*.py'))
+        performance = ROOT.parent / 'devops/performance'
+        if performance.is_dir():
+            suites['core'].addTests(unittest.TestLoader().discover(str(performance), pattern='test_*.py'))
     return suites
 
 

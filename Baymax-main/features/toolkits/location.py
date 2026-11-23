@@ -36,23 +36,39 @@ class Location:
                 return copy.deepcopy(self.confirmed)
             if self.cached and self.clock() < self.expires:
                 return copy.deepcopy(self.cached)
-            try:
-                data = self.fetch("https://ipwho.is/", {"fields": "success,city,region,country,country_code,latitude,longitude"})
-                if data.get("success") is not True:
-                    raise ValueError("Location unavailable")
-                lat, lon = coordinates(data)
-                result = {"city": data.get("city", ""), "region": data.get("region", ""),
-                          "country": data.get("country", ""), "country_code": data.get("country_code", ""),
-                          "latitude": lat, "longitude": lon, "source": "ipwho.is",
-                          "approximate": True, "accuracy": "city/region estimate; not GPS or a street address",
-                          "notice": "VPNs, mobile networks and ISP routing can place you elsewhere. Say the place is approximate; the user can correct it.",
-                          "fetched_at": datetime.now(timezone.utc).isoformat()}
-                ttl = 3600
-            except (requests.RequestException, ValueError, KeyError, TypeError):
-                result = {"error": "Could not estimate location. Ask which city, region and country the user is in."}
-                ttl = 30
+            result, ttl = self._lookup()
             self.cached, self.expires = result, self.clock() + ttl
             return copy.deepcopy(result)
+
+    def refresh(self):
+        """Look the IP location up again before the hour's copy expires, so a weather
+        question never waits on IPWho. A confirmed city needs no lookup. The lookup runs
+        outside the lock; a failed one keeps a copy that is still valid."""
+        with self.lock:
+            if self.confirmed:
+                return
+        result, ttl = self._lookup()
+        with self.lock:
+            if ("error" in result and self.cached and "error" not in self.cached
+                    and self.clock() < self.expires):
+                return
+            self.cached, self.expires = result, self.clock() + ttl
+
+    def _lookup(self):
+        """(result, seconds to keep it) from IPWho."""
+        try:
+            data = self.fetch("https://ipwho.is/", {"fields": "success,city,region,country,country_code,latitude,longitude"})
+            if data.get("success") is not True:
+                raise ValueError("Location unavailable")
+            lat, lon = coordinates(data)
+            return {"city": data.get("city", ""), "region": data.get("region", ""),
+                    "country": data.get("country", ""), "country_code": data.get("country_code", ""),
+                    "latitude": lat, "longitude": lon, "source": "ipwho.is",
+                    "approximate": True, "accuracy": "city/region estimate; not GPS or a street address",
+                    "notice": "VPNs, mobile networks and ISP routing can place you elsewhere. Say the place is approximate; the user can correct it.",
+                    "fetched_at": datetime.now(timezone.utc).isoformat()}, 3600
+        except (requests.RequestException, ValueError, KeyError, TypeError):
+            return {"error": "Could not estimate location. Ask which city, region and country the user is in."}, 30
 
     def set_city(self, city, country_code="", region=""):
         if not isinstance(city, str) or not city.strip() or len(city) > 120:

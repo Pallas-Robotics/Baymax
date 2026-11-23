@@ -1,7 +1,102 @@
 # Conversational ability
 
+## Joe's OPI4 integration candidate
+
+### Voice test follow up
+
+Each reply now follows the latest spoken turn immediately, with explicit reply
+language requests taking precedence. Switch without an acknowledgement or a
+permission question. Re-evaluate every user turn: a prior request to speak Korean
+does not lock a later Spanish question to Korean. Answer a request to switch in
+the requested language on that same reply.
+`evals/voice_controls.json` exercises English, Spanish and Korean switching and
+the volume tool with synthetic text, without opening a microphone. Direct
+Korean-to-Spanish scenarios also use generated speech, with an explicit Korean
+reply request followed by ordinary Korean and Spanish questions. These synthetic
+checks do not establish recognition or playback quality in the owner's room.
+
+Disengage withholds audio from Gemini while the existing cleaned mic frames feed
+the local recognizer. Wake pairs may span two final recognizer results within
+three seconds, retaining the confidence threshold and rejecting isolated names
+and stale pairs. A listener that fails or is still loading after five seconds
+re-engages Ember and reports that disengage is unavailable, rather than leaving
+the user unable to wake it. Prepare the cached Vosk model before a bench test;
+no additional capture stream is opened.
+
+The volume tool must execute before confirming a change or reporting its level.
+Joe Kojima's `d2cca1f` search compatibility setting is adapted so Google Search
+and function tools do not run with the failing zero-thinking configuration.
+Search stays enabled; explicit nonzero budgets stay unchanged.
+The audio callback applies the resulting PCM gain; changing voice wording alone
+does not change volume. Test dispatch, saved level and audio gain together in
+`tests/test_voice_volume.py`.
+
+The candidate ports Joe Kojima's language wording (51f15f1, 2d50ced), network
+backoff (30c7d7b, c3deba5), and untried resume-handle recovery (7f21fab).
+Replies follow words rather than accents or transcript scripts; internal tags
+stay unspoken, and the offline pause phrases remain English. Network-only
+retries wait 0.3, 0.6, 1.2, 2.4, then at most 4.8 seconds. A transport failure
+before setup keeps its resume handle; a server refusal still consumes it.
+Device/unknown failures retain the existing audio reset, with awaited delays
+and device calls on a worker thread. Audio ownership stays in the existing
+OPI4 runtime; this does not replace it with Joe's newer runtime or enable a new
+model, microphone, camera, search session, memory scheduler or GoAway handover.
+
+Regression coverage: `tests/test_session.py`, `tests/test_v10_runtime.py` and
+`tests/test_live_eval.py`. Validation results, attribution and remaining live
+checks are in [the candidate record](../../../docs/features/JOE_OPI4_PORT.md).
+
 Responsive turn-taking and local microphone processing, independent of memory or face recognition.
 Integrated with desktop v8 and robot v10.
+
+## Language adaptation
+
+The shared [persona](../persona.py) instructs Gemini to reply in the person's
+language, follow switches on the next reply, and match mixed-language speech.
+English internal system messages should retain the conversation's language.
+This uses the existing Gemini Live audio/text input and reply stream: no local
+language classifier, extra capture stream, model change or separate provider
+request is added. The existing remote-processing data flow is unchanged.
+
+It is enabled through the normal MVP persona, with no separate language toggle.
+An approved deployment/runtime restart picks up the prompt change. This guides
+reply generation; it does not fix transcription or verify pronunciation.
+The [Pi results](../../../docs/features/OPI4_LANGUAGE_RESULTS.md) record 80/81
+automated runs passing and a Polish switching failure. See the
+[multilingual test guide](../../evals/languages/README.md) for simulations and
+`tests/test_language_eval.py` for offline configuration/report checks.
+
+## Conversation timing (OPI4 v10 monitor)
+
+The Monitor shows the last 20 turns (six visible) with estimated local speech
+start/end, first/last Gemini transcript arrival, first reply text/audio arrival,
+and the first nonzero reply sample scheduled for playback. Durations separate
+speech-end to transcript, transcript to reply audio, and reply audio to playback.
+The status section shows local speech activity before a transcript exists,
+then "waiting for Gemini transcript" after detected speech ends. It refreshes
+with the existing 200 ms telemetry / 250 ms UI polling. Stale detector data is
+marked unavailable. Speaker callback underruns are counted separately to help
+diagnose stuttering; the counter does not detect every possible audible glitch.
+Speech/transcript timing updates inside the user's chat bubble; reply arrival,
+speaker playback and response delays update inside Ember's bubble. While waiting,
+the user's bubble shows elapsed waiting time. Full timing history is collapsed
+below the conversation. Each toolkit invocation has one centered bubble that
+updates from running to finished with start/end timestamps and elapsed duration;
+separate repeated invocations retain their own bubbles.
+The local detector observes existing cleaned audio (70% speech probability,
+at least -45 dBFS, 60 ms onset and 400 ms silence); it does not gate audio or
+change Gemini settings. Noise, echoes and pauses can split/miss detections.
+Speech times are omitted if multiple local segments could match a transcript.
+Gemini's internal recognition time and actual acoustic output are not measured.
+Playback uses callback DAC timing; a missing timestamp falls back to the output
+latency estimate. Interruption clears unplayed timing marks.
+No new recordings, dependencies, streams or external requests are added. Timing
+metadata is local and bounded; durations use a monotonic clock mapped to wall
+time. Offline tests: `test_conversation_timing.py`, `test_runtime_monitor.py`,
+`test_v10_runtime.py`. Live confirmation requires restarting v10 and speaking.
+From the repository root, `node test/monitor-chat.cjs` checks inline timing
+updates and one stable toolkit bubble per invocation without opening devices.
+
 The existing camera/audio streams and 48 kHz rates stay in the runtime. This
 module opens no devices and makes no external requests.
 

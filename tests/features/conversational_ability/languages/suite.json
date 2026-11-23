@@ -1,0 +1,5 @@
+{
+  "name": "languages",
+  "sources": ["Baymax-main/features/persona.py", "Baymax-main/evals/language_eval.py", "Baymax-main/evals/languages/**", "docs/features/LANGUAGES.md", "docs/features/OPI4_LANGUAGE_RESULTS.md"],
+  "python": [{"directory": "Baymax-main/tests", "patterns": ["test_language_eval.py"]}]
+}

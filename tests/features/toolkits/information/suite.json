@@ -1,0 +1,18 @@
+{
+  "name": "information",
+  "sources": [
+    "Baymax-main/features/toolkits/gemini_tools.py",
+    "Baymax-main/features/toolkits/*.py"
+  ],
+  "python": [
+    {
+      "directory": "Baymax-main/tests",
+      "patterns": [
+        "test_toolkit.py",
+        "test_toolkit_public.py",
+        "test_toolkit_proactive.py",
+        "test_toolkit_look_closely.py"
+      ]
+    }
+  ]
+}

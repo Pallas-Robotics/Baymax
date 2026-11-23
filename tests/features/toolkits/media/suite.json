@@ -1,0 +1,20 @@
+{
+  "name": "media",
+  "sources": [
+    "Baymax-main/features/toolkits/wakeword.py",
+    "Baymax-main/features/toolkits/audiobooks.py",
+    "Baymax-main/features/toolkits/listen.py",
+    "Baymax-main/features/toolkits/librivox.py",
+    "Baymax-main/features/toolkits/general_media_entertainment/**"
+  ],
+  "python": [
+    {
+      "directory": "Baymax-main/tests",
+      "patterns": [
+        "test_toolkit_audiobooks.py",
+        "test_toolkit_brain_games.py",
+        "test_toolkit_listen.py"
+      ]
+    }
+  ]
+}
