@@ -33,34 +33,88 @@ class FakeSpeaker:
     def __init__(self, robot=None):
         self.robot, self.played = robot, []
 
-    def start(self, samples, label=""):
+    def start(self, samples, label="", parts=None):
+        """`parts` (timeline tracks): [(offset_s, label, seconds)] cues inside `samples`; the
+        robot hears each one at its offset instead of the whole track."""
         duration = len(samples) / audio.RATE
-        self.played.append({"label": label, "seconds": duration, "rms_dbfs": audio.rms_dbfs(samples)})
+        self.played.append({"label": label, "seconds": duration, "rms_dbfs": audio.rms_dbfs(samples),
+                            "parts": list(parts or []), "at": self.robot.clock.time() if self.robot else None,
+                            "samples": samples})
         if self.robot is not None:
-            self.robot.hear(label, duration, samples)
+            if parts is None:
+                self.robot.hear(label, duration, samples)
+            for offset, part, seconds in parts or []:
+                self.robot.hear(part, seconds, samples, delay=offset)
         return duration
 
     def stop(self):
-        pass
+        if self.played and self.robot is not None and "stopped" not in self.played[-1]:
+            self.played[-1]["stopped"] = self.robot.clock.time()  # A restart cuts the earlier buffer here.
 
     def close(self):
         pass
 
 
 class FakeDisplay:
-    available = True
+    """Records cards and clips; confirms each `ack_delay` seconds later (None: never)."""
 
-    def __init__(self):
-        self.shown, self.cleared = [], 0
+    available, plays_video = True, True
 
-    def show(self, jpeg):
+    def __init__(self, clock=None, ack_delay=0.08):
+        self.shown, self.cleared, self.videos, self.labels = [], 0, [], []
+        self.clock, self.ack_delay, self.version, self.sent = clock, ack_delay, 0, {}
+
+    def _next(self, event):
+        self.version += 1
+        if self.clock is not None:
+            self.sent[self.version] = (event, self.clock.time())
+        return self.version
+
+    robot = None  # A FakeRobot "sees" what is shown: its rules also match card and clip labels.
+
+    def show(self, jpeg, label=""):
         self.shown.append(jpeg)
+        self.labels.append(label)
+        version = self._next("shown")
+        if self.robot is not None and label:
+            self.robot.hear(label, 0.0, np.zeros(0, dtype=np.int16))
+        return version
+
+    def play_video(self, path, label=""):
+        self.videos.append(str(path))
+        self.labels.append(label)
+        version = self._next("playing")
+        if self.robot is not None:
+            self.robot.hear(label or Path(path).name, 0.0, np.zeros(0, dtype=np.int16))
+        return version
+
+    def ack(self, version, event):
+        sent = self.sent.get(version)
+        if sent is None or sent[0] != event or self.ack_delay is None:
+            return None
+        return sent[1] + self.ack_delay if self.clock.time() >= sent[1] + self.ack_delay else None
 
     def clear(self):
         self.cleared += 1
 
     def close(self):
         pass
+
+
+class FakeHook:
+    """A light, fault or plug: records calls with the clock time."""
+
+    def __init__(self, clock):
+        self.clock, self.calls = clock, []
+
+    def set(self, percent):
+        self.calls.append(("set", percent, self.clock.time()))
+
+    def start(self):
+        self.calls.append(("start", None, self.clock.time()))
+
+    def stop(self):
+        self.calls.append(("stop", None, self.clock.time()))
 
 
 class FakeSampler:
@@ -100,6 +154,7 @@ class FakeRobot:
         self.pending, self.playing_until, self.playing_dbfs = [], 0.0, -90.0
         self.next_mic, self.heard_labels = 0.0, []
         self.with_timing, self.trace_path = timing, trace_path  # v10 conversation_timing; EMBER_TRACE lines.
+        self.display = None  # A FakeDisplay, for replies that read the screen.
         clock.listeners.append(self.advance)
 
     # ── Runtime interface ────────────────────────────────────────────────────
@@ -107,7 +162,7 @@ class FakeRobot:
         self.pid, self.running, self.code = 4000 + self.starts, True, None
         self.starts += 1
         self.events, self.transcripts, self.sequence, self.active = [], [], 0, {}
-        self.timing, self.last_user = [], None
+        self.timing, self.last_user, self.replies = [], None, []
         self.state, self.detail, self.pending = "starting", "Starting Ember", []
         self.trace("trace_start", schema=1, pid=self.pid, text_enabled=False)
         self.emit("connecting", "Connecting to Gemini Live")
@@ -171,13 +226,13 @@ class FakeRobot:
         self.pending.append((self.clock.time() + delay, action))
         self.pending.sort(key=lambda item: item[0])
 
-    def hear(self, label, duration, samples):
-        self.playing_until = self.clock.time() + duration
+    def hear(self, label, duration, samples, delay=0.0):
+        self.playing_until = max(self.playing_until, self.clock.time() + delay + duration)
         self.playing_dbfs = audio.rms_dbfs(samples) + self.coupling_db
         self.heard_labels.append(label)
         for rule in self.rules:
             if re.search(rule["on"], label, re.IGNORECASE):
-                delay = duration
+                delay += duration
                 for action in rule["do"]:
                     delay += action.get("after", 0.5)
                     self.schedule(delay, action)
@@ -213,8 +268,13 @@ class FakeRobot:
             self.trace("audio_received", bytes=9600, duration_ms=200.0)
             self.timing.append({"id": len(self.timing) + 1, "speech_end": self.last_user, "reply_audio": now,
                                 "playback": now + action.get("playback_s", 0.04)})
-            self.transcribe("ember", action["reply"])
-            self.print(f"[GEMINI TXT] {action['reply']}")
+            self.replies.append((now + action.get("playback_s", 0.04), action.get("seconds", 2.0)))
+            text = action["reply"]
+            if "{display}" in text:  # Read back what the fake display shows (the screen check's code).
+                labels = getattr(self.display, "labels", None) or [""]
+                text = text.replace("{display}", " ".join(re.findall(r"\d+", labels[-1])) or "nothing")
+            self.transcribe("ember", text)
+            self.print(f"[GEMINI TXT] {text}")
             self.schedule(action.get("seconds", 2.0), {"state": ["listening", "Reply complete; listening "
                                                                  "(buffered audio may still play)"]})
         elif "tool" in action:
@@ -230,3 +290,68 @@ class FakeRobot:
             self.emit(*action["state"])
         elif "exit" in action:
             self.running, self.code = False, action["exit"]
+
+
+def ember_voice(seconds, rate, seed=3):
+    """A speech-like harmonic signal for Ember's replies in a fake reference recording."""
+    rng = np.random.default_rng(seed)
+    t = np.arange(int(rate * seconds)) / rate
+    syllables = 0.5 * (1 + np.sin(2 * np.pi * 4 * t)) ** 2
+    x = sum(np.sin(2 * np.pi * 230 * k * t + rng.uniform(0, 6)) / k for k in range(1, 8)) * syllables
+    return x / np.max(np.abs(x))
+
+
+class FakeRecorder:
+    """A reference microphone hearing the fake room: what the FakeSpeaker played (at `coupling`)
+    plus Ember's replies from the FakeRobot's playback times, over a noise floor. 16 kHz."""
+
+    def __init__(self, clock, speaker, robot, rate=16000, noise=30.0, coupling=0.4, ember=6000.0, broken=False):
+        self.clock, self.speaker, self.robot, self.rate = clock, speaker, robot, rate
+        self.noise, self.coupling, self.ember, self.broken = noise, coupling, ember, broken
+        self.started, self.discarded, self.recording = None, 0, False
+
+    def start(self):
+        self.started, self.recording = self.clock.time(), True
+
+    def stop(self):
+        from evals.robot import measure
+        if not self.recording:
+            return None
+        self.recording = False
+        seconds = self.clock.time() - self.started
+        out = np.random.default_rng(0).standard_normal(int(seconds * self.rate)) * self.noise
+
+        def add(signal, at):
+            start = int(round((at - self.started) * self.rate))
+            if start >= len(out) or start + len(signal) <= 0:
+                return
+            if start < 0:
+                signal, start = signal[-start:], 0
+            part = out[start:start + len(signal)]
+            part += signal[:len(part)]
+        for played in self.speaker.played:
+            if played.get("at") is not None and played["at"] + played["seconds"] >= self.started:
+                heard = played["samples"]
+                if "stopped" in played:
+                    heard = heard[:max(0, int((played["stopped"] - played["at"]) * audio.RATE))]
+                add(measure.to_rate(heard, audio.RATE, self.rate) * self.coupling, played["at"])
+        if not self.broken:
+            for when, length in self.robot.replies:
+                add(ember_voice(min(length, 4.0), self.rate) * self.ember, when)
+        return np.clip(out, -32768, 32767).astype(np.int16), self.rate, self.started
+
+    def discard(self):
+        self.discarded += 1
+
+    def close(self):
+        pass
+
+
+class FakePower:
+    def __init__(self, boot_s=42.0):
+        self.boot_s, self.cycles = boot_s, 0
+
+    def cycle(self, clock):
+        self.cycles += 1
+        clock.sleep(self.boot_s)
+        return self.boot_s

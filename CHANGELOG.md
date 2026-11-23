@@ -1,5 +1,31 @@
 # MVP (unreleased)
 
+- Robot test rig: synthesized audio and video, measured from outside the robot.
+  - **Timeline scenarios** (`evals/robot/timeline.py`): cues on one rig clock,
+    fixed-time audio mixed to the sample, barge-in "N ms after Ember starts
+    talking", light, fault and power cues, a seeded SHA-256 of what was played,
+    and a cue log with lateness.
+  - **Video on the HTTP display**: MP4/WebM fullscreen, which confirms when
+    playback began.
+  - **Screen check**: Ember must read a seeded code card, or the run is a rig
+    fault.
+  - **Checksummed fixtures** kept outside Git.
+  - **Reference microphone** (`measure.py`): latency from the end of the line to
+    Ember's first sound, about 10 ms; recordings are deleted and only numbers are
+    reported.
+  - **Repeats**: `--repeat N` in seeded random order, with Wilson 95% pass rates,
+    release gates (`--release`, e.g. safety 19/20) and product / flaky / rig fault
+    classes (`stats.py`).
+  - **Virtual-device mode** (`--virtual`; snd-aloop and v4l2loopback; loaded only
+    when configured).
+  - **New scenarios**: fall clip and control, timed barge-in, noisy room, network
+    drop, dim light, boot to ready (external smart plug only).
+  - **Shorter rig latencies**: the line's end is now the end of the audio, not
+    when the rig stopped waiting (about 0.5 s earlier).
+  - **README**: shopping list with prices, setup, the limits of screens, and what
+    each layer can and can't prove.
+  - Offline tests in `tests/test_robot_rig_av.py`; nothing has run on hardware.
+
 - Robot test rig (Layer 2), ported from JoeKojima/Baymax#31 to this repository and
   the v10 runtime: `Baymax-main/evals/robot/` runs a PR's real runtime (`run_mvp.py`
   → `run_pc.py` → `realtime_gemini_10.py`) on a dedicated test robot with its real

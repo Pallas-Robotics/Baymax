@@ -24,6 +24,8 @@ import threading
 import time
 import wave
 
+import numpy as np
+
 from evals.robot import audio
 
 
@@ -60,7 +62,7 @@ class SoundDeviceSpeaker:
         self.name = device["name"]
         self.until = 0.0
 
-    def start(self, samples, label=""):
+    def start(self, samples, label="", parts=None):  # parts: timeline cues inside samples (fakes use them).
         self.sd.play(samples, samplerate=audio.RATE, device=self.index, blocking=False)
         self.until = time.monotonic() + len(samples) / audio.RATE
         return len(samples) / audio.RATE
@@ -82,7 +84,7 @@ class CommandSpeaker:
         self.argv, self.process, self.folder = list(argv), None, Path(tempfile.mkdtemp(prefix="ember-rig-"))
         self.name = " ".join(argv)
 
-    def start(self, samples, label=""):
+    def start(self, samples, label="", parts=None):  # parts: timeline cues inside samples (fakes use them).
         self.stop()
         path = self.folder / "line.wav"
         with wave.open(str(path), "wb") as out:
@@ -118,47 +120,135 @@ def make_speaker(config, ember_speaker_names=()):
 
 
 # ── Display ──────────────────────────────────────────────────────────────────
+# The page polls /state, shows a card or plays a clip fullscreen (muted: sound comes from the
+# person speaker on the rig clock), and POSTs /ack with the server-clock time the card was painted
+# or the clip's first frame was presented. Its clock offset comes from /time round trips (the
+# best of several pings), so the rig knows when playback actually began, not when it asked.
 PAGE = b"""<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width">
-<title>Ember rig card</title>
-<style>html,body{margin:0;height:100%;background:#fff}img{width:100%;height:100%;object-fit:contain}</style>
-<img id="card" alt="">
+<title>Ember rig display</title>
+<style>html,body{margin:0;height:100%;background:#fff;overflow:hidden}
+img,video{position:fixed;inset:0;width:100%;height:100%;object-fit:contain;background:#fff}
+video{background:#000}.off{display:none}</style>
+<img id="card" alt=""><video id="clip" class="off" muted playsinline preload="auto"></video>
 <script>
-let shown = -1;
-async function tick(){
-  try {
-    const v = await (await fetch('version', {cache: 'no-store'})).text();
-    if (v !== String(shown)) { document.getElementById('card').src = 'card.jpg?v=' + v; shown = v; }
-  } catch (e) {}
-  setTimeout(tick, 300);
+const card = document.getElementById('card'), clip = document.getElementById('clip');
+let shown = null, offset = 0;
+const pageNow = () => performance.timeOrigin + performance.now();   // ms since epoch, page clock
+async function sync() {
+  let best = Infinity;
+  for (let i = 0; i < 5; i++) {
+    const t0 = pageNow(); const server = parseFloat(await (await fetch('time', {cache: 'no-store'})).text());
+    const t1 = pageNow();
+    if (t1 - t0 < best) { best = t1 - t0; offset = server * 1000 - (t0 + t1) / 2; }
+  }
 }
-tick();
+function ack(version, event, pageMs) {
+  fetch('ack', {method: 'POST', body: JSON.stringify({version, event, at: (pageMs + offset) / 1000})});
+}
+function paint(version, event) {
+  requestAnimationFrame(() => requestAnimationFrame(() => ack(version, event, pageNow())));
+}
+async function tick() {
+  try {
+    const s = await (await fetch('state', {cache: 'no-store'})).json();
+    if (s.version !== shown) {
+      shown = s.version;
+      if (s.kind === 'video') {
+        card.classList.add('off'); clip.classList.remove('off');
+        clip.src = 'clip?v=' + s.version;
+        if (clip.requestVideoFrameCallback) {
+          clip.requestVideoFrameCallback((now, meta) => ack(s.version, 'playing', performance.timeOrigin + meta.expectedDisplayTime));
+        } else { clip.onplaying = () => ack(s.version, 'playing', pageNow()); }
+        clip.onended = () => ack(s.version, 'ended', pageNow());
+        clip.onerror = () => ack(s.version, 'error', pageNow());
+        clip.play().catch(() => ack(s.version, 'error', pageNow()));
+        if (document.documentElement.requestFullscreen) document.documentElement.requestFullscreen().catch(() => {});
+      } else {
+        clip.pause(); clip.removeAttribute('src'); clip.classList.add('off'); card.classList.remove('off');
+        card.onload = () => paint(s.version, 'shown');
+        card.src = 'card.jpg?v=' + s.version;
+      }
+    }
+  } catch (e) {}
+  setTimeout(tick, 100);
+}
+sync().then(tick, tick); setInterval(sync, 60000);
 </script>"""
 
 
 class HttpDisplay:
-    """A page for the tablet in front of the camera: http://ROBOT:PORT/ shows the current card.
+    """A page for the screen in front of the camera: http://ROBOT:PORT/ shows the current card
+    or plays the current clip, and confirms each with a timestamp (`ack`).
 
-    Serves only the synthetic card the rig is showing (or a blank page). Bind it to
-    the rig network address in the config; it has no other routes."""
+    Serves only what the rig is showing: the card, or the one clip file it was given (with
+    HTTP Range support, which video elements use). It has no other routes."""
 
-    def __init__(self, host="0.0.0.0", port=8790):
-        self.version, self.jpeg, self.lock = 0, b"", threading.Lock()
+    available, plays_video = True, True
+
+    def __init__(self, host="0.0.0.0", port=8790, clock=time.time):
+        self.version, self.kind, self.jpeg, self.clip = 0, "card", b"", None
+        self.acks, self.lock, self.clock = {}, threading.Lock(), clock
         display = self
 
         class Handler(http.server.BaseHTTPRequestHandler):
+            def send_body(self, body, kind, status=200, extra=()):
+                self.send_response(status)
+                self.send_header("Content-Type", kind)
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("Content-Length", str(len(body)))
+                for name, value in extra:
+                    self.send_header(name, value)
+                self.end_headers()
+                self.wfile.write(body)
+
             def do_GET(self):
                 path = self.path.split("?")[0]
                 with display.lock:
-                    body, kind = {"/": (PAGE, "text/html"), "/version": (str(display.version).encode(), "text/plain"),
-                                  "/card.jpg": (display.jpeg, "image/jpeg")}.get(path, (None, None))
-                if body is None:
-                    self.send_error(404)
-                    return
-                self.send_response(200)
-                self.send_header("Content-Type", kind)
-                self.send_header("Cache-Control", "no-store")
-                self.end_headers()
-                self.wfile.write(body)
+                    version, kind, jpeg, clip = display.version, display.kind, display.jpeg, display.clip
+                if path == "/":
+                    return self.send_body(PAGE, "text/html")
+                if path == "/time":
+                    return self.send_body(f"{display.clock():.6f}".encode(), "text/plain")
+                if path == "/state":
+                    return self.send_body(json.dumps({"version": version, "kind": kind}).encode(), "application/json")
+                if path in ("/card.jpg", "/version") and kind == "card":
+                    return self.send_body(jpeg if path == "/card.jpg" else str(version).encode(),
+                                          "image/jpeg" if path == "/card.jpg" else "text/plain")
+                if path == "/clip" and kind == "video" and clip is not None:
+                    return self.send_clip(clip)
+                self.send_error(404)
+
+            def send_clip(self, clip):
+                size = clip.stat().st_size
+                mime = "video/webm" if clip.suffix.lower() == ".webm" else "video/mp4"
+                start, end = 0, size - 1
+                wanted = self.headers.get("Range", "")
+                if wanted.startswith("bytes="):
+                    first, _, last = wanted[6:].split(",")[0].partition("-")
+                    start = int(first) if first else max(0, size - int(last or 0))
+                    end = min(int(last), size - 1) if first and last else size - 1
+                with clip.open("rb") as stream:
+                    stream.seek(start)
+                    body = stream.read(end - start + 1)
+                extra = [("Accept-Ranges", "bytes")]
+                if wanted.startswith("bytes="):
+                    extra.append(("Content-Range", f"bytes {start}-{end}/{size}"))
+                self.send_body(body, mime, 206 if wanted.startswith("bytes=") else 200, extra)
+
+            def do_POST(self):
+                if self.path.split("?")[0] != "/ack":
+                    return self.send_error(404)
+                try:
+                    message = json.loads(self.rfile.read(min(int(self.headers.get("Content-Length", 0)), 4096)))
+                    version, event, at = int(message["version"]), str(message["event"])[:16], float(message["at"])
+                except (ValueError, KeyError, TypeError):
+                    return self.send_error(400)
+                received = display.clock()
+                # The page's estimate, unless it is implausible (clock sync failed): then arrival time.
+                when = at if abs(at - received) < 5.0 else received
+                with display.lock:
+                    display.acks.setdefault((version, event), when)
+                self.send_body(b"ok", "text/plain")
 
             def log_message(self, *args):
                 pass
@@ -167,12 +257,28 @@ class HttpDisplay:
         self.url = f"http://{host}:{self.server.server_address[1]}/"
         threading.Thread(target=self.server.serve_forever, name="rig-display", daemon=True).start()
 
-    def show(self, jpeg):
+    def _set(self, kind, jpeg=b"", clip=None):
         with self.lock:
-            self.jpeg, self.version = jpeg, self.version + 1
+            self.kind, self.jpeg, self.clip = kind, jpeg, clip
+            self.version += 1
+            return self.version
+
+    def show(self, jpeg, label=""):
+        return self._set("card", jpeg)
+
+    def play_video(self, path, label=""):
+        path = Path(path)
+        if path.suffix.lower() not in (".mp4", ".webm") or not path.is_file():
+            raise RuntimeError(f"display plays .mp4/.webm files only: {path.name}")
+        return self._set("video", clip=path)
+
+    def ack(self, version, event):
+        """Rig-clock time the page confirmed `event` (shown, playing, ended, error) of `version`."""
+        with self.lock:
+            return self.acks.get((version, event))
 
     def clear(self):
-        self.show(b"")
+        return self.show(b"")
 
     def close(self):
         self.server.shutdown()
@@ -180,9 +286,9 @@ class HttpDisplay:
 
 
 class NoDisplay:
-    available = False
+    available, plays_video = False, False
 
-    def show(self, jpeg):
+    def show(self, jpeg, label=""):
         raise RuntimeError("No rig display configured")
 
     def clear(self):
@@ -408,3 +514,151 @@ def python_for(root):
         if candidate.exists():
             return candidate
     return Path(sys.executable)
+
+
+# ── Optional rig hardware: light, fault hooks, smart plug, reference microphone ─
+def _argv(template, **values):
+    return [values.get(part[1:-1], part) if part.startswith("{") and part.endswith("}") else part
+            for part in template]
+
+
+class CommandLight:
+    """A dimmable bulb through a command, e.g. ["kasa", "--host", "192.168.50.20", "--type", "bulb",
+    "brightness", "{percent}"]. Restored to `restore_percent` when the rig closes."""
+
+    def __init__(self, command, restore_percent=100, run=subprocess.run):
+        if "{percent}" not in command:
+            raise ValueError("light.command needs '{percent}'")
+        self.command, self.restore, self.run, self.changed = list(command), restore_percent, run, False
+
+    def set(self, percent):
+        done = self.run(_argv(self.command, percent=str(int(round(percent)))), capture_output=True, text=True,
+                        timeout=15)
+        if done.returncode != 0:
+            raise RuntimeError(f"light command failed: {(done.stderr or '').strip()[:160]}")
+        self.changed = True
+
+    def close(self):
+        if self.changed and self.restore is not None:
+            self.set(self.restore)
+
+
+class CommandHook:
+    """A fault the timeline can inject and always restores: `start`/`stop` argv lists, e.g. the
+    network-drop helper in the README (which also restores itself after its own timeout)."""
+
+    def __init__(self, name, start, stop, run=subprocess.run):
+        if not start or not stop:
+            raise ValueError(f"fault {name} needs start and stop commands")
+        self.name, self.start_argv, self.stop_argv, self.run, self.active = name, list(start), list(stop), run, False
+
+    def _call(self, argv, what):
+        done = self.run(argv, capture_output=True, text=True, timeout=30)
+        if done.returncode != 0:
+            raise RuntimeError(f"fault {self.name} {what} failed: {(done.stderr or '').strip()[:160]}")
+
+    def start(self):
+        self._call(self.start_argv, "start")
+        self.active = True
+
+    def stop(self):
+        self._call(self.stop_argv, "stop")
+        self.active = False
+
+    def close(self):
+        if self.active:
+            self.stop()
+
+
+class CommandPower:
+    """A smart plug on the robot, driven from an EXTERNAL controller (the rig cannot power-cycle the
+    machine it runs on). `off`/`on` argv lists and a `ready` argv that exits 0 once the robot is
+    listening again (e.g. ssh to it and read .runtime-status.json)."""
+
+    def __init__(self, off, on, ready, off_s=10.0, timeout_s=300.0, run=subprocess.run):
+        self.off, self.on, self.ready, self.run = list(off), list(on), list(ready), run
+        self.off_s, self.timeout_s = float(off_s), float(timeout_s)
+
+    def cycle(self, clock):
+        for argv in (self.off,):
+            self.run(argv, capture_output=True, timeout=30, check=True)
+        clock.sleep(self.off_s)
+        self.run(self.on, capture_output=True, timeout=30, check=True)
+        powered = clock.time()
+        while clock.time() - powered < self.timeout_s:
+            if self.run(self.ready, capture_output=True, timeout=30).returncode == 0:
+                return round(clock.time() - powered, 1)
+            clock.sleep(1.0)
+        return None
+
+
+class CommandRecorder:
+    """The reference microphone through a command writing {wav}, e.g. ["arecord", "-q", "-D",
+    "plughw:CARD=RefMic,DEV=0", "-f", "S16_LE", "-r", "48000", "-c", "1", "{wav}"]. The file is in a
+    private 0700 folder and `discard` deletes it; only numbers leave the rig."""
+
+    def __init__(self, command, popen=subprocess.Popen, clock=time.time):
+        if "{wav}" not in command:
+            raise ValueError("reference_mic.command needs '{wav}'")
+        self.command, self.popen, self.clock = list(command), popen, clock
+        self.folder, self.process, self.started, self.discarded = None, None, None, 0
+
+    def start(self):
+        self.discard()
+        self.folder = Path(tempfile.mkdtemp(prefix="ember-rig-ref-"))
+        os.chmod(self.folder, 0o700)
+        self.process = self.popen(_argv(self.command, wav=str(self.folder / "reference.wav")),
+                                  stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL)
+        self.started = self.clock()
+
+    def stop(self):
+        """(int16 samples, rate, rig time of the first sample) or None."""
+        if self.process is None:
+            return None
+        if self.process.poll() is None:
+            self.process.send_signal(signal.SIGINT)  # arecord finalizes the WAV header on SIGINT.
+            try:
+                self.process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                self.process.kill()
+        self.process = None
+        path = self.folder / "reference.wav"
+        if not path.is_file():
+            return None
+        with wave.open(str(path), "rb") as stream:
+            rate, channels = stream.getframerate(), stream.getnchannels()
+            data = np.frombuffer(stream.readframes(stream.getnframes()), dtype=np.int16)
+        if channels > 1:
+            data = data.reshape(-1, channels).mean(axis=1).astype(np.int16)
+        return data, rate, self.started
+
+    def discard(self):
+        if self.folder is not None:
+            self.discarded += sum(1 for _ in self.folder.glob("*.wav"))
+            shutil.rmtree(self.folder, ignore_errors=True)
+            self.folder = None
+
+    def close(self):
+        if self.process is not None and self.process.poll() is None:
+            self.process.kill()
+        self.process = None
+        self.discard()
+
+
+def make_rig_hardware(config, ember_mic_names=()):
+    """Light, fault hooks, smart plug and reference microphone from the rig config (all optional)."""
+    light = (config.get("light") or {})
+    faults = config.get("faults") or {}
+    power = config.get("power") or {}
+    mic = config.get("reference_mic") or {}
+    for other in ember_mic_names:
+        if other and mic.get("command") and any(other in part for part in mic["command"]):
+            raise RuntimeError(f"reference_mic names Ember's own microphone ({other!r}); use a separate USB mic")
+    return {
+        "light": CommandLight(light["command"], light.get("restore_percent", 100)) if light.get("command") else None,
+        "faults": {name: CommandHook(name, spec.get("start"), spec.get("stop")) for name, spec in faults.items()},
+        "power": CommandPower(power["off"], power["on"], power["ready"], power.get("off_s", 10),
+                              power.get("timeout_s", 300))
+        if power.get("external_controller") and power.get("off") else None,
+        "recorder": CommandRecorder(mic["command"]) if mic.get("command") else None,
+    }

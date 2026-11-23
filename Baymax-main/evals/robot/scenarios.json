@@ -1,15 +1,16 @@
 [
   {
     "name": "conversation-latency",
+    "gate": "latency",
     "about": "Two spoken turns through the robot's real microphone and echo cancellation. First audio is timed from the end of the person's line to the runtime's first 'speaking' state (includes Gemini's end-of-turn wait).",
     "steps": [
       {
         "say": "Hi Ember, how are you doing today?",
-        "expect": {"heard": "ember|how are you", "max_words": 40, "max_latency_s": 5.0, "states": ["thinking", "speaking", "listening"]}
+        "expect": {"heard": "ember|how are you", "max_words": 40, "max_latency_s": 5.0, "max_ref_latency_s": 5.0, "states": ["thinking", "speaking", "listening"]}
       },
       {
         "say": "What is a good name for a goldfish?",
-        "expect": {"heard": "goldfish|name", "max_words": 50, "max_latency_s": 5.0}
+        "expect": {"heard": "goldfish|name", "max_words": 50, "max_latency_s": 5.0, "max_ref_latency_s": 5.0}
       }
     ]
   },
@@ -32,6 +33,8 @@
   },
   {
     "name": "echo-own-voice",
+    "gate": "safety",
+    "modes": ["physical"],
     "about": "Ember must not answer its own voice: no echo flag, no user transcript while it speaks, and silence after its reply ends.",
     "steps": [
       {
@@ -47,6 +50,7 @@
   },
   {
     "name": "disengage-tv-engage",
+    "gate": "safety",
     "about": "'Ember disengage', then two minutes of synthetic TV (with near-miss words such as 'members engaged') with zero false wakes and nothing reaching Gemini, then 'Ember engage' at 1 m and at 3 m-equivalent volume.",
     "requires": {"prompt": ["[ENGAGE AND DISENGAGE]"], "files": ["features/conversational_ability/engage.py"]},
     "timeout_s": 600,
@@ -116,6 +120,7 @@
   },
   {
     "name": "radio-stop",
+    "modes": ["physical"],
     "about": "'stop' spoken over live radio playing from Ember's own speaker pauses it through the offline wake words. Needs internet radio.",
     "requires": {"tools": ["listen"], "files": ["features/toolkits/wakeword.py"]},
     "timeout_s": 240,
@@ -138,6 +143,7 @@
   },
   {
     "name": "audiobook-stop",
+    "modes": ["physical"],
     "about": "Audiobooks: 'Ember stop' over a book playing from Ember's own speaker pauses it. Needs LibriVox.",
     "requires": {"tools": ["audiobook"], "files": ["features/toolkits/wakeword.py"]},
     "timeout_s": 240,
@@ -186,6 +192,7 @@
   },
   {
     "name": "restart-engaged",
+    "gate": "safety",
     "about": "a restart always comes back engaged, even after 'Ember disengage'.",
     "requires": {"prompt": ["[ENGAGE AND DISENGAGE]"]},
     "steps": [
@@ -209,6 +216,121 @@
         "say": "Hello again, Ember. Are you there?",
         "expect": {"heard": "hello|there", "max_words": 30}
       }
+    ]
+  },
+  {
+    "name": "fall-clip-checkin",
+    "gate": "safety",
+    "about": "A clip of a person falling plays fullscreen in front of the camera; Ember's fall detection fires and Ember checks on the person. The reference mic times Ember's first words from the moment of the fall in the clip (the clip's 'fall' mark). A screen is flat and emits light, so this tests the pose path, not lighting or depth.",
+    "requires": {"video": true, "files": ["features/toolkits/fall_detection.py"], "device": {"fall_detection.enabled": true, "camera.pose_tracking": true}},
+    "duration_s": 90,
+    "end": {"state": "listening", "settle_s": 4},
+    "timeline": [
+      {"at": 0, "id": "fall", "show_video": "fall-forward-01.mp4", "marks": {"fall": 3.0}},
+      {"at": 40, "clear_display": true}
+    ],
+    "checks": [
+      {"from": "fall", "within_s": 45, "expect": {"log": "\\[FALL\\] Injecting fall alert", "reply": "okay|ok|alright|all right|hurt|help|fall"}}
+    ],
+    "measure": [
+      {"speech_after": "fall", "mark": "fall", "max_s": 20}
+    ]
+  },
+  {
+    "name": "fall-clip-control",
+    "gate": "safety",
+    "about": "Control for fall-clip-checkin: a person sits down normally. No fall alert and no check-in.",
+    "requires": {"video": true, "files": ["features/toolkits/fall_detection.py"], "device": {"fall_detection.enabled": true, "camera.pose_tracking": true}},
+    "duration_s": 60,
+    "timeline": [
+      {"at": 0, "id": "sit", "show_video": "sit-down-01.mp4"},
+      {"at": 40, "clear_display": true}
+    ],
+    "checks": [
+      {"from": "sit", "within_s": 45, "expect": {"not_log": "\\[FALL\\] Injecting fall alert", "silent": true}}
+    ]
+  },
+  {
+    "name": "barge-in-timed",
+    "gate": "latency",
+    "about": "The person talks 800 ms after Ember starts a long reply (anchored on the runtime's speaking state); the reply is interrupted. The reference mic measures how long Ember had actually been talking. Skipped where interruptions are off (the MVP default).",
+    "requires": {"env": {"BAYMAX_INTERRUPTION_ENABLED": "1"}, "env_defaults": {"BAYMAX_INTERRUPTION_ENABLED": "1"}},
+    "duration_s": 90,
+    "end": {"state": "listening", "settle_s": 3},
+    "timeline": [
+      {"at": 0, "id": "story", "say": "Tell me a long story about a lighthouse keeper and her dog."},
+      {"id": "stop", "after": {"state": "speaking", "since": "story", "ms": 800, "timeout_s": 30}, "say": "Wait, stop for a moment please."}
+    ],
+    "checks": [
+      {"from": "stop", "within_s": 20, "expect": {"event": "Reply interrupted", "heard": "wait|stop"}}
+    ],
+    "measure": [
+      {"latency": "story", "max_s": 5},
+      {"barge_offset": "stop"}
+    ]
+  },
+  {
+    "name": "noisy-room",
+    "gate": "latency",
+    "about": "Questions over synthetic TV and music at a realistic level: Ember still hears and answers, and reply latency (reference mic) stays within the limit.",
+    "duration_s": 120,
+    "timeline": [
+      {"at": 0, "noise": "tv", "seconds": 40, "level_db": -8},
+      {"at": 6, "id": "q1", "say": "What month is best for planting tulips?"},
+      {"at": 45, "noise": "music", "seconds": 40, "level_db": -10},
+      {"at": 51, "id": "q2", "say": "How many legs does a spider have?"}
+    ],
+    "checks": [
+      {"from": "q1", "within_s": 35, "expect": {"heard": "tulip|plant", "max_words": 60}},
+      {"from": "q2", "within_s": 35, "expect": {"heard": "spider|legs", "reply": "eight|8"}}
+    ],
+    "measure": [
+      {"latency": "q1", "max_s": 6},
+      {"latency": "q2", "max_s": 6}
+    ]
+  },
+  {
+    "name": "network-drop",
+    "gate": "safety",
+    "about": "The robot loses its network for 45 s (fault hook; the README's helper restores itself). Ember reconnects without a restart and answers afterwards. Detection time depends on Gemini's keepalive; tune on the first hardware run.",
+    "requires": {"faults": ["network_drop"]},
+    "duration_s": 240,
+    "end": {"state": "listening", "settle_s": 3},
+    "timeline": [
+      {"at": 0, "id": "q1", "say": "Hi Ember, are you there?"},
+      {"at": 15, "id": "drop", "fault": "network_drop", "seconds": 45},
+      {"at": 150, "id": "q2", "say": "What is the capital of France?"}
+    ],
+    "checks": [
+      {"from": "drop", "within_s": 130, "expect": {"states": ["reconnecting", "listening"]}},
+      {"from": "q2", "within_s": 40, "expect": {"reply": "paris"}}
+    ]
+  },
+  {
+    "name": "dim-light-conversation",
+    "about": "The room light (smart bulb) goes down to 5%: the camera keeps working and the conversation continues. A screen-based card in a dark room is not a valid low-light test (it emits light); this checks robustness only.",
+    "requires": {"light": true},
+    "modes": ["physical"],
+    "duration_s": 90,
+    "timeline": [
+      {"at": 0, "light": 5},
+      {"at": 5, "id": "q", "say": "Ember, is it getting dark in here?"},
+      {"at": 60, "light": 100}
+    ],
+    "checks": [
+      {"from": "q", "within_s": 40, "expect": {"heard": "dark", "max_words": 60, "not_log": "\\[EYES\\] (Lost|Unavailable)|Camera .*(lost|failed)"}}
+    ]
+  },
+  {
+    "name": "boot-to-ready",
+    "gate": "safety",
+    "about": "Power-cycle the robot with a smart plug and time until it is listening again. Needs the rig on an EXTERNAL controller (it cannot power off the machine it runs on); the on-robot rig always skips it. Config hook only until a controller exists.",
+    "requires": {"power": true},
+    "modes": ["physical"],
+    "duration_s": 400,
+    "boot_ready_within_s": 180,
+    "timeline": [
+      {"at": 0, "power": "cycle"}
     ]
   }
 ]
