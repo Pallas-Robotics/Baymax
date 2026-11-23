@@ -1,5 +1,7 @@
 # MVP (unreleased)
 
+- Offline checks run only on the Orange Pi (Linux ARM64) for now; the Linux, Windows and
+  macOS desktop runs are off until local development is a priority again.
 - Desktop offline checks: the people store locks with msvcrt on Windows (fcntl doesn't exist
   there, so every test importing the runtime failed); Linux runners start a PulseAudio server
   so `import sounddevice` works; tests of Linux-only behaviour (/proc startup files, replacing
