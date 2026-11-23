@@ -1318,9 +1318,13 @@ class SpeakerStreamTests(unittest.TestCase):
         clean = {k: v for k, v in os.environ.items() if k not in names}
         with patch("test_public_core_integration.CORE", V10):
             read = load_function("_output_stream_settings", {"os": os})
-        for rk3588, expected in ((True, (512, "low")), (False, (1024, None))):   # the 4 Pro: as before
-            with self.subTest(rk3588=rk3588), patch.dict(os.environ, clean, clear=True), \
+        # (RK3588, A733): both pinned boards get it; any other board keeps sounddevice's own.
+        # is_a733 is patched too: on a real Orange Pi 4 Pro it reads the device tree.
+        for rk3588, a733, expected in ((True, False, (512, "low")), (False, True, (512, "low")),
+                                       (False, False, (1024, None))):
+            with self.subTest(rk3588=rk3588, a733=a733), patch.dict(os.environ, clean, clear=True), \
                     patch.object(pc_hardware, "is_rk3588", return_value=rk3588), \
+                    patch.object(pc_hardware, "is_a733", return_value=a733), \
                     patch.object(pc_hardware, "performance_cpus", return_value={4, 5, 6, 7}), \
                     patch.object(pc_hardware, "pin_threads"), \
                     patch.object(pc_hardware.os, "sched_getaffinity", Mock(return_value=set(range(8))), create=True), \

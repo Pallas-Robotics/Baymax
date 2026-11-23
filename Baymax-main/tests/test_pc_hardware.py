@@ -100,7 +100,10 @@ class HardwareTests(unittest.TestCase):
 
     def test_invalid_or_wrong_direction_device_is_rejected(self):
         for index in ("1", "99", "-1", "unknown"):
-            with patch.dict(os.environ, {"BAYMAX_MIC_DEVICE": index, "BAYMAX_SPEAKER_DEVICE": ""}):
+            # No saved device name: on a configured robot .env has one, and the lookup by
+            # name (test_saved_alsa_device_is_found_after_card_renumbering) is another path.
+            with patch.dict(os.environ, {"BAYMAX_MIC_DEVICE": index, "BAYMAX_SPEAKER_DEVICE": "",
+                                         "BAYMAX_MIC_NAME": "", "BAYMAX_MIC_HOSTAPI": ""}):
                 with self.assertRaises(RuntimeError):
                     select_audio_devices(FakeAudio())
 
