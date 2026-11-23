@@ -124,6 +124,13 @@ The `spi3-cs0-cs1-spidev` overlay (`overlay_path=allwinner`, `overlays=...` in
 without sudo. OPI4-Flash images set both. When `/dev/spidev3.1` exists it is the
 default port; a `BAYMAX_EYES_PORT` starting with `/dev/spidev` always uses SPI.
 
+A matrix that shows a fixed grid or a couple of lines, even in the chip's own
+display test (register 15 = 1), has its socketed 8x8 LED block in the wrong way
+round: if shutdown and intensity commands still blink and dim it, the MAX7219 is
+receiving fine. Pull the block out, turn it 180 degrees and reseat it. On ember-002
+this looked like a 3.3 V logic problem, but speed, SPI mode and a 3.3 V supply
+changed nothing; reseating fixed it.
+
 ### LattePanda (Firmata)
 
 Default serial path:
