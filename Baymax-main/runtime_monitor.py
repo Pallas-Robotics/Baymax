@@ -31,6 +31,7 @@ transcript_observer = None  # Optional (speaker, {'id', 'text'}) transcript cons
 transcript_listeners = []  # More (speaker, {'id', 'text'}) consumers (e.g. 'Ember disengage').
 waiting_audio = None
 echo_text = {'suspected': False}
+trace_status = None  # Event-trace counters (features/harness/trace.py MonitorSink); None until it records.
 sensors = {}  # Sensor name -> time.monotonic() of its last sign of life (MVP eyes watchdog).
 memory_status = 'Disabled'  # v10 reports its memory state here; v8 has no memory.
 
@@ -54,6 +55,16 @@ def notify(event):
         except Exception:
             event_observer = None
             print("[MONITOR] State observer disabled after an error.", flush=True)
+    _trace_state(event)
+
+
+def _trace_state(event):
+    """State changes into the harness event trace (repeats collapsed); never raises."""
+    try:
+        from features.harness import trace
+        trace.state(event)
+    except Exception:
+        pass
 
 
 def emit(next_state, message):
@@ -161,6 +172,7 @@ def snapshot(metrics=None):
                 'activities': dict(activities), 'events': [dict(event) for event in events], 'metrics': metrics or {},
                 'sensor_age_s': {name: round(time.monotonic() - seen, 1) for name, seen in dict(sensors).items()},
                 'transcripts': [dict(message) for message in transcripts],
+                'trace': dict(trace_status) if trace_status else None,
                 'conversation_timing': timing.snapshot(),
                 'speech_detection': timing.speech_status(),
                 'capabilities': {'memory': memory_status, 'google_search': _search_status(),

@@ -1,5 +1,18 @@
 # MVP (unreleased)
 
+- Agent harness, increment 1 (`Baymax-main/features/harness/`): an event trace and
+  a tool runner for `realtime_gemini_10.py`. The trace records every runtime event
+  (mic chunk sizes, frames, model messages, tool start/end/timeout/error, connects,
+  drops, state changes) with a monotonic and a wall-clock time, in memory and in the
+  status file's new `trace` section; a local JSONL file only with
+  `EMBER_TRACE=path`. Never audio; transcript text and tool argument values only
+  with `EMBER_TRACE_TEXT=1`; traces are gitignored. Every Gemini function call now
+  goes through the runner, with v10's monitor events and replies unchanged, and two
+  intended differences: arguments that don't match the declared schema are
+  answered with a clear error instead of being run, and each tool has a time limit
+  (`features/toolkits/time_limits.py`, shared with the separate time-limits PR).
+  `EMBER_TOOL_RUNNER=0` restores v10's dispatcher. Live checks pending.
+
 - LED eyes blink calmly: a blink chance every 2.5-5 s (was 0.7-1.4 s) and eyes shut for
   0.12 s (was 0.015 s, which read as a flicker). Seen on ember-002.
 - LED eyes are one step dimmer: brightness 2 of 15 (was 3); sleep eyes stay at 1.

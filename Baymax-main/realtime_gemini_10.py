@@ -1815,6 +1815,7 @@ async def listen_audio():
 async def send_audio_realtime(session):
     """Sends all mic audio to Gemini with batch-drain. No VAD filtering."""
     global _last_mic_send_ts
+    from features.harness import trace as harness_trace  # sizes and timings only, never audio
     while True:
         msg = await audio_queue_mic.get()
         batch = [msg]
@@ -1830,11 +1831,15 @@ async def send_audio_realtime(session):
             ) * 1000
             tracker_mic_queue.record(queue_wait_ms)
             if _audio_enhancer is not None and _audio_enhancer.stale(queue_wait_ms):
+                harness_trace.record("mic_chunk_dropped", bytes=len(msg["data"]),
+                                     queue_ms=round(queue_wait_ms, 3), reason="stale")
                 continue
 
             with _playback_lock:
                 buffer_empty = len(_playback_buffer) == 0
             if not buffer_empty and not (_audio_enhancer is not None and _audio_enhancer.full_duplex):
+                harness_trace.record("mic_chunk_dropped", bytes=len(msg["data"]),
+                                     queue_ms=round(queue_wait_ms, 3), reason="playback")
                 continue
 
             t1 = time.perf_counter()
@@ -1848,11 +1853,14 @@ async def send_audio_realtime(session):
             except Exception as e:
                 # Mic audio can't reach Gemini: end the session so run() reconnects.
                 print(f"Error sending audio: {e!r}")
+                harness_trace.record("mic_send_failed", bytes=len(msg["data"]), error=type(e).__name__)
                 monitor.emit("reconnecting", "Gemini send connection needs recovery")
                 raise
             send_ms = (time.perf_counter() - t1) * 1000
             tracker_send_audio.record(send_ms)
             _last_mic_send_ts = time.perf_counter()
+            harness_trace.record("mic_chunk_sent", bytes=len(msg["data"]), queue_ms=round(queue_wait_ms, 3),
+                                 send_ms=round(send_ms, 3))
 
 def _encode_video_frame(frame):
     """The 320x240 JPEG Gemini gets (fall detection runs at 640x480). On a worker thread:
@@ -1865,6 +1873,7 @@ def _encode_video_frame(frame):
 
 async def send_video_realtime(session):
     """Reads shared frames from the fall detection thread and sends to Gemini every 3s."""
+    from features.harness import trace as harness_trace  # sizes and timings only, never images
     loop = asyncio.get_running_loop()
     # Wait for the fall detection thread's first frame. On a cold Orange Pi 4 Pro boot the
     # camera thread shares nothing until the pose process has loaded (5+ s), and giving up
@@ -1902,12 +1911,15 @@ async def send_video_realtime(session):
             )
         except Exception as e:
             print(f"[VIDEO] Error sending frame: {e}")
+            harness_trace.record("video_frame_failed", error=type(e).__name__)
             continue
         send_ms = (time.perf_counter() - t1) * 1000
         tracker_send_video.record(encode_ms + send_ms)
         if first:
             first = False
             _proactive.video_sent.set()
+        harness_trace.record("video_frame_sent", bytes=len(jpg_bytes), encode_ms=round(encode_ms, 3),
+                             send_ms=round(send_ms, 3))
 
 async def fall_alert_monitor(session):
     """Watches the fall detection event and injects an alert into the Gemini session."""
@@ -2242,6 +2254,7 @@ async def receive_audio(session):
     global _last_mic_send_ts, _last_robot_speech_ts, _last_user_speech_ts, _gemini_speaking
     global _user_turn, _user_turn_words, _recalled, _reply_owed_since, _go_away_at, _turn_done_at
     global _tool_calls_running
+    from features.harness import trace as harness_trace  # what arrived and when; text only if enabled
     _is_new_turn = True
     _reply_audio_started = False
     _user_turn_open = False   # the person's current turn has begun
@@ -2257,11 +2270,20 @@ async def receive_audio(session):
                 t0 = time.perf_counter()
                 received_at = monitor.timing.now()
                 if response.session_resumption_update or response.go_away:
+                    update = response.session_resumption_update
+                    if update:
+                        harness_trace.record("session_resumption", resumable=bool(getattr(update, "resumable", False)),
+                                             has_handle=bool(getattr(update, "new_handle", None)))
+                    if response.go_away:
+                        harness_trace.record("go_away", time_left=str(getattr(response.go_away, "time_left", None)))
                     from features.conversational_ability.session import on_server_message
                     on_server_message(response)
                     if response.go_away:
                         _go_away_at = time.monotonic()  # between_turns() moves on at a quiet moment
                 if response.tool_call:
+                    named = getattr(public_toolkit, "public_name", lambda name: name)  # declared names only
+                    harness_trace.record("tool_call", calls=[{"id": call.id, "name": named(call.name)}
+                                                             for call in response.tool_call.function_calls or []])
                     _reply_owed_since = time.monotonic()  # Gemini answers once it has the result
                     _address_gate.tool_call()
                     _tool_calls_running += 1
@@ -2272,12 +2294,19 @@ async def receive_audio(session):
                     # ...owed from when the result went back: a slow tool (a web search takes
                     # up to 13 s) must not use up REPLY_OWED_MAX_S before Gemini can answer.
                     _reply_owed_since = time.monotonic()
+                cancellation = getattr(response, "tool_call_cancellation", None)
+                if cancellation:
+                    # The batch above ran inline, so its reply has gone: traced, nothing to drop.
+                    ids = list(getattr(cancellation, "ids", None) or [])
+                    harness_trace.record("tool_call_cancellation", ids=ids,
+                                         pending=public_toolkit.cancel_tool_calls(ids))
                 server_content = response.server_content
                 if server_content is None:
                     continue
 
                 if server_content.interrupted:
                     # Cancel before examining any co-delivered output; retain new user input below.
+                    harness_trace.record("interrupted")
                     _flush_playback()
                     monitor.timing.complete_reply(interrupted=True)
                     _address_gate.end(interrupted=True)
@@ -2294,6 +2323,7 @@ async def receive_audio(session):
                 # ── Input transcription (what the USER said) ──
                 if server_content.input_transcription:
                     text = server_content.input_transcription.text
+                    harness_trace.record("input_transcription", chars=len(text or ""), text=text)
                     monitor.transcribe("user", text)
                     if text and text.strip():
                         monitor.emit("thinking", "User speech received; waiting for Gemini")
@@ -2331,6 +2361,7 @@ async def receive_audio(session):
                 # ── Output transcription (what GEMINI said) ──
                 if server_content.output_transcription:
                     text = server_content.output_transcription.text
+                    harness_trace.record("output_transcription", chars=len(text or ""), text=text)
                     if text and text.strip():
                         monitor.timing.received_text(at=received_at)
 
@@ -2349,6 +2380,7 @@ async def receive_audio(session):
                     # message); a turn with no parts mustn't lose the rest of the message.
                     for part in model_turn.parts or []:
                         if part.text:
+                            harness_trace.record("model_text", chars=len(part.text), text=part.text)
                             print(f"[GEMINI] {part.text}", flush=True)
                         if (
                             part.inline_data
@@ -2357,6 +2389,8 @@ async def receive_audio(session):
                             )
                         ):
                             timing_id = monitor.timing.received_audio(at=received_at)
+                            harness_trace.record("audio_received", bytes=len(part.inline_data.data),
+                                                 duration_ms=round(len(part.inline_data.data) / 48, 3))  # 24 kHz int16
                             def play_reply_audio(data=part.inline_data.data, new_turn=not _reply_audio_started,
                                                  timing_id=timing_id):
                                 global _last_robot_speech_ts, _gemini_speaking, _reply_audible_until
@@ -2399,7 +2433,11 @@ async def receive_audio(session):
                                 ) * 1000
                                 tracker_roundtrip.record(rt_ms)
 
+                if getattr(server_content, "generation_complete", None):
+                    harness_trace.record("generation_complete")
+
                 if server_content.turn_complete:
+                    harness_trace.record("turn_complete")
                     monitor.timing.complete_reply()
                     _address_gate.end()
                     monitor.finish_transcripts()
@@ -2421,6 +2459,7 @@ async def receive_audio(session):
             raise
         except Exception as e:
             print(f"Receive error: {e}")
+            harness_trace.record("receive_error", error=type(e).__name__, message=str(e)[:200])
             monitor.emit("reconnecting", "Gemini receive connection needs recovery")
             user_said.flush()
             gemini_said.flush()
@@ -2767,15 +2806,21 @@ def _run_voice_analysis():
 # ─── Main ─────────────────────────────────────────────────────────────────────
 async def run():
     global _last_robot_speech_ts, _stop_started_ts, _go_away_at, _connected_at, _startup_files_noted
+    from features.harness import trace as harness_trace
     monitor.start(lambda: {"playback_bytes": len(_playback_buffer), "gemini_generating_audio": _gemini_speaking, "audio_input": dict(_audio_enhancer.metrics) if _audio_enhancer is not None else None})
     public_toolkit.prewarm()
     client = genai.Client(
         api_key=API_KEY, http_options={"api_version": "v1alpha"}
     )
     quick_failures = 0  # connections in a row that ended within QUICK_SESSION_S
+    attempt = 0
     while True:
         started, set_up = time.monotonic(), False
         model = _live_models.current
+        attempt += 1
+        trace = harness_trace.get()
+        trace.session += 1  # every connection this process makes (run() can start again)
+        trace.record("connect_start", attempt=attempt, model=model)
         try:
             monitor.finish_transcripts()
             monitor.emit("connecting", "Connecting to Gemini Live")
@@ -2791,6 +2836,7 @@ async def run():
                 if not _startup_files_noted:  # once a run: what to read into memory early next boot
                     _startup_files_noted = True
                     threading.Thread(target=pc_hardware.note_startup_files, args=("ember",), daemon=True).start()
+                trace.record("connected", attempt=attempt)
                 monitor.emit("listening", "Connected to Gemini; listening")
                 _boot_status("ready", "Baymax is ready.", ready=True)
                 print("=" * 70)
@@ -2849,7 +2895,9 @@ async def run():
                     _abort_connection(live_session)
                     output_stream.stop()
                     output_stream.close()
+                    trace.record("session_closed", attempt=attempt)
         except Exception as e:
+            trace.record("connection_failed", attempt=attempt, error=type(e).__name__, message=str(e)[:200])
             if not set_up and isinstance(e, OSError):
                 # DNS, network unreachable, refused, open timeout: this attempt never reached
                 # Gemini, so the next one offers the same resume handle (session.py).

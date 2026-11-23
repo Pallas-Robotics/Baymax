@@ -22,3 +22,7 @@
 **/toolkit_everyday.sqlite3*
 **/toolkit_family.sqlite3*
 **/toolkit_checkins.json
+
+# Ember event traces (EMBER_TRACE=path): local only, never committed.
+*.trace.jsonl
+**/traces/

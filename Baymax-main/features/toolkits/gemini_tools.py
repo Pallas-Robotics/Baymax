@@ -183,7 +183,8 @@ def execute(name, args):
         return {"error": "Tool temporarily unavailable"}
 
 
-async def handle_tool_call(session, tool_call):
+async def handle_tool_call_v10(session, tool_call):
+    """v10's dispatcher, kept as the rollback (EMBER_TOOL_RUNNER=0) and for the parity test."""
     from google.genai import types
     replies = []
     for index, call in enumerate(tool_call.function_calls or []):
@@ -217,6 +218,41 @@ async def handle_tool_call(session, tool_call):
         replies.append(types.FunctionResponse(id=call.id, name=call.name, response=result))
     if replies:
         await session.send_tool_response(function_responses=replies)
+
+
+_runner = None
+_runner_lock = threading.Lock()
+
+
+def tool_runner():
+    """The harness tool runner with the built-in toolkit (features/harness/tools.py)."""
+    global _runner
+    if _runner is None:
+        with _runner_lock:
+            if _runner is None:
+                from features.harness.tools import ToolRunner
+                from features.harness.toolkit import tools
+                _runner = ToolRunner(tools(), fallback=execute)
+    return _runner
+
+
+async def handle_tool_call(session, tool_call):
+    """Run one Gemini tool_call batch: the harness runner, or v10's dispatcher with EMBER_TOOL_RUNNER=0."""
+    if os.getenv("EMBER_TOOL_RUNNER", "1") == "0":
+        return await handle_tool_call_v10(session, tool_call)
+    await tool_runner().handle(session, tool_call)
+
+
+def public_name(name):
+    """A declared tool name, or 'unknown_tool': what the monitor and the trace may record."""
+    return tool_runner().public_name(name)
+
+
+def cancel_tool_calls(ids):
+    """Gemini's tool_call_cancellation: ids still running or queued are dropped (none with v10's dispatcher)."""
+    if os.getenv("EMBER_TOOL_RUNNER", "1") == "0" or _runner is None:
+        return []
+    return _runner.cancel(ids)
 
 
 def _keep_warm(stop, clock=time.monotonic):
