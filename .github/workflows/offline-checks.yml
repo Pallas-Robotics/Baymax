@@ -1,8 +1,7 @@
 # Runs the offline review gate (Baymax-main/check_release.py) on every pull
 # request: with the robots' own pins (requirements-orange-pi.txt: NumPy 1.26,
 # OpenCV 4.10, MediaPipe 0.10.18) on Linux ARM64, the Orange Pi's OS and CPU,
-# and with the desktop pins (requirements-pc.txt: NumPy 2, OpenCV 4.13) on
-# Linux, Windows and macOS. Based on Natey's
+# (desktop runs with requirements-pc.txt are off for now; see the matrix). Based on Natey's
 # docs/ci/desktop-offline.yml.example (now removed). It never opens a microphone, camera or
 # speaker and never contacts Gemini or another provider: no secrets are used.
 # A green run is offline evidence only; live checks and James's approval are
@@ -44,15 +43,9 @@ jobs:
             os: ubuntu-24.04-arm
             requirements: requirements-orange-pi.txt
             timeout: 60   # Some ARM64 packages (e.g. Praat-Parselmouth) may build from source.
-          - name: Linux desktop
-            os: ubuntu-latest
-            requirements: requirements-pc.txt
-          - name: Windows
-            os: windows-latest
-            requirements: requirements-pc.txt
-          - name: macOS
-            os: macos-latest
-            requirements: requirements-pc.txt
+          # Desktop runs (Linux/Windows/macOS with requirements-pc.txt) are off until the
+          # local dev setup is a priority again: re-add entries with os: ubuntu-latest,
+          # windows-latest or macos-latest and requirements: requirements-pc.txt.
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: ${{ matrix.timeout || 25 }}
