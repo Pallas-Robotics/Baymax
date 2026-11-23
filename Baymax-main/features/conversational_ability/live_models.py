@@ -6,8 +6,8 @@ Ember was built and tested on (the runtime's MODEL), shuts down as early as 2026
 gemini-3.8-live, needs Live quota on the API key's own project.
 
 BAYMAX_LIVE_MODELS lists the models to use, in order, separated by commas; by default
-the runtime's MODEL, then gemini-3.8-live. run() connects with the first, and with the
-next one at once when this API key can't use it:
+gemini-3.8-live, then the runtime's MODEL (2.5) as the automatic fallback. run() connects
+with the first, and with the next one at once when this API key can't use it:
 
 - Google refused to set up a fresh connection (close 1007 or 1008: the model is not
   found or not supported for Live, or rejects a setting; refusing a resumed one can be
@@ -24,8 +24,8 @@ Any other error (a dropped network, Google's routine resets, "1011 internal erro
 never changes the model. Nor does a quota close ("You exceeded your current quota"),
 whatever its code: a per-minute or concurrent-session limit says the same and clears in
 seconds, so run() backs off and retries the same model. A key with no quota at all for
-the first model therefore stays on it: keep 2.5 first until the key's project has 3.8
-quota.
+the first model therefore stays on it: on a key whose project has no 3.8 Live quota, set
+BAYMAX_LIVE_MODELS with 2.5 first.
 
 `adapt` gives a model Ember's config with the settings that model needs, for run() and
 evals/live_eval.py --model alike. Gemini 3 Live models think by themselves (Google: omit
@@ -48,7 +48,7 @@ from websockets.exceptions import ConnectionClosed
 
 from . import session
 
-FALLBACK = "gemini-3.8-live"  # Google's replacement for the 2.5 native-audio preview
+PREFERRED = "gemini-3.8-live"  # GA; Google's replacement for the 2.5 native-audio preview
 _NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")  # a model name as gemini_preflight accepts one
 # Google's words (in any close code) for a model that is gone. They open its messages: a
 # close frame carries only 123 bytes of reason, so the rest is cut.
@@ -62,8 +62,8 @@ in_use = None
 
 
 def configured(model, environ=os.environ):
-    """The Live models to use, in order: BAYMAX_LIVE_MODELS, else `model` (the runtime's
-    MODEL) then FALLBACK. An entry that isn't a model name is skipped with a warning."""
+    """The Live models to use, in order: BAYMAX_LIVE_MODELS, else PREFERRED then `model`
+    (the runtime's MODEL). An entry that isn't a model name is skipped with a warning."""
     names = []
     for name in environ.get("BAYMAX_LIVE_MODELS", "").split(","):
         name = name.strip().removeprefix("models/")
@@ -71,7 +71,7 @@ def configured(model, environ=os.environ):
             names.append(name)
         elif name:
             print(f"[SESSION] BAYMAX_LIVE_MODELS: {name!r} is not a model name; skipped.", flush=True)
-    return tuple(dict.fromkeys(names or (model, FALLBACK)))
+    return tuple(dict.fromkeys(names or (PREFERRED, model)))
 
 
 def generation(model):

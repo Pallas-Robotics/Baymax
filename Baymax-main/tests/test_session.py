@@ -169,15 +169,15 @@ class LiveModelTests(unittest.TestCase):
         patch.object(live_models, "in_use", None).start()
         self.addCleanup(patch.stopall)
 
-    def test_the_list_is_baymax_live_models_else_model_then_gemini_3_8_live(self):
-        self.assertEqual(live_models.configured(OLD, {}), (OLD, NEW))
+    def test_the_list_is_baymax_live_models_else_gemini_3_8_live_then_model(self):
+        self.assertEqual(live_models.configured(OLD, {}), (NEW, OLD))
         for blank in ("", " , "):
-            self.assertEqual(live_models.configured(OLD, {"BAYMAX_LIVE_MODELS": blank}), (OLD, NEW))
+            self.assertEqual(live_models.configured(OLD, {"BAYMAX_LIVE_MODELS": blank}), (NEW, OLD))
         # Trimmed, "models/" dropped, each once, in the order given.
         self.assertEqual(live_models.configured(OLD, {"BAYMAX_LIVE_MODELS": f" {NEW}, models/{OLD},{NEW} "}),
                          (NEW, OLD))
         self.assertEqual(live_models.configured(OLD, {"BAYMAX_LIVE_MODELS": f"no such/model,{NEW}"}), (NEW,))
-        self.assertEqual(live_models.configured(OLD, {"BAYMAX_LIVE_MODELS": "a b"}), (OLD, NEW))  # nothing usable
+        self.assertEqual(live_models.configured(OLD, {"BAYMAX_LIVE_MODELS": "a b"}), (NEW, OLD))  # nothing usable
         self.assertEqual(self.printed.call_count, 2)  # each bad entry is named
         self.assertEqual(live_models.configured(NEW, {}), (NEW,))
 

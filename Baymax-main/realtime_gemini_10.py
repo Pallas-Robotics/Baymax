@@ -253,13 +253,14 @@ sd.default.device = [target_device_microphone, target_device_speaker]
 
 MODEL = "gemini-2.5-flash-native-audio-preview-12-2025"
 # Google shuts MODEL down as early as 2026-11-17 (replacement: gemini-3.8-live).
-# BAYMAX_LIVE_MODELS lists the Live models to use, in order (default: MODEL, then
-# gemini-3.8-live); run() moves on from one this API key can't use and adapts the
-# config to each (features/conversational_ability/live_models.py).
+# BAYMAX_LIVE_MODELS lists the Live models to use, in order (default: gemini-3.8-live,
+# then MODEL as the fallback); run() moves on from one this API key can't use and adapts
+# the config to each (features/conversational_ability/live_models.py).
 from features.conversational_ability import live_models
 _live_models = live_models.ModelChoice(live_models.configured(MODEL))
-# gemini-2.5-flash now returns 404 ("no longer available to new users").
-SUMMARY_MODEL = "gemini-3.5-flash"  # lighter model for memory summaries
+# gemini-2.5-flash now returns 404 ("no longer available to new users"); Google routes
+# gemini-3.5-flash to gemini-3.6-flash (GA), so name it directly.
+SUMMARY_MODEL = "gemini-3.6-flash"  # lighter model for memory summaries
 
 # ─── Memory retrieval config ─────────────────────────────────────────────────
 # memory.retrieval_enabled = false (device.toml) skips loading the memory
@@ -2481,7 +2482,16 @@ def _generate_summary(prompt, timeout):
                 api_key=API_KEY,
                 http_options={"api_version": "v1alpha", "timeout": int(timeout * 1000)},
             )
-            reply["text"] = client.models.generate_content(model=SUMMARY_MODEL, contents=prompt).text
+            for attempt in (1, 2):
+                try:
+                    reply["text"] = client.models.generate_content(model=SUMMARY_MODEL, contents=prompt).text
+                    return
+                except Exception as e:
+                    # One retry when Google is busy (503) or rate-limits (429), still
+                    # within `timeout`: a lost summary loses that part of the conversation.
+                    if attempt == 2 or getattr(e, "code", None) not in (429, 503):
+                        raise
+                    time.sleep(1.0)
         except Exception as e:
             reply["error"] = e
     worker = threading.Thread(target=call, name="memory-summary", daemon=True)

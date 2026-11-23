@@ -36,8 +36,11 @@ two sentences). Its quota limits new sessions rather than questions (one per que
 refused after about a dozen in two minutes; one session answered eight back to back), so
 one session is opened at the first search, reused for the next ones (anything an earlier
 answer left queued is dropped first), and closed after two minutes without one. On the tested free-tier key it refused new sessions after 25 in a
-morning. When it refuses one (quota, or the model is gone), the conversation's own Live model
-looks the question up instead, asked to answer in English (Gemini speaks the result in the
+morning. When it refuses one (quota, or the model is gone), a native-audio Live model looks
+the question up instead: the conversation's own on Gemini 2.x, else
+`gemini-2.5-flash-native-audio-preview-12-2025`, never Gemini 3 (on the tested key, Gemini 3
+Live with Google Search was refused at once, "1011 You exceeded your current quota", while
+2.5's worked; 2026-11-23), asked to answer in English (Gemini speaks the result in the
 person's language): it answers only in audio, so its session asks for one sentence and
 closes once the transcript has one (a clear sentence end in any script, never after a digit
 or an abbreviation; or, once generation is done, the whole transcript after 0.3 s without

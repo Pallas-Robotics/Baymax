@@ -18,7 +18,7 @@ MAX_BACKOFF = 120
 CHUNK = 15            # the site accepts at most 15 of each kind per sync
 SYNC_ROUNDS = 10      # per cycle; the rest goes next cycle
 TIMEOUT = 15
-SUMMARY_MODEL = "gemini-3.5-flash"   # as the AI core's session summaries (2.5 is closed to new keys)
+SUMMARY_MODEL = "gemini-3.6-flash"   # as the AI core's session summaries (2.5 is closed to new keys)
 
 SUMMARY_PROMPT = """You help a companion robot named Ember get to know the person it lives with.
 Their family wrote the notes below. Condense them into a short profile Ember will keep in mind:

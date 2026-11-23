@@ -372,13 +372,14 @@ class ModelTests(unittest.TestCase):
     def test_without_it_the_eval_uses_the_model_the_runtime_connects_with_first(self):
         runtime_model, runtime_config = live_eval.core_session()
         model, config, _, report = self.run_main()
+        self.assertEqual(model, self.LATER)  # The default list starts with gemini-3.8-live.
+        self.assertNotIn("thinking_config", config)
+        self.assertIn(f"Model: {self.LATER}", report)
+        model, config, _, report = self.run_main(models=f"{runtime_model},{self.LATER}")
         self.assertEqual(model, runtime_model)  # MODEL, gemini-2.5: its config as the runtime builds it
         self.assertEqual(config["thinking_config"], runtime_config["thinking_config"])
         self.assertEqual(self.behaviors(config), {None})
         self.assertIn(f"Model: {runtime_model}", report)
-        model, config, _, _ = self.run_main(models=f"{self.LATER},{runtime_model}")
-        self.assertEqual(model, self.LATER)
-        self.assertNotIn("thinking_config", config)
 
     def test_a_branch_from_before_the_model_list_keeps_its_model_and_config(self):
         import sys

@@ -462,7 +462,7 @@ runtime's `MODEL`). Google's deprecations page lists it for shutdown as early as
 2026-11-17 (the exact date is announced later), replaced by `gemini-3.8-live`.
 
 - **Order.** `BAYMAX_LIVE_MODELS` lists the Live models to use, comma-separated, in order;
-  by default `MODEL`, then `gemini-3.8-live`. A `models/` prefix is dropped; an entry that
+  by default `gemini-3.8-live`, then `MODEL` (2.5) as the fallback. A `models/` prefix is dropped; an entry that
   isn't a model name is skipped with a warning.
 - **Moving on.** `run()` connects with the first model, and at once with the next when this
   API key can't use it: Google refuses to set up a fresh connection (close 1007 or 1008: the
@@ -479,8 +479,8 @@ runtime's `MODEL`). Google's deprecations page lists it for shutdown as early as
   per-minute or concurrent-session limit says, and those pass in seconds: whatever its close
   code, `run()` backs off and retries the same model, as before the list. One such close on
   2.5 used to keep Ember on the untested 3.8 until it restarted. A key with no quota at all
-  for the first model therefore stays on it, so keep 2.5 first until the project has 3.8
-  quota.
+  for the first model therefore stays on it: on a key whose project has no 3.8 quota, put
+  2.5 first.
 - **No model works.** Once every model has failed like that in a row, `run()` waits as after
   any lost connection (0.3 s, doubling up to 4.8 s) and tries the next model again, so Ember
   comes back with whichever model returns. No fast spin.
@@ -508,11 +508,9 @@ runtime's `MODEL`). Google's deprecations page lists it for shutdown as early as
   gemini-3.8-live --only memory-note-then-speech` passes. One message can carry several parts: the receive loop
   plays and prints every part in order, and a model turn without parts no longer drops
   the rest of its message (its turn end).
-- **Today (2026-11-06):** Ember's keys get "1011 You exceeded your current quota" on
-  `gemini-3.8-live` (their projects have no 3.8 quota yet) while 2.5 works, so 3.8 has not
-  run with Ember. Keep 2.5 first. Once the key's project has 3.8 quota and
-  `python evals/live_eval.py --model gemini-3.8-live` passes, put it first:
-  `BAYMAX_LIVE_MODELS=gemini-3.8-live,gemini-2.5-flash-native-audio-preview-12-2025`.
+- **Today (2026-11-23):** the tested key's project has 3.8 Live quota and 3.8 is first by
+  default (A/B in CHANGELOG). Ember's earlier keys had none on 2026-11-06; a key like that
+  needs `BAYMAX_LIVE_MODELS=gemini-2.5-flash-native-audio-preview-12-2025,gemini-3.8-live`.
 - **Data flows:** none new. The same session data goes to Google whichever model is used.
 
 Tests: `tests/test_session.py` (the list; the real SDK's errors from a local websocket closed

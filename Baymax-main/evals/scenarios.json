@@ -501,5 +501,54 @@
         }
       }
     ]
+  },
+  {
+    "name": "search-news",
+    "about": "Fresh facts: Ember calls search_web once and answers from its result.",
+    "requires": {
+      "tools": [
+        "search_web"
+      ]
+    },
+    "tool_results": {
+      "search_web": {
+        "answer": "Today's top story: a new lunar lander launched this morning, and the city's winter festival opens tonight.",
+        "sources": [
+          "Example News",
+          "City Times"
+        ]
+      }
+    },
+    "steps": [
+      {
+        "say": "What's in the news today?",
+        "expect": {
+          "tools": [
+            "search_web"
+          ],
+          "reply": "lunar|moon|lander|launch|festival"
+        }
+      }
+    ]
+  },
+  {
+    "name": "no-search-needed",
+    "about": "General knowledge: Ember answers itself without search_web.",
+    "requires": {
+      "tools": [
+        "search_web"
+      ]
+    },
+    "steps": [
+      {
+        "say": "Who wrote Pride and Prejudice?",
+        "expect": {
+          "not_tools": [
+            "search_web"
+          ],
+          "reply": "austen"
+        }
+      }
+    ]
   }
 ]
