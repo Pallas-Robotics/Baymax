@@ -120,6 +120,8 @@ dbus_id.symlink_to('/etc/machine-id')
 write('/etc/wpa_supplicant/wpa_supplicant.conf', supplicant(wifi_networks(settings)), 0o600)
 write('/etc/network/interfaces.d/wlan0.conf', 'allow-hotplug wlan0\niface wlan0 inet dhcp\nwpa-conf /etc/wpa_supplicant/wpa_supplicant.conf\n')
 write('/etc/network/interfaces.d/eth0.conf', 'allow-hotplug eth0\niface eth0 inet dhcp\n    metric 200\n')
+copy('ember-ifup-ethernet', '/usr/local/sbin/ember-ifup-ethernet', 0o755)
+copy('ember-ethernet.conf', '/etc/systemd/system/ifup@eth0.service.d/ember-ethernet.conf')
 interfaces = (root / 'etc/network/interfaces').read_text()
 if not re.search(r'^source(?:-directory)?\s+/etc/network/interfaces.d', interfaces, re.M):
     write('/etc/network/interfaces', interfaces + '\nsource /etc/network/interfaces.d/*\n')

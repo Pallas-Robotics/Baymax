@@ -1,0 +1,23 @@
+#!/bin/sh
+# Bring up a hotplug Ethernet port without making boot wait when no cable is plugged in.
+# Run by ifup@eth0.service through the ember-ethernet.conf drop-in.
+#
+# ifupdown's dhclient waits ~30 s for an address on an empty port, and network.target
+# (so the desktop login, and Ember after it) waited with it on every Wi-Fi-only boot.
+iface=${1:-eth0}
+sys=${EMBER_SYS_NET:-/sys/class/net}
+ifup=${EMBER_IFUP:-/sbin/ifup}
+wait=${EMBER_CARRIER_WAIT:-3}
+ip link set "$iface" up 2>/dev/null || true
+tries=0
+while :; do
+    if [ "$(cat "$sys/$iface/carrier" 2>/dev/null)" = 1 ]; then
+        exec "$ifup" --allow=hotplug "$iface"  # cable in: wait for its address as before
+    fi
+    [ "$tries" -ge "$wait" ] && break
+    sleep 1
+    tries=$((tries + 1))
+done
+# No cable: same ifup, in the background. dhclient keeps retrying, so a cable plugged in
+# later still gets an address; nothing at boot waits for it.
+"$ifup" --allow=hotplug "$iface" </dev/null >/dev/null 2>&1 &
