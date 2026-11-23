@@ -2,6 +2,31 @@
 
 Reusable features live here; they never open microphones or cameras.
 
+## Tool time limits (`time_limits.py`)
+
+Every Gemini function call goes through the harness tool runner (`features/harness/tools.py`), which applies a per-tool limit. The calls covered are location/weather, everyday, family, eyes, volume, audiobook, `listen`, `search_web`, `look_closely` and the experimental public tools.
+
+| Tools | Limit |
+|---|---|
+| Local tools (clock, reminders, lists, eyes, volume) | 5 s |
+| Location/weather | 8 s |
+| Wikipedia, Open Library, headlines and other `public_*` lookups | 12 s |
+| LibriVox `audiobook`, and `listen` | 15 s |
+| `search_web` | 14 s, only a backstop: it keeps its own 13 s budget (`web_search.TOTAL_S`) |
+| Anything else (`brain_game`, `send_reply`, `look_closely`) | 10 s |
+
+Every limit is at most v10's `REPLY_OWED_MAX_S` (15 s), and a test keeps it so.
+
+- **How calls run:** blocking functions run in a daemon worker thread, and `look_closely` runs as a task.
+- **On timeout:** Gemini receives `{"error": "timed_out", "message": ...}`, so Ember tells the person the service couldn't be reached and offers to try again. A warning with the tool name only is logged.
+- **Late results:** a result that arrives after the limit is discarded and never sent. Daemon threads keep a hung service from blocking shutdown.
+- **The experimental tools** use the same limits inside `experimental.run_call` (`time_limits.run`), which replaces the former 20 s timeout. So v10's own dispatcher (`EMBER_TOOL_RUNNER=0`) keeps them too.
+
+- **Inputs and outputs:** the tool name and the function; the function's result, or the `timed_out` result.
+- **Dependencies and data flows:** no new dependencies, settings or external data flows.
+- **Enabling and disabling:** always on with the runner; edit `LIMITS` to tune.
+- **Tests:** `tests/test_toolkit_time_limits.py`, plus the runner's timeout tests in `tests/test_toolkit_runner.py` (information suite).
+
 ## Experimental public tools
 
 This combined branch includes #7's desktop/debugging tools plus sixteen opt-in

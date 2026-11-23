@@ -10,8 +10,16 @@
   goes through the runner, with v10's monitor events and replies unchanged, and two
   intended differences: arguments that don't match the declared schema are
   answered with a clear error instead of being run, and each tool has a time limit
-  (`features/toolkits/time_limits.py`, shared with the separate time-limits PR).
-  `EMBER_TOOL_RUNNER=0` restores v10's dispatcher. Live checks pending.
+  (`features/toolkits/time_limits.py`): 5 s local (clock, reminders, lists, eyes,
+  volume), 8 s location/weather, 12 s lookups, 15 s `audiobook` and `listen`, 10 s
+  otherwise; `search_web` keeps its own 13 s budget with a 14 s backstop; all within
+  v10's 15 s `REPLY_OWED_MAX_S`. Before, only the experimental public tools had a
+  (20 s) limit, so a hung weather, family or audiobook call left Ember silent; that
+  20 s is replaced by the same limits in `experimental.run_call`. A timed-out call
+  returns `timed_out` so Ember says the service couldn't be reached and offers to
+  retry; late results are dropped and hung workers no longer block shutdown. This
+  supersedes JoeKojima/Baymax#48 and Pallas #8. `EMBER_TOOL_RUNNER=0` restores
+  v10's dispatcher. Live checks pending.
 
 - LED eyes blink calmly: a blink chance every 2.5-5 s (was 0.7-1.4 s) and eyes shut for
   0.12 s (was 0.015 s, which read as a flicker). Seen on ember-002.

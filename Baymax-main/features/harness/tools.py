@@ -2,7 +2,7 @@
 
 Today's v10 path (features/toolkits/gemini_tools.handle_tool_call_v10)
 dispatches each call inline in the receive loop, with no time limit (20 s for
-experimental tools) and passes whatever arguments Gemini sent to the tool. The
+experimental tools before this change) and passes whatever arguments Gemini sent to the tool. The
 runner keeps v10's order of monitor events and its one reply per batch, and adds:
 
   * argument validation against the declared schema: a bad call is not run;
@@ -294,7 +294,7 @@ class ToolRunner:
         except asyncio.TimeoutError:
             task.cancel()
             self.trace.record("tool_timeout", id=record.id, name=record.name, limit_s=limit)
-            print(f"[TOOLS] {record.name} timed out after {limit:g} s", flush=True)
+            time_limits.log.warning("Toolkit call %s timed out after %.0f s", record.name, limit)
             return "timeout", time_limits.timed_out(record.name), None
         except asyncio.CancelledError:
             current = asyncio.current_task()
@@ -341,7 +341,7 @@ class ToolRunner:
             return "ok", await asyncio.wait_for(future, timeout=limit), None
         except asyncio.TimeoutError:
             trace.record("tool_timeout", id=record.id, name=record.name, limit_s=limit)
-            print(f"[TOOLS] {record.name} timed out after {limit:g} s", flush=True)
+            time_limits.log.warning("Toolkit call %s timed out after %.0f s", record.name, limit)
             return "timeout", time_limits.timed_out(record.name), None
         except asyncio.CancelledError:
             task = asyncio.current_task()

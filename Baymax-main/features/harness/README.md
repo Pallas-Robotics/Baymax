@@ -155,7 +155,7 @@ You can read a trace with `features.harness.trace.read(path)`, which returns a l
    - The limits are local 5 s, location/weather 8 s, search-style 12 s, audiobook/listen 15 s, `search_web` just above its own 13 s budget, otherwise 10 s.
    - A blocking tool runs on a daemon thread, so a hung service cannot block shutdown. An async tool runs as a task.
    - A timed-out call answers `timed_out`, and its late result is dropped.
-   - v10 had no limit, except 20 s inside `experimental.run_call`, which now sits under the runner's limit.
+   - v10 had no limit, except 20 s inside `experimental.run_call`. That function now uses `time_limits.run` with the same limit as the runner, so the rollback path (`EMBER_TOOL_RUNNER=0`) keeps the public tools' limit.
 3. **A tool exception becomes `{"error": "Tool temporarily unavailable"}`** instead of escaping into the receive loop. `execute` already catches everything, so this only matters for hooks and async tools.
 
 ### Cancellation
@@ -226,3 +226,7 @@ A tool never opens a microphone or camera stream.
   - parity with `handle_tool_call_v10`: mixed batches, the v10-only tools (look_closely, volume, search_web, family), the disabled toolkit, a non-silent eye tool and more than 8 calls;
   - the intended differences;
   - the `EMBER_TOOL_RUNNER` switch.
+- **`tests/test_toolkit_time_limits.py` (information suite):**
+  - the per-tool values;
+  - every registered tool's limit staying within v10's `REPLY_OWED_MAX_S`, read from `realtime_gemini_10.py`;
+  - timeouts through the runner and `experimental.run_call`.
