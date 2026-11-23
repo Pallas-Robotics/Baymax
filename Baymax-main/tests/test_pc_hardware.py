@@ -703,6 +703,7 @@ class SpeakerMixerTests(unittest.TestCase):
                          (2, "Master", -12.0, 33.0, False))
 
 
+@unittest.skipIf(os.name == "nt", "Linux /proc maps and paths; the robot feature is off elsewhere")
 class StartupFilesTests(unittest.TestCase):
     """note_startup_files: what Ember loaded, for the image's ember-prewarm next boot."""
 

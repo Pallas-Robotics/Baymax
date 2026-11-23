@@ -482,7 +482,7 @@ class DownloadCacheTests(unittest.TestCase):
         return Response()
 
     def cached(self):
-        return sorted(str(path.relative_to(self.cache)) for path in self.cache.rglob("*"))
+        return sorted(path.relative_to(self.cache).as_posix() for path in self.cache.rglob("*"))
 
     def test_each_track_replaces_the_last_and_another_program_clears_the_old_one(self):
         recording = {"id": "rain sounds", "sections": [{"file": "Rain 1.mp3"}, {"file": "Rain 2.mp3"}]}

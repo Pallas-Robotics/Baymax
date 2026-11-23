@@ -110,6 +110,7 @@ class DownloadTests(unittest.TestCase):
             self.download(files, urlopen)
         self.assertEqual(order, ["fsync", "replace"])
 
+    @unittest.skipIf(os.name == "nt", "Windows can't delete a file the download still has open")
     def test_cleanup_keeps_the_original_error_when_the_partial_file_is_gone(self):
         files, _ = fake_files({"model.onnx": b"x"})
 

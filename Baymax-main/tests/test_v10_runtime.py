@@ -987,6 +987,7 @@ class ReconnectTests(unittest.TestCase):
         async def receive(index, session, ns):
             if index == 0:
                 resumption.remember(SimpleNamespace(resumable=True, new_handle="h1"))
+                await REAL_SLEEP(0.03)                   # Windows' 16 ms clock: h1 must predate the next connection
                 raise ConnectionResetError()             # lost: the next connection resumes with h1
             if index == 1:
                 ns["_go_away_at"] = time.monotonic()
@@ -1777,7 +1778,10 @@ class PoseModelDownloadTests(unittest.TestCase):
         (root / "release").mkdir()
         self.shared = root / "shared" / "pose_landmarker_lite.task"
         self.path = root / "release" / "pose_landmarker_lite.task"
-        self.path.symlink_to(self.shared)                  # dangling until the first download
+        try:
+            self.path.symlink_to(self.shared)              # dangling until the first download
+        except OSError:                                    # Windows without admin or Developer Mode
+            self.skipTest("this account can't create symlinks")
 
     def ensure(self, retrieve):
         ns = {"os": os, "urllib": SimpleNamespace(request=SimpleNamespace(urlretrieve=retrieve)),

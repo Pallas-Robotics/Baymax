@@ -23,7 +23,11 @@ again, and are never written to disk. When someone Ember knows arrives, a
 head-and-shoulders crop is sent to Gemini (which already receives the camera
 feed) to describe their appearance; only that text description is kept.
 """
-import fcntl
+try:
+    import fcntl
+except ImportError:   # Windows dev PCs lock with msvcrt instead
+    fcntl = None
+    import msvcrt
 import hashlib
 import json
 import os
@@ -541,7 +545,15 @@ class PeopleStore:
             # the robot's user, and either may have created the lock file.
             fd = os.open(self.path + ".lock", os.O_RDONLY | os.O_CREAT, 0o644)
             try:
-                fcntl.flock(fd, fcntl.LOCK_EX)
+                if fcntl:
+                    fcntl.flock(fd, fcntl.LOCK_EX)
+                else:
+                    while True:                       # LK_LOCK gives up after 10 s; keep waiting like flock
+                        try:
+                            msvcrt.locking(fd, msvcrt.LK_LOCK, 1)
+                            break
+                        except OSError:
+                            pass
                 try:
                     data, _ = self._read_file()
                 except ValueError as e:
@@ -553,6 +565,8 @@ class PeopleStore:
                 self._write_file(data)
                 self._set(data, self._file_mtime())   # nobody else can write while we hold the lock
             finally:
+                if not fcntl:
+                    msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)   # the file is empty, so still at offset 0
                 os.close(fd)                          # also releases the lock
             return result
 

@@ -229,6 +229,7 @@ class StoreTests(Base):
         self.store.add_samples("B", [identity()], source="app")
         self.assertEqual(len(fi.PeopleStore(self.path).people()), 2)
 
+    @unittest.skipIf(os.name == "nt", "Windows can't replace a file another process is reading")
     def test_write_during_a_reload_is_not_missed(self):
         # The dashboard writes while the core is part-way through reading:
         # the core must still see that write on its next check.

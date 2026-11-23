@@ -1,5 +1,11 @@
 # MVP (unreleased)
 
+- Desktop offline checks: the people store locks with msvcrt on Windows (fcntl doesn't exist
+  there, so every test importing the runtime failed); Linux runners start a PulseAudio server
+  so `import sounddevice` works; tests of Linux-only behaviour (/proc startup files, replacing
+  or deleting a file another handle has open) skip on Windows; the audiobook cache test
+  compares POSIX paths and the GoAway handle test no longer races Windows' 16 ms clock.
+
 - Orange Pi 4 Pro: Ember now stays on the two fast cores by default (`BAYMAX_CPU_PINNING=auto`
   covers the A733; `off` reverts), with the 1 ms GIL switch and 512-frame speaker stream that
   come with it. Unpinned, the scheduler ran the mic callback on the A55s 88% of the time and
