@@ -11,13 +11,12 @@ Sources:
   timing.py, the rows devops/performance/check.py reads): per turn, the local speech
   end and when reply audio was scheduled to the speaker (`playback`), in wall-clock
   seconds stamped by the runtime itself.
-- The agent harness event trace, when the runtime writes one (`EMBER_TRACE=<file>`,
-  JSON lines; see `TraceReader`), stamped by the runtime when things happen. Status
-  events already carry the runtime's own times; what the trace improves is log lines
-  (stamped when read otherwise, up to 0.2-0.4 s late) and state changes the status
-  poll would only see on its next read. When the trace carries log lines, the stdout
-  log is not also stamped, so lines are not counted twice. Without a trace the
-  status/log parsing above is used.
+- The agent harness event trace (Pallas-Robotics/Baymax#10, schema version 1), when the
+  runtime writes one (`EMBER_TRACE=<file>`; see `TraceReader`). Every event carries the
+  runtime's own `wall` time, so state changes are exact rather than seen on the next
+  status poll, and `audio_received` gives when the first reply audio arrived from
+  Gemini. Without a trace (an older runtime, or another schema version) the status/log
+  parsing above is used unchanged.
 - CPU/memory samples of the runtime process (hardware.ProcessSampler).
 
 The observer merges these into one timeline; `Window` answers questions about one
@@ -39,6 +38,7 @@ class Observer:
         self.status_path, self.log_path, self.clock = Path(status_path), Path(log_path), clock
         self.trace = TraceReader(trace_path) if trace_path else None
         self.timing = {}               # (start, turn id) -> conversation_timing row
+        self.reply_audio = []          # trace audio_received wall times
         self.events, self._event_keys = [], set()
         self.transcripts = {}          # id -> {"speaker", "text", "time"}
         self.log = []                  # (time read, line)
@@ -60,7 +60,7 @@ class Observer:
         now = self.clock.time()
         self._read_status(now)
         if self.trace is not None:
-            self._read_trace(now)  # First: when it carries log lines, the stdout log is not stamped too.
+            self._read_trace(now)
         self._read_log(now)
 
     def sample(self, values):
@@ -107,24 +107,22 @@ class Observer:
     def _read_trace(self, now):
         since = self.starts[-1] if self.starts else 0
         for record in self.trace.read():
-            when = record["time"]
+            when, kind = record["wall"], record["kind"]
             if when < since - 1:
-                continue
-            if record["kind"] == "state" and record["state"] in CONVERSATION_STATES:
-                self._add_event({"time": when, "state": record["state"], "message": record.get("message", ""),
+                continue  # A previous runtime's events (the file is appended to).
+            if kind == "state" and record.get("state"):
+                self._add_event({"time": when, "state": record["state"], "message": "trace", "source": "trace"}, now)
+            elif kind == "audio_received":
+                self.reply_audio.append(when)
+            elif kind in TRACE_EVENTS:
+                detail = " ".join(str(record[k]) for k in ("name", "outcome", "error") if record.get(k))
+                self._add_event({"time": when, "state": "trace", "message": f"{kind} {detail}".strip(),
                                  "source": "trace"}, now)
-            elif record["kind"] == "transcript" and record.get("id") is not None:
-                # Same id as the status file's transcript: keep the earlier (trace) time.
-                entry = self.transcripts.setdefault((since, record["id"]), {"speaker": record["speaker"],
-                                                                           "time": when, "text": ""})
-                entry["time"] = min(entry["time"], when)
-            elif record["kind"] == "tool":
-                self._add_event({"time": when, "state": "toolkit", "name": record["name"],
-                                 "message": record.get("message", ""), "id": f"trace-{record['name']}-{when}"}, now)
-            elif record["kind"] == "log":
-                self.log.append((when, record["line"]))
-            elif record["kind"] == "event":
-                self._add_event({"time": when, "state": record["state"], "message": record.get("message", "")}, now)
+
+    def reply_audio_after(self, when):
+        """Earliest trace `audio_received` (first reply audio from Gemini) at or after `when`."""
+        times = [t for t in self.reply_audio if t >= when]
+        return min(times) if times else None
 
     def _add_event(self, event, now):
         key = (event.get("id") or "", event.get("time"), event.get("state"), event.get("message"))
@@ -152,8 +150,6 @@ class Observer:
         text = self._partial + data.decode("utf-8", errors="replace")
         lines = text.split("\n")
         self._partial = lines.pop()
-        if self.trace is not None and self.trace.active and self.trace.has_log:
-            return  # The trace carries the log lines with their real times.
         self.log += [(now, line.rstrip("\r")) for line in lines if line.strip()]
 
     def tail(self, count=20):
@@ -237,27 +233,31 @@ class Window:
         return not re.search(r"\bDisengaged\b", sorted(changes)[-1][1])
 
 
+TRACE_SCHEMA = 1
+# Trace kinds kept as "trace: <kind> ..." events (matchable with `event` expectations).
+TRACE_EVENTS = ("connected", "session_closed", "connection_failed", "interrupted", "turn_complete",
+                "generation_complete", "tool_end", "tool_timeout", "tool_error", "tool_invalid", "tool_cancelled",
+                "go_away", "receive_error")
+
+
 class TraceReader:
-    """Reads the agent harness event trace (`EMBER_TRACE`, JSON lines) incrementally.
+    """Reads the agent harness event trace incrementally: JSON lines in schema version 1
+    (Pallas-Robotics/Baymax#10, features/harness/README.md "Schema (version 1)").
 
-    The trace format is defined by the harness (Pallas-Robotics/Baymax branch
-    svanik/harness-trace-tools, not merged when this was written). This reader is
-    deliberately tolerant and maps what it recognizes; anything else is ignored, and
-    without a trace file the observer uses the status file and log:
-
-    - time: `t`, `time`, `ts` or `wall` (wall-clock seconds), or `t_ms` (milliseconds);
-    - kind: `event`, `kind` or `type`; recognized values contain `state`, `transcript`,
-      `tool`, `log` or `event`;
-    - fields: `state`, `message`, `speaker`, `text`, `id`, `append`, `name`/`tool`, `line`.
-
-    Lines without a usable time are skipped. A partial last line is kept until it ends.
+    Every event has `seq`, `t` (monotonic), `wall` (Unix seconds), `kind` and `session`.
+    The rig uses `wall`, the same clock as the status file. A `trace_start` with another
+    `schema` turns the reader off, so the observer falls back to the status file and log.
+    Transcript text is only present with EMBER_TRACE_TEXT=1, which the rig does not set:
+    transcripts come from the status file. A partial last line is kept until it ends.
     """
 
     def __init__(self, path):
         self.path, self.offset, self.partial = Path(path), 0, ""
-        self.active, self.has_log = False, False
+        self.active, self.schema, self.counts = False, None, {}
 
     def read(self):
+        if self.schema is not None and self.schema != TRACE_SCHEMA:
+            return []
         try:
             with self.path.open("rb") as stream:
                 stream.seek(self.offset)
@@ -271,38 +271,28 @@ class TraceReader:
         self.partial = lines.pop()
         records = []
         for line in lines:
-            record = normalize_trace(line)
-            if record is not None:
-                records.append(record)
-                self.active = True
-                self.has_log = self.has_log or record["kind"] == "log"
+            record = parse_trace(line)
+            if record is None:
+                continue
+            if record["kind"] == "trace_start":
+                self.schema = record.get("schema")
+                if self.schema != TRACE_SCHEMA:
+                    self.active = False
+                    return []
+                continue
+            self.active = True
+            self.counts[record["kind"]] = self.counts.get(record["kind"], 0) + 1
+            records.append(record)
         return records
 
 
-def normalize_trace(line):
+def parse_trace(line):
+    """One schema-1 event as a dict, or None for a line that is not one."""
     try:
         raw = json.loads(line)
     except ValueError:
         return None
-    if not isinstance(raw, dict):
+    if not isinstance(raw, dict) or not isinstance(raw.get("kind"), str) \
+            or not isinstance(raw.get("wall"), (int, float)):
         return None
-    when = next((raw[k] for k in ("t", "time", "ts", "wall") if isinstance(raw.get(k), (int, float))), None)
-    if when is None and isinstance(raw.get("t_ms"), (int, float)):
-        when = raw["t_ms"] / 1000.0
-    if when is None:
-        return None
-    name = str(raw.get("event") or raw.get("kind") or raw.get("type") or "").lower()
-    if "transcript" in name and raw.get("speaker") and isinstance(raw.get("text"), str):
-        speaker = "ember" if raw["speaker"] in ("ember", "gemini", "model", "assistant") else "user"
-        return {"kind": "transcript", "time": when, "speaker": speaker, "text": raw["text"], "id": raw.get("id"),
-                "append": bool(raw.get("append"))}
-    if "tool" in name and (raw.get("name") or raw.get("tool")):
-        return {"kind": "tool", "time": when, "name": raw.get("name") or raw.get("tool"),
-                "message": raw.get("message", "")}
-    if "log" in name and isinstance(raw.get("line"), str):
-        return {"kind": "log", "time": when, "line": raw["line"]}
-    if "state" in name and raw.get("state"):
-        return {"kind": "state", "time": when, "state": raw["state"], "message": raw.get("message", "")}
-    if raw.get("state") and raw.get("message") is not None:
-        return {"kind": "event", "time": when, "state": raw["state"], "message": raw["message"]}
-    return None
+    return raw

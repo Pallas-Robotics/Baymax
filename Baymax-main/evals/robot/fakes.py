@@ -109,6 +109,7 @@ class FakeRobot:
         self.events, self.transcripts, self.sequence, self.active = [], [], 0, {}
         self.timing, self.last_user = [], None
         self.state, self.detail, self.pending = "starting", "Starting Ember", []
+        self.trace("trace_start", schema=1, pid=self.pid, text_enabled=False)
         self.emit("connecting", "Connecting to Gemini Live")
         for line in self.startup_log:
             self.print(line)
@@ -133,17 +134,20 @@ class FakeRobot:
     def print(self, line):
         with self.log_path.open("a", encoding="utf-8") as log:
             log.write(line + "\n")
-        self.trace({"event": "log", "line": line})
 
-    def trace(self, record):
+    def trace(self, kind, **fields):
+        """A harness trace event in schema version 1 (Pallas-Robotics/Baymax#10)."""
         if self.trace_path is not None:
+            self.trace_seq = getattr(self, "trace_seq", 0) + 1
+            event = {"seq": self.trace_seq, "t": self.clock.time() - 1_000_000.0, "wall": self.clock.time(),
+                     "kind": kind, "session": self.starts}
             with Path(self.trace_path).open("a", encoding="utf-8") as out:
-                out.write(json.dumps(dict(record, t=self.clock.time())) + "\n")
+                out.write(json.dumps(dict(event, **fields)) + "\n")
 
     def emit(self, state, message):
         if (self.state, self.detail) != (state, message):
             self.events.append({"time": self.clock.time(), "state": state, "message": message})
-            self.trace({"event": "state", "state": state, "message": message})
+            self.trace("state", state=state)
         self.state, self.detail = state, message
 
     def record(self, state, message):
@@ -206,6 +210,7 @@ class FakeRobot:
             self.emit("speaking", "Gemini is producing reply audio")
             now = self.clock.time()
             # As timing.py: reply audio arrives, then the speaker starts it (playback) shortly after.
+            self.trace("audio_received", bytes=9600, duration_ms=200.0)
             self.timing.append({"id": len(self.timing) + 1, "speech_end": self.last_user, "reply_audio": now,
                                 "playback": now + action.get("playback_s", 0.04)})
             self.transcribe("ember", action["reply"])

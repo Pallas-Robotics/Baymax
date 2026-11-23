@@ -119,6 +119,10 @@ def observe_turn(window, speech_end=None):
     if playback is not None and playback <= window.end:
         # v10 conversation_timing: when reply audio was scheduled to the speaker, stamped by the runtime.
         latency, source = round(max(0.0, playback - speech_end), 3), "runtime playback time"
+    elif speech_end is not None and window.o.reply_audio_after(speech_end) is not None \
+            and window.o.reply_audio_after(speech_end) <= window.end:
+        # Harness trace (#10): when the first reply audio arrived from Gemini, stamped by the runtime.
+        latency, source = round(max(0.0, window.o.reply_audio_after(speech_end) - speech_end), 3), "trace reply audio"
     elif speaking is not None and speech_end is not None:
         latency, source = round(max(0.0, speaking - speech_end), 2), "speaking state"
     return {"heard": window.heard(), "reply": window.reply(),
