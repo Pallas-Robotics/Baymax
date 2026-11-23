@@ -61,6 +61,8 @@ The robot's microphone, echo cancellation, speaker, camera, eyes, fall detection
 load, offline Vosk wake words, startup greetings and session tasks. Those still need
 the robot (TESTING_PROTOCOL.md §2–3). A pass here is Gemini-behaviour evidence, not
 release approval.
+`evals/robot/` (Layer 2) covers most of these on a dedicated test robot, reusing
+this file's scenario format and helpers.
 
 ## Inputs, outputs and data flows
 - **Sent to Google Gemini Live:** the MVP system prompt and tool declarations,
