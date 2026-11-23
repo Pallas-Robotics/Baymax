@@ -19,7 +19,7 @@ BLINK = (0, 0, 0, 0, 0x3C, 0, 0, 0)
 BLANK = (0,) * 8
 DOTS = tuple((0, 0, 0, 0, value, value, 0, 0) for value in (0xC0, 0x18, 0x03))
 THINKING = tuple((dot, BLANK) for dot in DOTS) + tuple((BLANK, dot) for dot in DOTS)
-BRIGHTNESS = 3
+BRIGHTNESS = 2   # of 15; one step dimmer on the Orange Pi build
 SLEEP_BRIGHTNESS = 1  # Sleep eyes are dimmer.
 # Anything that means a conversation is happening resets the sleep timer; the
 # last of Ember's audio leaving the speaker too, so the quiet time counts from

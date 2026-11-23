@@ -40,7 +40,7 @@ the desktop/Debian x86_64 requirements profile.
   disables it.
 - Sleep eyes also show for as long as Ember is disengaged ("Ember disengage" until
   "Ember engage"; see conversational_ability/README.md).
-- Sleep eyes, dimmed from brightness 3 to 1, after `BAYMAX_EYES_SLEEP_AFTER_S`
+- Sleep eyes, dimmed from brightness 2 to 1, after `BAYMAX_EYES_SLEEP_AFTER_S`
   (default 60; 0 disables) without
   conversation while connected, counted from when Ember's voice finishes playing.
   Repeated empty-playback monitor heartbeats do not reset this timer; only the
