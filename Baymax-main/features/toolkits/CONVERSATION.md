@@ -21,7 +21,7 @@ Queries go to the named third-party providers. No identity, saved profile,
 recordings or inferred location are sent. Queries and results remain in a bounded
 process-local cache; restart clears them. The existing transport enforces HTTPS,
 allowlisted hosts, no redirects, five-second socket timeout and a 2 MB response cap.
-The async dispatcher bounds tool calls to 20 seconds and eight calls per batch.
+The tool runner bounds each call by its limit in `time_limits.py` (12 s for these lookups) and eight calls per batch.
 Failures return unavailable; never fabricate results or use expired fallback data.
 Trivia questions can repeat across batches; there is no persistent quiz history.
 

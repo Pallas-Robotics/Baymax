@@ -1,5 +1,4 @@
 """Opt-in public toolkit registry and Gemini Live adapter (no capture side effects)."""
-import asyncio
 import copy
 import os
 
@@ -225,10 +224,8 @@ def extend_config(config):
 
 
 async def run_call(call):
-    try:
-        return await asyncio.wait_for(asyncio.to_thread(toolkit.execute, call.name, call.args or {}), timeout=20)
-    except asyncio.TimeoutError:
-        return {"error": "Public tool timed out; try again later"}
+    from . import time_limits  # Same per-tool limits as the core toolkit (and the harness runner).
+    return await time_limits.run(call.name, toolkit.execute, call.name, call.args or {})
 
 
 async def handle_tool_call(session, tool_call, response_factory=None):
