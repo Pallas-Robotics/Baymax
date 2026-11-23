@@ -8,7 +8,7 @@ import runtime_monitor as monitor
 from .location import Location
 from .weather import Weather
 from . import audiobooks, checkins, experimental, listen, look_closely, proactive  # noqa: F401  (camera/session hooks)
-from . import web_search
+from . import time_limits, web_search
 from .everyday import tools as everyday
 from .family import tools as family
 from features import persona
@@ -192,12 +192,12 @@ async def handle_tool_call(session, tool_call):
                 result = await experimental.run_call(call)
             elif name in (audiobooks.DECLARATION["name"], listen.NAME):
                 audiobooks.attach(session, asyncio.get_running_loop())  # For pause/chapter/station notes.
-                result = await asyncio.to_thread(execute, call.name, call.args or {})
+                result = await time_limits.run(name, execute, call.name, call.args or {})
             elif name == look_closely.DECLARATION["name"]:
                 enabled_now = enabled() and look_closely.enabled()
                 result = await look_closely.run(session) if enabled_now else {"error": "Toolkit is disabled"}
             else:
-                result = await asyncio.to_thread(execute, call.name, call.args or {})
+                result = await time_limits.run(name, execute, call.name, call.args or {})
         finally:
             monitor.activity(name, running=False)
         if quiet:

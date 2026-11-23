@@ -125,11 +125,14 @@ syncing preferences. Do not add fields that `normalize_profile()` discards.
   new public tools, preserving other declarations. Public calls use the same bounded
   dispatch and the existing monitor's start/end events; no v8 pipeline changes are
   added beyond documented toolkit hooks and the monitor/device foundation from #7.
-- Blocking HTTP/disk work runs in `asyncio.to_thread`, with a 20-second result
-  timeout per call and a maximum of eight executed calls in one batch. HTTP reads
-  use a five-second socket timeout and a two-MB response cap. Threads already in
-  progress cannot be force-cancelled by the result timeout; a slow peer may keep
-  its worker alive until its socket operation finishes. No capture streams are opened.
+- Blocking HTTP/disk work runs in a daemon worker thread with the per-tool limit
+  in `time_limits.py` (5 s local, 8 s place/weather/air quality, 12 s other
+  `public_*` lookups, 10 s `brain_game`; see the toolkit README) and a maximum of
+  eight executed calls in one batch. HTTP reads use a five-second socket timeout
+  and a two-MB response cap. Threads already in progress cannot be force-cancelled
+  by the time limit; a slow peer may keep its worker alive until its socket
+  operation finishes, but its late result is dropped and the daemon thread does not
+  hold up shutdown. No capture streams are opened.
 - HTTPS requests use a provider-host allowlist and reject redirects. Feed links
   are returned as data; arbitrary article URLs are never fetched. Feed XML rejects
   DTD/entity declarations. Text is treated as untrusted data in the tool instructions.

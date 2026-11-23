@@ -1,5 +1,15 @@
 # MVP (unreleased)
 
+- Tool calls have per-tool time limits (`features/toolkits/time_limits.py`): 5 s
+  local (clock, reminders, lists, eyes, volume), 8 s location/weather, 12 s lookups,
+  15 s LibriVox `audiobook` and `listen`, 10 s otherwise; `search_web` keeps its own
+  13 s budget with a 14 s backstop. Before, only the experimental public tools had a
+  (20 s) limit, so a hung weather, family or audiobook call left Ember silent while
+  v10 counted a reply as owed. A timed-out call returns `timed_out` so Ember says the
+  service couldn't be reached and offers to retry; late results are dropped and hung
+  workers no longer block shutdown. Ported from JoeKojima/Baymax#48. Live check of a
+  slow/unavailable provider pending.
+
 - Ember answers in the language the person speaks: Hindi gets Hindi, Spanish gets
   Spanish, a switch is followed on the next reply, a Hindi-English mix gets the same
   mix, and Ember's own English notes (`[FALL ALERT]`, reminders, check-ins) are

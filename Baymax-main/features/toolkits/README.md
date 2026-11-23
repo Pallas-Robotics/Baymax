@@ -2,6 +2,26 @@
 
 Reusable features live here; they never open microphones or cameras.
 
+## Tool time limits (`time_limits.py`)
+
+Every blocking Gemini function call (location/weather, everyday, family, eyes, volume,
+audiobook, `listen`, `search_web` and the experimental public tools) runs in a daemon
+worker thread with a per-tool limit: local tools (clock, reminders, lists, eyes, volume)
+5 s, location/weather 8 s, Wikipedia/Open Library/headlines and other `public_*` lookups
+12 s, LibriVox `audiobook` and `listen` 15 s, anything else (`brain_game`, `send_reply`)
+10 s. `search_web` keeps its own 13 s budget (`web_search.TOTAL_S`); its limit here,
+14 s, is only a backstop. Every limit is at most v10's `REPLY_OWED_MAX_S` (15 s), and a
+test keeps it so. On timeout Gemini receives `{"error": "timed_out", "message": ...}` so
+Ember tells the person the service couldn't be reached and offers to retry; a warning
+with the tool name only is logged. A late result from the still-running worker is
+discarded and never sent; daemon threads keep a hung service from blocking shutdown.
+`look_closely` is async (one camera frame already captured) and is not wrapped.
+
+- Inputs/outputs: the tool name and the blocking function; the function's result or
+  the `timed_out` result. No new dependencies, settings or external data flows.
+- Enabling/disabling: always on; edit `LIMITS` to tune.
+- Tests: `tests/test_toolkit_time_limits.py` (information suite).
+
 ## Experimental public tools
 
 This combined branch includes #7's desktop/debugging tools plus sixteen opt-in
