@@ -22,8 +22,10 @@ morning. So one session is opened at the first search, reused for the next ones 
 earlier answer left queued is dropped first), and closed after IDLE_S without a search; a
 reconnect is tried once when Google has closed it.
 
-When the text model refuses a session (quota, or the model is gone), the conversation's own
-Live model looks it up instead (Searcher._spoken), asked to answer in English (Gemini speaks
+When the text model refuses a session (quota, or the model is gone), a native-audio Live
+model looks it up instead (Searcher._spoken): the conversation's own on Gemini 2.x, else
+AUDIO_MODEL (2.5), never Gemini 3, whose Live search was refused for quota on the tested
+key; asked to answer in English (Gemini speaks
 the result in the person's language). The native-audio models answer only in audio, at
 speaking pace (5.0-6.4 s per lookup), so that session asks for one sentence and closes once its
 transcript has one: a clear sentence end with more text after it, in any script but never
@@ -99,8 +101,12 @@ def config(model_name=None):
 
 
 def spoken_model():
+    """The fallback lookup's model: the conversation's own when it is Gemini 2.x, else
+    AUDIO_MODEL. Gemini 3 Live with google_search was refused at once on the tested key
+    ("1011 You exceeded your current quota", Gemini 3 grounding quota) while 2.5's worked."""
     from features.conversational_ability import live_models
-    return live_models.in_use or AUDIO_MODEL
+    in_use = live_models.in_use
+    return in_use if in_use and live_models.generation(in_use) < 3 else AUDIO_MODEL
 
 
 def spoken_config(model_name):

@@ -395,8 +395,11 @@ class ToolkitTests(unittest.TestCase):
         self.assertNotIn("thinking_config", web_search.spoken_config("gemini-3.8-live"))
         with patch("features.conversational_ability.live_models.in_use", None):
             self.assertEqual(web_search.spoken_model(), web_search.AUDIO_MODEL)
+        # Never Gemini 3: its Live search was refused for quota on the tested key.
         with patch("features.conversational_ability.live_models.in_use", "gemini-3.8-live"):
-            self.assertEqual(web_search.spoken_model(), "gemini-3.8-live")
+            self.assertEqual(web_search.spoken_model(), web_search.AUDIO_MODEL)
+        with patch("features.conversational_ability.live_models.in_use", "gemini-2.5-flash-native-audio-x"):
+            self.assertEqual(web_search.spoken_model(), "gemini-2.5-flash-native-audio-x")
         # A text model that is gone (1008) falls back too; a slow or broken lookup does not.
         self.assertTrue(web_search.refused(RuntimeError(quota)))
         self.assertTrue(web_search.refused(type("Gone", (Exception,), {"code": 1008})("not found")))

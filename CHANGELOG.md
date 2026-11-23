@@ -1,5 +1,25 @@
 # MVP (unreleased)
 
+- Gemini 3.8 Live first (needs software-lead approval): `BAYMAX_LIVE_MODELS` now defaults
+  to `gemini-3.8-live` (GA since 2026-09-15), then the 2.5 native-audio preview as the
+  automatic fallback. Joe's `live_models` fallback, `adapt()` (no `thinking_config`,
+  undeclared functions `BLOCKING` on 3.x) and the Gemini 3 quiet-note rule are unchanged.
+  Rollback: `BAYMAX_LIVE_MODELS=gemini-2.5-flash-native-audio-preview-12-2025,gemini-3.8-live`,
+  which a key without 3.8 Live quota also needs (a quota close never switches models).
+  `search_web`'s fallback lookup no longer uses the conversation's model on Gemini 3: Gemini 3
+  Live with Google Search was refused at once on the tested key ("1011 You exceeded your
+  current quota") while 2.5's worked, so it uses the 2.5 model. Summaries
+  (`SUMMARY_MODEL`, family profile) name `gemini-3.6-flash` (Google already routes
+  `gemini-3.5-flash` there) and the session summary retries once on 503/429 within its
+  time limit. `evals/scenarios.json` gains `search-news` and `no-search-needed`. Live
+  `evals/live_eval.py` (2026-11-23, synthetic speech, stub tools, 5 runs each): greeting,
+  identity, weather, reminder and fall-alert 25/25 on both 2.5 and 3.8, median first audio
+  1.1-1.9 s on 3.8 against 1.4-2.5 s on 2.5; search-news 4/5 on 3.8 (once it asked which
+  topic) and 5/5 on 2.5; no-search-needed 5/5 on both with no search. Fallback checked live:
+  an unknown first model (close 1008) moved to 2.5 in 0.4 s and 2.5 then held greeting,
+  weather and reminder turns; a quota close kept 3.8. Robot-rig, on-robot voice and live
+  provider checks pending.
+
 - Ember answers in the language the person speaks: Hindi gets Hindi, Spanish gets
   Spanish, a switch is followed on the next reply, a Hindi-English mix gets the same
   mix, and Ember's own English notes (`[FALL ALERT]`, reminders, check-ins) are

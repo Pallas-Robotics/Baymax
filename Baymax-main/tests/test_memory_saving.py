@@ -338,6 +338,30 @@ class GenerateSummaryTests(unittest.TestCase):
         self.assertEqual(ns["_generate_summary"]("prompt", 7.5), "gemini-3.5-flash: prompt")
         self.assertEqual(ns["clients"], [{"api_version": "v1alpha", "timeout": 7500}])
 
+    def test_one_retry_when_google_is_busy_or_rate_limits(self):
+        for code in (503, 429):
+            calls = []
+
+            def generate(model, contents):
+                calls.append(model)
+                if len(calls) == 1:
+                    raise type("Busy", (Exception,), {"code": code})("busy")
+                return SimpleNamespace(text="summary")
+            ns = self.namespace(generate)
+            ns["time"] = SimpleNamespace(sleep=lambda s: None)
+            self.assertEqual(ns["_generate_summary"]("prompt", 5), "summary")
+            self.assertEqual(len(calls), 2)
+
+        def always_busy(model, contents):
+            calls.append(model)
+            raise type("Busy", (Exception,), {"code": 503})("busy")
+        calls = []
+        ns = self.namespace(always_busy)
+        ns["time"] = SimpleNamespace(sleep=lambda s: None)
+        with self.assertRaises(Exception):
+            ns["_generate_summary"]("prompt", 5)
+        self.assertEqual(len(calls), 2)  # Only one retry.
+
     def test_errors_reach_the_caller(self):
         def generate(model, contents):
             raise ConnectionError("offline")

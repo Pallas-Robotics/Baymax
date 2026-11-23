@@ -212,12 +212,12 @@ class V10RuntimeTests(unittest.TestCase):
         listen = self.source()[self.source().index("async def listen_audio"):self.source().index("async def send_audio_realtime")]
         self.assertIn("blocksize=CHUNK_SIZE,", listen)
 
-    def test_the_live_model_list_starts_with_model(self):
-        # The preflight and evals/live_eval.py read MODEL from the source; it stays first by default.
+    def test_the_live_model_list_starts_with_gemini_3_8_then_model(self):
+        # The preflight and evals/live_eval.py read MODEL from the source; it is the fallback.
         source = self.source()
         self.assertIn(f'MODEL = "{OLD}"\n', source)
         self.assertIn("_live_models = live_models.ModelChoice(live_models.configured(MODEL))", source)
-        self.assertEqual(live_models.configured(OLD, {}), (OLD, NEW))
+        self.assertEqual(live_models.configured(OLD, {}), (NEW, OLD))
         run = source[source.index("async def run():"):source.index("def _boot_status")]
         self.assertIn("model=model, config=_live_models.adapt(_build_config())", run)
 
