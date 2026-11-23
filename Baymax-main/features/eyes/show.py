@@ -12,7 +12,7 @@ import sys
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
-from features.eyes.controller import PORT  # noqa: E402
+from features.eyes.controller import BRIGHTNESS, PORT  # noqa: E402
 from features.eyes.driver import open_leds  # noqa: E402
 from features.eyes.patterns import EXPRESSIONS  # noqa: E402
 
@@ -27,7 +27,7 @@ def show(face, port, board_factory=None):
     leds, close = open_leds(port, board_factory)
     try:
         for device in (0, 1):
-            leds.set_intensity(device, 3)
+            leds.set_intensity(device, BRIGHTNESS)
             leds.shutdown(device, False)
         leds.draw_pair(*EXPRESSIONS[face][0][0])  # The MAX7219s keep it after exit.
     finally:

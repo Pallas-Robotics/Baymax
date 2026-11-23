@@ -510,7 +510,7 @@ class EyeTests(unittest.TestCase):
         leds.draw_pair.side_effect = draw
         with patch.object(eyes, 'hold', return_value=True):
             eyes.render(leds)
-        self.assertEqual(calls, [(0, 1), (1, 1), (0, 3), (1, 3)])
+        self.assertEqual(calls, [(0, 1), (1, 1), (0, 2), (1, 2)])
         self.assertEqual(frames[1], EXPRESSIONS['sleep'][0][0][0])
 
     def test_lost_sensor_rules(self):
@@ -606,7 +606,7 @@ class EyeTests(unittest.TestCase):
             self.assertEqual(tuple(board.registers[1, r + 1] for r in range(8)), left, env)
             self.assertEqual(tuple(board.registers[0, r + 1] for r in range(8)), right, env)
             self.assertEqual(board.registers[0, 12], 1)  # Lit, not shut down.
-            self.assertEqual(board.registers[0, 10], 3)
+            self.assertEqual(board.registers[0, 10], 2)
             self.assertTrue(board.closed)
         for env in handled:  # Ember already drew its own exit face.
             factory = Mock()
