@@ -13,7 +13,9 @@
   `devops/performance/check.py`'s sampler on Linux; the runtime gets a private
   `BAYMAX_DATA_DIR` per run (recordings, transcripts and its memory store are
   deleted afterwards; the robot's memories are untouched); the agent harness trace
-  (`EMBER_TRACE`) is read when the runtime writes one, for exact log-line times.
+  (`EMBER_TRACE`, schema version 1 from #10) is read when the runtime writes one, for
+  exact state times and reply-audio arrival, with the status/log parsing as the
+  fallback.
   `.github/workflows/robot-test.yml` runs it on a self-hosted runner when a
   collaborator labels a same-repository PR `robot-test` or submits a branch. Not
   yet run on hardware; the test robot and runner are not set up.

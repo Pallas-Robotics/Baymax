@@ -39,12 +39,23 @@ python evals/robot/rig.py --root ../pr/Baymax-main --cleanup   # stop a leftover
 | `evals/live_eval.py` (Layer 1) | Gemini in the loop, no devices | The rig reuses its scenario format, expectation checks, speech synthesis, cards and session-config reading. |
 | `check_release.py` (Layer 0) | Offline gate | The workflow runs it on the robot before the rig. |
 
-The agent harness trace (`EMBER_TRACE`, branch `svanik/harness-trace-tools`) is used
-when the branch's runtime writes it. The rig sets `EMBER_TRACE` to a file in the run's
-private data folder; a runtime without the feature ignores it. The reader in
-`observe.py` maps the records it recognizes (states, transcripts, tools, log lines)
-and must be checked against the final trace format when that PR lands. Without a
-trace, the status file and log are used as before.
+**Harness trace.** The rig reads the agent harness event trace when the branch's
+runtime writes one. The format is **schema version 1** from Pallas-Robotics/Baymax#10
+(`features/harness/README.md`).
+
+- **How it gets one.** The rig sets `EMBER_TRACE` to a file in the run's private data
+  folder. It does not set `EMBER_TRACE_TEXT`, so the trace has no transcript text or
+  tool argument values; transcripts still come from the status file.
+- **What it uses:**
+  - `state` events at the runtime's `wall` time, which is exact. Without the trace,
+    states are seen on the next status poll.
+  - `audio_received`, the first reply audio from Gemini. It is a latency source after
+    v10's `conversation_timing` playback time, and before the polled "speaking" state.
+  - connection, interruption, turn and tool outcomes, as `trace: <kind> …` events that
+    `event` expectations can match.
+- **Fallback.** A runtime without the trace (it ignores `EMBER_TRACE`), or a
+  `trace_start` with another schema version, leaves the status file and log parsing
+  as the only sources.
 
 ## Design: a self-hosted runner on the test robot, composed with the image updater
 
@@ -391,8 +402,10 @@ Covered:
   - a runtime that never connects, and the CPU or memory ceiling;
   - a sticky disengage after restart, and the suite time limit.
 - **Calibration:** pass, drift detection, and saving only when on target.
-- **Timing sources:** latency from the runtime's playback time vs the speaking state;
-  trace log lines kept once at the runtime's time; tolerant trace record mapping.
+- **Timing sources:** latency from the runtime's playback time, the trace's reply
+  audio, or the speaking state. #10's documented schema-v1 example is read exactly
+  (wall times, tool outcomes, `audio_received`). Partial and malformed lines are
+  handled, and another schema version falls back.
 - **Observer:** event deduplication, ignoring the previous session, partial log lines,
   engagement reset on restart.
 - **Safety:**
@@ -414,8 +427,8 @@ No microphone, camera or speaker is opened, and nothing contacts Gemini or GitHu
 
 ## What still needs a human
 
-- **The trace format.** The `EMBER_TRACE` reader was written before the harness trace
-  PR merged; check `observe.TraceReader` against its final records.
+- **The trace on hardware.** Check that the runtime's real trace (once #10 merges)
+  matches the schema-v1 example the reader is tested against.
 
 - **Setup and approval:**
   - buying and placing the hardware, calibrating, registering the runner;

@@ -335,31 +335,75 @@ class TimingSourceTests(unittest.TestCase):
                 without = step["latency_s"]
         self.assertAlmostEqual(with_playback - without, 0.6, delta=0.3)
 
-    def test_trace_lines_carry_exact_times_and_replace_stamped_log_lines(self):
-        with tempfile.TemporaryDirectory() as folder:
-            clock = fakes.FakeClock()
-            trace = Path(folder) / "trace.jsonl"
-            robot = fakes.FakeRobot(folder, clock, [], trace_path=trace)
-            observer = observe.Observer(robot.status_path, robot.log_path, clock, trace)
-            robot.start()
-            observer.runtime_started(clock.time())
-            clock.sleep(0.013)
-            robot.print("[ENGAGE] Disengaged; only 'Ember engage' is heard.")
-            exact = clock.time()
-            clock.sleep(0.3)
-            observer.poll()
-            hits = [when for when, line in observer.log if line.startswith("[ENGAGE]")]
-            self.assertEqual(hits, [exact])  # Once, at the runtime's time, not the read time.
-            trace.write_text(trace.read_text() + '{"t": 5, "event": "mystery"}\nnot json\n{"event": "log"}\n')
-            observer.poll()  # Unknown or malformed records are ignored.
+    # The example in Pallas-Robotics/Baymax#10's features/harness/README.md ("Schema (version 1)").
+    HARNESS_EXAMPLE = """\
+{"seq":1,"t":5021.3,"wall":1763900000.10,"kind":"trace_start","session":0,"schema":1,"pid":4242,"text_enabled":false}
+{"seq":2,"t":5021.9,"wall":1763900000.70,"kind":"connect_start","session":1,"attempt":1,"model":"gemini-…"}
+{"seq":4,"t":5022.4,"wall":1763900001.20,"kind":"connected","session":1,"attempt":1}
+{"seq":5,"t":5022.4,"wall":1763900001.20,"kind":"state","session":1,"state":"listening"}
+{"seq":6,"t":5022.42,"wall":1763900001.22,"kind":"mic_chunk_sent","session":1,"bytes":2048,"queue_ms":0.4,"send_ms":0.2}
+{"seq":310,"t":5029.1,"wall":1763900007.90,"kind":"input_transcription","session":1,"chars":19}
+{"seq":311,"t":5029.1,"wall":1763900007.90,"kind":"state","session":1,"state":"user_speech"}
+{"seq":330,"t":5029.8,"wall":1763900008.60,"kind":"tool_call","session":1,"calls":[{"id":"w1","name":"get_weather"}]}
+{"seq":332,"t":5029.8,"wall":1763900008.60,"kind":"tool_start","session":1,"id":"w1","name":"get_weather","arg_keys":["units"],"blocking":true,"limit_s":8.0}
+{"seq":333,"t":5030.3,"wall":1763900009.10,"kind":"tool_end","session":1,"id":"w1","name":"get_weather","outcome":"ok","duration_ms":512.7,"error":null}
+{"seq":335,"t":5030.3,"wall":1763900009.10,"kind":"tool_response_sent","session":1,"ids":["w1"],"count":1}
+{"seq":352,"t":5031.0,"wall":1763900009.80,"kind":"audio_received","session":1,"bytes":9600,"duration_ms":200.0}
+{"seq":401,"t":5033.2,"wall":1763900012.00,"kind":"turn_complete","session":1}
+"""
 
-    def test_trace_record_mapping(self):
-        self.assertEqual(observe.normalize_trace('{"ts": 2.5, "type": "state_change", "state": "speaking"}'),
-                         {"kind": "state", "time": 2.5, "state": "speaking", "message": ""})
-        self.assertEqual(observe.normalize_trace('{"t_ms": 1500, "kind": "tool_call", "name": "reminder"}')["time"], 1.5)
-        self.assertEqual(observe.normalize_trace('{"t": 1, "event": "transcript", "speaker": "gemini", "text": "Hi",'
-                                                 ' "id": 3}')["speaker"], "ember")
-        self.assertIsNone(observe.normalize_trace('{"event": "state", "state": "speaking"}'))  # No time.
+    def observer_for(self, folder, text):
+        trace = Path(folder) / "trace.jsonl"
+        trace.write_text(text)
+        clock = fakes.FakeClock(start=1763900013.0)
+        observer = observe.Observer(Path(folder) / ".runtime-status.json", Path(folder) / "runtime.log", clock, trace)
+        observer.runtime_started(1763900000.0)
+        observer.poll()
+        return observer, trace
+
+    def test_reads_the_harness_schema_v1_example(self):
+        with tempfile.TemporaryDirectory() as folder:
+            observer, trace = self.observer_for(folder, self.HARNESS_EXAMPLE)
+            window = observer.window(1763900000.0)
+            self.assertEqual(window.first("listening"), 1763900001.20)  # The runtime's wall time, not the read time.
+            self.assertEqual(window.first("user_speech"), 1763900007.90)
+            self.assertIn("trace: tool_end get_weather ok", window.event_lines())
+            self.assertIn("trace: turn_complete", window.event_lines())
+            self.assertEqual(observer.reply_audio_after(1763900008.0), 1763900009.80)
+            self.assertEqual(observer.trace.schema, 1)
+            self.assertEqual(observer.trace.counts["mic_chunk_sent"], 1)
+            turn = checks.observe_turn(window, speech_end=1763900008.0)  # No conversation_timing in this folder.
+            self.assertEqual((turn["latency_s"], turn["latency_source"]), (1.8, "trace reply audio"))
+            # Appended lines are read incrementally; a partial line waits; malformed lines are skipped.
+            with trace.open("a") as out:
+                out.write('not json\n{"kind": "state", "state": "speaking"}\n'
+                          '{"seq":402,"t":5034.0,"wall":1763900012.8,"kind":"state","session":1,"state":"spea')
+            observer.poll()
+            self.assertIsNone(observer.window(1763900012.5).first("speaking"))
+            with trace.open("a") as out:
+                out.write('king"}\n')
+            observer.poll()
+            self.assertEqual(observer.window(1763900012.5).first("speaking"), 1763900012.8)
+
+    def test_another_trace_schema_falls_back_to_status_and_log(self):
+        with tempfile.TemporaryDirectory() as folder:
+            observer, _ = self.observer_for(folder, self.HARNESS_EXAMPLE.replace('"schema":1', '"schema":2'))
+            self.assertEqual(observer.trace.schema, 2)
+            self.assertFalse(observer.trace.active)
+            self.assertEqual(observer.events, [])
+            self.assertIsNone(observer.reply_audio_after(0))
+
+    def test_fake_runtime_trace_gives_reply_audio_latency_without_conversation_timing(self):
+        with tempfile.TemporaryDirectory() as folder:
+            bench = Bench(IDEAL, timing=False, trace_path=Path(folder) / "trace.jsonl")
+            bench.rig.observer = observe.Observer(bench.robot.status_path, bench.robot.log_path, bench.clock,
+                                                  Path(folder) / "trace.jsonl")
+            try:
+                step = bench.run(["conversation-latency"])["conversation-latency"]["steps"][0]
+            finally:
+                bench.close()
+        self.assertEqual(step["latency_source"], "trace reply audio")
+        self.assertTrue(0 < step["latency_s"] < 2, step["latency_s"])
 
 
 class CalibrationTests(unittest.TestCase):
