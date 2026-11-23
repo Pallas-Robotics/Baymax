@@ -1,5 +1,23 @@
 # MVP (unreleased)
 
+- Robot test rig (Layer 2), ported from JoeKojima/Baymax#31 to this repository and
+  the v10 runtime: `Baymax-main/evals/robot/` runs a PR's real runtime (`run_mvp.py`
+  → `run_pc.py` → `realtime_gemini_10.py`) on a dedicated test robot with its real
+  microphone, echo cancellation, speaker and camera. A second USB speaker plays a
+  synthetic "person" and noise at calibrated levels, a tablet shows synthetic cards,
+  and the rig checks `.runtime-status.json`, the log and CPU/memory against
+  `evals/robot/scenarios.json` (latency, barge-in, echo, disengage/TV/engage,
+  reminders, look closely, stop over radio and audiobooks, eyes, CPU, restarts).
+  Changes for this repository: reply latency uses v10's `conversation_timing`
+  playback times when present; CPU/memory/temperature/NPU come from
+  `devops/performance/check.py`'s sampler on Linux; the runtime gets a private
+  `BAYMAX_DATA_DIR` per run (recordings, transcripts and its memory store are
+  deleted afterwards; the robot's memories are untouched); the agent harness trace
+  (`EMBER_TRACE`) is read when the runtime writes one, for exact log-line times.
+  `.github/workflows/robot-test.yml` runs it on a self-hosted runner when a
+  collaborator labels a same-repository PR `robot-test` or submits a branch. Not
+  yet run on hardware; the test robot and runner are not set up.
+
 - Ember answers in the language the person speaks: Hindi gets Hindi, Spanish gets
   Spanish, a switch is followed on the next reply, a Hindi-English mix gets the same
   mix, and Ember's own English notes (`[FALL ALERT]`, reminders, check-ins) are

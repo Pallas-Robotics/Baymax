@@ -17,14 +17,17 @@
     "Baymax-main/tests/test_public_core_integration.py",
     "Baymax-main/tests/test_waiting_cue.py",
     "Baymax-main/tests/test_toolkit_audiobooks.py",
-    "Baymax-main/tests/test_toolkit_listen.py"
+    "Baymax-main/tests/test_toolkit_listen.py",
+    "devops/performance/check.py",
+    ".github/workflows/robot-test.yml"
   ],
   "python": [
     {
       "directory": "Baymax-main/tests",
       "patterns": [
         "test_live_eval.py",
-        "test_v10_runtime.py"
+        "test_v10_runtime.py",
+        "test_robot_rig.py"
       ]
     }
   ]

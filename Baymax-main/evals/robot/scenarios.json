@@ -1,0 +1,214 @@
+[
+  {
+    "name": "conversation-latency",
+    "about": "Two spoken turns through the robot's real microphone and echo cancellation. First audio is timed from the end of the person's line to the runtime's first 'speaking' state (includes Gemini's end-of-turn wait).",
+    "steps": [
+      {
+        "say": "Hi Ember, how are you doing today?",
+        "expect": {"heard": "ember|how are you", "max_words": 40, "max_latency_s": 5.0, "states": ["thinking", "speaking", "listening"]}
+      },
+      {
+        "say": "What is a good name for a goldfish?",
+        "expect": {"heard": "goldfish|name", "max_words": 50, "max_latency_s": 5.0}
+      }
+    ]
+  },
+  {
+    "name": "barge-in",
+    "about": "Talking over a long reply interrupts it. Skipped where interruptions are off (the MVP sets BAYMAX_INTERRUPTION_ENABLED=0).",
+    "requires": {"env": {"BAYMAX_INTERRUPTION_ENABLED": "1"}, "env_defaults": {"BAYMAX_INTERRUPTION_ENABLED": "1"}},
+    "steps": [
+      {
+        "say": "Tell me a long story about a lighthouse keeper and her dog.",
+        "timeout_s": 6,
+        "expect": {"heard": "lighthouse|story"}
+      },
+      {
+        "say": "Wait, stop for a moment please.",
+        "wait_for": {"state": "speaking", "timeout_s": 20, "after_s": 3},
+        "expect": {"event": "Reply interrupted", "heard": "wait|stop"}
+      }
+    ]
+  },
+  {
+    "name": "echo-own-voice",
+    "about": "Ember must not answer its own voice: no echo flag, no user transcript while it speaks, and silence after its reply ends.",
+    "steps": [
+      {
+        "say": "Please tell me a short story about a friendly cat, about four sentences long.",
+        "timeout_s": 45,
+        "expect": {"reply": "cat", "no_echo": true}
+      },
+      {
+        "wait": 15,
+        "expect": {"silent": true, "no_user_speech": true}
+      }
+    ]
+  },
+  {
+    "name": "disengage-tv-engage",
+    "about": "'Ember disengage', then two minutes of synthetic TV (with near-miss words such as 'members engaged') with zero false wakes and nothing reaching Gemini, then 'Ember engage' at 1 m and at 3 m-equivalent volume.",
+    "requires": {"prompt": ["[ENGAGE AND DISENGAGE]"], "files": ["features/conversational_ability/engage.py"]},
+    "timeout_s": 600,
+    "steps": [
+      {
+        "say": "Ember, disengage.",
+        "expect": {"log": "\\[ENGAGE\\] Disengaged", "engaged": false, "max_words": 12, "not_reply": "\\?"}
+      },
+      {
+        "noise": "tv", "seconds": 120, "level_db": -3,
+        "expect": {"max_false_wakes": 0, "no_user_speech": true, "engaged": false}
+      },
+      {
+        "say": "Ember engage.", "distance_m": 1,
+        "timeout_s": 20,
+        "expect": {"log": "\\[ENGAGE\\] Engaged \\(heard", "engaged": true}
+      },
+      {
+        "say": "Ember, disengage.",
+        "expect": {"log": "\\[ENGAGE\\] Disengaged", "engaged": false}
+      },
+      {
+        "say": "Ember engage.", "distance_m": 3,
+        "timeout_s": 20,
+        "expect": {"log": "\\[ENGAGE\\] Engaged \\(heard", "engaged": true}
+      },
+      {
+        "say": "Can you hear me from over here?", "distance_m": 3,
+        "expect": {"heard": "hear|over here", "max_words": 40}
+      }
+    ]
+  },
+  {
+    "name": "reminder-reengages",
+    "about": "With reminders: a reminder that comes due while disengaged engages Ember again and is announced.",
+    "requires": {"tools": ["reminder"], "prompt": ["[ENGAGE AND DISENGAGE]"]},
+    "timeout_s": 300,
+    "steps": [
+      {
+        "say": "Remind me in one minute to stretch my legs.",
+        "expect": {"tools": ["reminder"], "reply": "minute|remind|stretch"}
+      },
+      {
+        "say": "Ember, disengage.",
+        "expect": {"log": "\\[ENGAGE\\] Disengaged", "engaged": false}
+      },
+      {
+        "wait": 15,
+        "wait_for": {"log": "\\[ENGAGE\\] Engaged \\(reminder due\\)", "timeout_s": 120},
+        "expect": {"log": "\\[ENGAGE\\] Engaged \\(reminder due\\)", "engaged": true, "reply": "stretch|legs|reminder"}
+      }
+    ]
+  },
+  {
+    "name": "look-closely-card",
+    "about": "a synthetic label on the rig's display in front of the real camera; Ember takes a sharp frame and reads it.",
+    "requires": {"tools": ["look_closely"], "display": true},
+    "steps": [
+      {"show": ["EXAMPLOL 10 MG", "TAKE 1 TABLET", "BY MOUTH TWICE DAILY", "WITH FOOD"], "hold_s": 3},
+      {
+        "say": "Can you look closely and read this label for me?",
+        "timeout_s": 40,
+        "expect": {"tools": ["look_closely"], "reply": "examplol|twice|10", "not_reply": "you should take more|double"}
+      },
+      {"clear_display": true}
+    ]
+  },
+  {
+    "name": "radio-stop",
+    "about": "'stop' spoken over live radio playing from Ember's own speaker pauses it through the offline wake words. Needs internet radio.",
+    "requires": {"tools": ["listen"], "files": ["features/toolkits/wakeword.py"]},
+    "timeout_s": 240,
+    "steps": [
+      {
+        "say": "Play a jazz radio station for me, any one is fine.",
+        "timeout_s": 40,
+        "expect": {"tools": ["listen"]}
+      },
+      {"wait": 1, "wait_for": {"event": "radio: Playing", "timeout_s": 45, "after_s": 8}},
+      {
+        "say": "Stop.",
+        "expect": {"log": "\\[WAKE\\] heard .* -> (?!no wake)"}
+      },
+      {
+        "say": "Please turn the radio off now.",
+        "expect": {"tools": ["listen"]}
+      }
+    ]
+  },
+  {
+    "name": "audiobook-stop",
+    "about": "Audiobooks: 'Ember stop' over a book playing from Ember's own speaker pauses it. Needs LibriVox.",
+    "requires": {"tools": ["audiobook"], "files": ["features/toolkits/wakeword.py"]},
+    "timeout_s": 240,
+    "steps": [
+      {
+        "say": "Please read me the audiobook Pride and Prejudice.",
+        "timeout_s": 45,
+        "expect": {"tools": ["audiobook"]}
+      },
+      {"wait": 1, "wait_for": {"event": "audiobook: Playing", "timeout_s": 60, "after_s": 10}},
+      {
+        "say": "Ember stop.",
+        "expect": {"event": "audiobook: Paused by"}
+      },
+      {
+        "say": "Please stop the book for today.",
+        "expect": {"tools": ["audiobook"]}
+      }
+    ]
+  },
+  {
+    "name": "eye-states",
+    "about": "The eyes start and follow the conversation states (thinking, speaking, listening) without losing sensors. What the eyes actually look like is not in the telemetry; see README.",
+    "requires": {"files": ["features/eyes/controller.py"], "env": {"BAYMAX_EYES_ENABLED": "1"}, "env_defaults": {"BAYMAX_EYES_ENABLED": "1"}},
+    "steps": [
+      {
+        "say": "Hi Ember, what is your favourite colour?",
+        "expect": {"startup_log": "\\[EYES\\] Ready", "states": ["thinking", "speaking", "listening"],
+                   "not_log": "\\[EYES\\] (Lost|Unavailable)", "max_words": 40}
+      }
+    ]
+  },
+  {
+    "name": "cpu-ceiling",
+    "about": "The runtime's CPU and memory stay under a ceiling during a turn with the camera busy. Thresholds are placeholders until a baseline run on the test robot.",
+    "steps": [
+      {"show": ["A RED APPLE", "AND A BLUE CUP"], "hold_s": 2},
+      {
+        "say": "What can you see in front of you right now?",
+        "timeout_s": 40,
+        "expect": {"max_cpu_percent": 60, "max_rss_mb": 3000}
+      },
+      {"wait": 20, "expect": {"max_cpu_percent": 40, "max_cpu_peak_percent": 90, "max_rss_mb": 3000}},
+      {"clear_display": true}
+    ]
+  },
+  {
+    "name": "restart-engaged",
+    "about": "a restart always comes back engaged, even after 'Ember disengage'.",
+    "requires": {"prompt": ["[ENGAGE AND DISENGAGE]"]},
+    "steps": [
+      {
+        "say": "Ember, disengage.",
+        "expect": {"log": "\\[ENGAGE\\] Disengaged", "engaged": false}
+      },
+      {"restart": true, "expect": {"ready_within_s": 150}},
+      {
+        "say": "What is two plus two?",
+        "expect": {"reply": "four|4", "engaged": true, "not_log": "\\[ENGAGE\\] Disengaged"}
+      }
+    ]
+  },
+  {
+    "name": "restart-recovers",
+    "about": "After a stop and restart, Ember connects again within the limit and answers.",
+    "steps": [
+      {"restart": true, "expect": {"ready_within_s": 150}},
+      {
+        "say": "Hello again, Ember. Are you there?",
+        "expect": {"heard": "hello|there", "max_words": 30}
+      }
+    ]
+  }
+]

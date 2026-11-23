@@ -1,0 +1,139 @@
+# Layer 2: runs a PR on the dedicated TEST robot and reports back (Baymax-main/evals/robot).
+#
+# Triggers (both queue for the one robot; nobody can bump or replace another's run):
+# - a collaborator adds the `robot-test` label to a same-repository PR;
+# - a collaborator submits a branch: Actions → Robot test → Run workflow, with an
+#   optional scenario list and a PR number to post the report on.
+# The robot's own runner (labels: self-hosted, ember-test-robot) checks out the
+# labelled commit or the submitted branch, runs the offline gate, then the rig: the PR's real run_mvp.py
+# with the robot's microphone, echo cancellation, speaker and camera, a second
+# speaker playing a synthetic "person", and a tablet showing synthetic cards.
+#
+# Safety: forks never run (the PR code gets a Gemini key); the guard step checks
+# the labeller's write permission; the job uses the `ember-test-robot` environment,
+# which holds the spending-capped GEMINI_TEST_KEY and should require the software
+# lead's approval. The rig refuses to run without /etc/ember/test-robot. The room
+# must be empty: microphone audio and camera frames go to Gemini.
+# A pass is evidence for review, not release approval (TESTING_PROTOCOL.md).
+name: Robot test
+
+on:
+  pull_request:
+    types: [labeled]
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: Branch of this repository to test
+        required: true
+      scenarios:
+        description: Comma-separated scenario names (blank runs every scenario)
+        required: false
+        default: ""
+      pr:
+        description: PR number to post the report on (optional)
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+# Queueing: the robot registers ONE runner, so jobs wait for it in turn and never
+# overlap. A shared concurrency group would NOT be a queue: GitHub keeps one pending run
+# per group and a newer one cancels it, so anyone could knock out a waiting run. Each
+# PR (or each person's branch) gets its own group instead: re-labelling or re-submitting
+# replaces only your own waiting run, never someone else's, and never a running one.
+concurrency:
+  group: robot-test-${{ github.event.pull_request.number && format('pr-{0}', github.event.pull_request.number) || format('{0}-{1}', github.actor, inputs.branch) }}
+  cancel-in-progress: false
+
+jobs:
+  robot-test:
+    if: >-
+      github.event_name == 'workflow_dispatch' || (
+      github.event.label.name == 'robot-test' &&
+      github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on: [self-hosted, ember-test-robot]
+    environment: ember-test-robot
+    timeout-minutes: 150
+    permissions:
+      contents: read
+      pull-requests: write   # Only the final "Post the report" step receives the token.
+    env:
+      PR: ${{ github.event.pull_request.number || inputs.pr }}
+      SCENARIOS: ${{ inputs.scenarios }}   # Checked by the guard before use.
+    steps:
+      # The rig itself comes from the default branch, so a PR cannot change the checks
+      # it is judged by. Until Layer 2 is merged, the PR's own copy is used (warned).
+      - name: Rig code (default branch)
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          path: rig
+          persist-credentials: false
+
+      - name: Code under test (the labelled commit, or the submitted branch)
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || inputs.branch }}
+          path: pr
+          persist-credentials: false
+
+      - name: Choose the rig
+        run: |
+          echo "REPORT_DIR=$RUNNER_TEMP/robot-report" >> "$GITHUB_ENV"
+          if [ -f rig/Baymax-main/evals/robot/rig.py ]; then
+            echo "RIG=$PWD/rig/Baymax-main" >> "$GITHUB_ENV"
+          else
+            echo "::warning::evals/robot is not on the default branch yet; using the PR's copy of the rig."
+            echo "RIG=$PWD/pr/Baymax-main" >> "$GITHUB_ENV"
+          fi
+
+      - name: Guard (test robot marker, same repository, collaborator with write access, valid inputs)
+        env:
+          GITHUB_TOKEN: ${{ github.token }}   # Read-only use: the labeller's permission.
+        run: |
+          python3 "$RIG/evals/robot/safety.py" --event "$GITHUB_EVENT_PATH" \
+            --event-name "$GITHUB_EVENT_NAME" --repository "${{ github.repository }}"
+          echo "Testing commit $(git -C pr rev-parse HEAD) for $GITHUB_ACTOR" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Python environment for the PR (reuses the installed release's when unchanged)
+        timeout-minutes: 45
+        run: bash "$RIG/evals/robot/prepare_checkout.sh" "$PWD/pr"
+
+      - name: Offline gate on the robot
+        timeout-minutes: 20
+        working-directory: pr/Baymax-main
+        run: .venv/bin/python check_release.py --report "$REPORT_DIR/offline.md"
+
+      - name: Robot suite (real runtime, synthetic person)
+        timeout-minutes: 90
+        env:
+          GEMINI_TEST_KEY: ${{ secrets.GEMINI_TEST_KEY }}
+        run: |
+          only=()
+          for name in ${SCENARIOS//,/ }; do only+=(--only "$name"); done
+          pr/Baymax-main/.venv/bin/python "$RIG/evals/robot/rig.py" \
+            --root pr/Baymax-main --config /etc/ember/robot-rig.json --yes \
+            ${PR:+--pr "$PR"} --report-dir "$REPORT_DIR" --max-minutes 80 "${only[@]}"
+
+      - name: Stop the runtime and delete recordings (always)
+        if: always()
+        run: |
+          if [ -x pr/Baymax-main/.venv/bin/python ]; then
+            pr/Baymax-main/.venv/bin/python "$RIG/evals/robot/rig.py" --root pr/Baymax-main --cleanup
+          fi
+          rm -rf "${RUNNER_TEMP:?}"/ember-rig-key-* /tmp/ember-rig-key-* /tmp/ember-rig-data-*
+
+      - name: Post the report
+        if: always()
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          if [ -f "$REPORT_DIR/robot-test.md" ]; then
+            if [ -n "$PR" ]; then
+              python3 "$RIG/evals/robot/report.py" --post "$REPORT_DIR/robot-test.md" --pr "$PR" --repository "${{ github.repository }}"
+            fi
+            cat "$REPORT_DIR/robot-test.md" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "No robot report (an earlier step failed); see this run's log." >> "$GITHUB_STEP_SUMMARY"
+          fi

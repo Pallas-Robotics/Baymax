@@ -1,0 +1,15 @@
+{
+  "robot_name": "ember-test-1",
+  "person_speaker": {"name": "Rig Speaker", "command": null},
+  "gain_db": 0.0,
+  "target_spl_dba": 60.0,
+  "calibration_file": "~/.config/ember/robot-rig-calibration.json",
+  "calibration_tolerance_db": 4.0,
+  "display": {"kind": "http", "host": "0.0.0.0", "port": 8790},
+  "base_env": "/home/ember/ember-deployment/current/Baymax-main/.env",
+  "env": {},
+  "tts_command": null,
+  "voice": null,
+  "startup_timeout_s": 180,
+  "temp_dir": null
+}
