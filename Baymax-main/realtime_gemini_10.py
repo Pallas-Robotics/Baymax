@@ -1486,6 +1486,8 @@ def _fall_detection_thread():
             _update_face_visibility(landmarks)
 
             result = fall_detector.update(landmarks, timestamp=captured_at) if fall_detector else no_fall
+            if fall_detector:   # display only: the devUI fall demo screen, while demo mode is on
+                fall_worker.observe_core(landmarks, result, fall_detector, captured_at)
             if result["trunk_angle"] is not None:
                 angle_history.append(result["trunk_angle"])
                 a = result["trunk_angle"]

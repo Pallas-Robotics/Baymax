@@ -196,6 +196,7 @@ def start(sample=lambda: {}):
                 emit('stopping', 'Stop requested from clickable launcher')
                 write_status()
                 _thread.interrupt_main()
+            poll_fall_demo()
             try:
                 metrics = sample()
             except Exception:
@@ -204,6 +205,15 @@ def start(sample=lambda: {}):
             stop_event.wait(.2)
     threading.Thread(target=worker, name='ember-monitor', daemon=True).start()
     atexit.register(stop)
+
+
+def poll_fall_demo():
+    """Apply the dev UI's fall-demo switch/replay request (local file, this PID only)."""
+    try:
+        from features.toolkits.fall_detection import worker as fall_worker
+        fall_worker.poll_demo_control()
+    except Exception:
+        pass  # A demo request must never interrupt conversation.
 
 
 def consume_stop_request():
