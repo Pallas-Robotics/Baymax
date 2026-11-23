@@ -122,6 +122,19 @@ write('/etc/network/interfaces.d/wlan0.conf', 'allow-hotplug wlan0\niface wlan0 
 interfaces = (root / 'etc/network/interfaces').read_text()
 if not re.search(r'^source(?:-directory)?\s+/etc/network/interfaces.d', interfaces, re.M):
     write('/etc/network/interfaces', interfaces + '\nsource /etc/network/interfaces.d/*\n')
+# LED eyes: SPI3 on header pins 19 (DIN), 23 (CLK), 26 (CS1) as /dev/spidev3.1, which the
+# ember user (dialout) may open without sudo. Same overlay as set by hand on ember-002.
+boot_env = root / 'boot/dietpiEnv.txt'
+env = boot_env.read_text()
+env, count = re.subn(r'^overlay_path=.*$', 'overlay_path=allwinner', env, flags=re.M)
+env = env if count else env.rstrip('\n') + '\noverlay_path=allwinner\n'
+overlays = re.search(r'^overlays=(.*)$', env, flags=re.M)
+if overlays is None:
+    env = env.rstrip('\n') + '\noverlays=spi3-cs0-cs1-spidev\n'
+elif 'spi3-cs0-cs1-spidev' not in overlays.group(1).split():
+    env = env[:overlays.end()] + (' ' if overlays.group(1).strip() else '') + 'spi3-cs0-cs1-spidev' + env[overlays.end():]
+write('/boot/dietpiEnv.txt', env, boot_env.stat().st_mode & 0o777)
+write('/etc/udev/rules.d/60-ember-eyes.rules', 'SUBSYSTEM=="spidev", GROUP="dialout", MODE="0660"\n')
 write('/etc/systemd/journald.conf.d/ember.conf', '[Journal]\nStorage=persistent\nSystemMaxUse=128M\n')
 copy('credentials.json', '/etc/ember/credentials.json', 0o600)
 for name in ['ember.bundle', 'bundle-source.json', 'anydesk-arm64.deb', 'ember-status.py', 'ember-device-config.py', 'ember-anydesk-id.py']:

@@ -1,5 +1,9 @@
 # MVP (unreleased)
 
+- LED eyes on the Orange Pi 4 Pro: the same expressive two-eye behaviour as the
+  LattePanda, over hardware SPI3 (`/dev/spidev3.1`: pins 19 DIN, 23 CLK, 26 CS, 1 MHz,
+  3.3 V logic). Chosen automatically when the device exists; OPI4-Flash images enable
+  the `spi3-cs0-cs1-spidev` overlay and let `dialout` (Ember) open it without sudo.
 - Offline checks run only on the Orange Pi (Linux ARM64) for now; the Linux, Windows and
   macOS desktop runs are off until local development is a priority again.
 - Desktop offline checks: the people store locks with msvcrt on Windows (fcntl doesn't exist

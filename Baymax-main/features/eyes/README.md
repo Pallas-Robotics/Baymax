@@ -1,7 +1,8 @@
 # LED eyes
 
 MVP drives two daisy-chained MAX7219 8x8 matrices through the LattePanda onboard
-Leonardo running StandardFirmata. No servo, firmware upload, extra microphone/camera
+Leonardo running StandardFirmata, or through hardware SPI (`/dev/spidev3.1`) on the
+Orange Pi 4 Pro, with the same expressions and behaviour on both. No servo, firmware upload, extra microphone/camera
 stream or separate provider request is added; expression commands use the existing
 Gemini Live session. Python dependency: `pyfirmata2==2.5.1` in
 the desktop/Debian x86_64 requirements profile.
@@ -110,6 +111,28 @@ Arduino D6 -> eye 1 DIN; D13 -> shared CLK; D10 -> shared CS/LOAD;
 5V/GND -> both matrices; eye 1 DOUT -> eye 2 DIN. D9 is unused.
 The user's current mounting uses left device 1 and right device 0, with no flips.
 
+### Orange Pi 4 Pro (SPI3)
+
+Header pin 2 (5V) -> VCC, pin 6 (GND) -> GND, pin 19 (SPI3 MOSI) -> eye 1 DIN,
+pin 23 (SPI3 SCLK) -> shared CLK, pin 26 (SPI3 CS1) -> shared CS; eye 1 DOUT -> eye 2
+DIN. The 4 Pro's 3.3 V logic drives the 5 V MAX7219 reliably at 1 MHz (tested for
+hours on ember-002), so no level shifter is used. Linux spidev only: no Python package.
+
+The `spi3-cs0-cs1-spidev` overlay (`overlay_path=allwinner`, `overlays=...` in
+`/boot/dietpiEnv.txt`) creates `/dev/spidev3.1`; udev rule
+`/etc/udev/rules.d/60-ember-eyes.rules` gives it to `dialout`, so Ember opens it
+without sudo. OPI4-Flash images set both. When `/dev/spidev3.1` exists it is the
+default port; a `BAYMAX_EYES_PORT` starting with `/dev/spidev` always uses SPI.
+
+A matrix that shows a fixed grid or a couple of lines, even in the chip's own
+display test (register 15 = 1), has its socketed 8x8 LED block in the wrong way
+round: if shutdown and intensity commands still blink and dim it, the MAX7219 is
+receiving fine. Pull the block out, turn it 180 degrees and reseat it. On ember-002
+this looked like a 3.3 V logic problem, but speed, SPI mode and a 3.3 V supply
+changed nothing; reseating fixed it.
+
+### LattePanda (Firmata)
+
 Default serial path:
 `/dev/serial/by-id/usb-Unknown_LattePanda_Leonardo-if00`.
 The user must have serial access (normally membership in `dialout`). Run as the
@@ -139,7 +162,9 @@ boundary, transcription reset, fast replies, late transcripts, reconnect/end,
 normal blinking during speech/listening, six single-dot frames, observer wiring
 and failure isolation, shutdown, and missing/disabled hardware. A fake board
 decodes the actual MAX7219 bitstream to check chain addressing, row orientation,
-brightness, diffing/retry and absence of servo commands.
+brightness, diffing/retry and absence of servo commands. The SPI driver's 32-bit
+transfers are decoded the same way (same registers, mode 0, 1 MHz), and a supplied
+test board never opens the real SPI device.
 
 Physical Firmata speed, second-matrix behavior and combined Gemini/audio/eye
 operation on ember-002 still require live verification. Pattern hold durations

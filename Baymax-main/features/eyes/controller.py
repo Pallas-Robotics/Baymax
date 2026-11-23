@@ -7,10 +7,13 @@ import sys
 import threading
 import time
 
-from .driver import LedControl
+from .driver import open_leds
 from .patterns import EXPRESSIONS
 
-PORT = "/dev/serial/by-id/usb-Unknown_LattePanda_Leonardo-if00"
+LATTEPANDA_PORT = "/dev/serial/by-id/usb-Unknown_LattePanda_Leonardo-if00"
+ORANGE_PI_SPI = "/dev/spidev3.1"   # Orange Pi 4 Pro SPI3 CS1: DIN pin 19, CLK 23, CS 26
+# The LattePanda has no spidev3.1, and the Orange Pi image enables it (spi3-cs0-cs1-spidev).
+PORT = ORANGE_PI_SPI if os.path.exists(ORANGE_PI_SPI) else LATTEPANDA_PORT
 OPEN = (0x3C, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x3C)
 BLINK = (0, 0, 0, 0, 0x3C, 0, 0, 0)
 BLANK = (0,) * 8
@@ -319,14 +322,9 @@ class Eyes:
             previous = mode
 
     def run(self):
-        board = leds = None
+        close = leds = None
         try:
-            factory = self.board_factory
-            if factory is None:
-                from pyfirmata2 import Arduino
-                factory = Arduino
-            board = factory(self.port)
-            leds = LedControl(board)
+            leds, close = open_leds(self.port, self.board_factory)
             for device in (0, 1):
                 leds.set_intensity(device, BRIGHTNESS)
                 leds.shutdown(device, False)
@@ -345,9 +343,9 @@ class Eyes:
             except Exception:
                 pass
             finally:
-                if board is not None:
+                if close is not None:
                     try:
-                        board.exit()
+                        close()
                     except Exception:
                         pass
 
