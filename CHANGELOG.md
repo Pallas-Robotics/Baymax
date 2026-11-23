@@ -1,5 +1,25 @@
 # MVP (unreleased)
 
+- Facility mode foundation (`features/care`, off unless `EMBER_CARE_ENABLED=1`):
+  a care log of non-clinical events per resident. The kinds are check-ins,
+  requests, help requests, night activity, falls, activities, meals, notes
+  and flags; anything else is refused. Each event can carry an exceptions
+  status (attention, no answer, open), which staff close as handled.
+  - **Facility page:** staff-visible events reach the facility page on
+    tadashirobotics.com through `baymax_cloud`'s store-and-forward uplink.
+    The website side is specified in `docs/facility/SITE_CONTRACT.md`. This
+    is a new cloud data flow: unlike transcripts, care events may carry a
+    short quote of the resident (never for private events).
+  - **On the robot:** the dashboard gains `/care` and `/api/care/*`. Staff
+    are the paired accounts listed in `EMBER_STAFF_EMAILS`.
+  - **Morning email:** an optional digest of summaries only.
+  - **Pilot metrics:** counts and time to handle.
+  - **Privacy:** family see nothing until the resident's consent is
+    recorded. Private events stay on the robot, except safety events, which
+    reach staff without the resident's words.
+  - Registers no Gemini tools; check-ins, requests and flags record into it
+    in follow-up PRs. Tests: `tests/test_care.py` (suite `care`).
+
 - LED eyes blink calmly: a blink chance every 2.5-5 s (was 0.7-1.4 s) and eyes shut for
   0.12 s (was 0.015 s, which read as a flicker). Seen on ember-002.
 - LED eyes are one step dimmer: brightness 2 of 15 (was 3); sleep eyes stay at 1.

@@ -1,0 +1,17 @@
+{
+  "name": "care",
+  "sources": [
+    "Baymax-main/features/care/**",
+    "Baymax-main/static/care.html",
+    "Baymax-main/baymax_app.py",
+    "Baymax-main/baymax_cloud.py"
+  ],
+  "python": [
+    {
+      "directory": "Baymax-main/tests",
+      "patterns": [
+        "test_care.py"
+      ]
+    }
+  ]
+}
