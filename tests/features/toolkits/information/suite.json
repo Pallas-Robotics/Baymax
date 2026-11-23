@@ -4,7 +4,10 @@
     "Baymax-main/features/toolkits/gemini_tools.py",
     "Baymax-main/features/toolkits/*.py",
     "Baymax-main/features/conversational_ability/live_models.py",
-    "Baymax-main/features/vision_process.py"
+    "Baymax-main/features/vision_process.py",
+    "Baymax-main/features/harness/**",
+    "Baymax-main/features/conversational_ability/volume.py",
+    "Baymax-main/features/eyes/tools.py"
   ],
   "python": [
     {
@@ -13,7 +16,8 @@
         "test_toolkit.py",
         "test_toolkit_public.py",
         "test_toolkit_proactive.py",
-        "test_toolkit_look_closely.py"
+        "test_toolkit_look_closely.py",
+        "test_toolkit_runner.py"
       ]
     }
   ]

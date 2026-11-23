@@ -29,6 +29,7 @@ features/
   conversational_ability/ Responsive listening, audio cleanup and turn-taking
   eyes/                Normal blinking and delayed thinking on MAX7219 matrices
   pose/                Camera pose: MediaPipe on the CPU, or the RK3588 NPU when ready
+  harness/             The runtime loop as parts: event trace and tool runner (more to come)
 ```
 
 The runtime coordinates these systems. Person recognition supplies identity context;
