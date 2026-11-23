@@ -29,6 +29,7 @@ features/
   conversational_ability/ Responsive listening, audio cleanup and turn-taking
   eyes/                Normal blinking and delayed thinking on MAX7219 matrices
   pose/                Camera pose: MediaPipe on the CPU, or the RK3588 NPU when ready
+  care/                Facility care log: what staff and, with consent, family see
 ```
 
 The runtime coordinates these systems. Person recognition supplies identity context;
@@ -62,3 +63,6 @@ the Orange Pi 5's NPU once it is converted and passes
 the converter's on-board check (which verifies the conversion; the NPU's fall decisions
 are close to MediaPipe's but not identical, see its VALIDATION.md). It never opens the
 camera itself. In v10 the fall toolkit reuses this pose instead of running its own.
+
+[Care log](care/README.md) is facility mode for senior living: features record check-ins,
+requests and falls as care events for staff. Off unless `EMBER_CARE_ENABLED=1`.

@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ember care log</title>
+<style>
+  :root { --bg: #f7f5f2; --card: #fff; --ink: #222; --muted: #6b6b6b; --line: #e3dfd8; --warn: #b4531a; --ok: #2f7d4f; }
+  @media (prefers-color-scheme: dark) { :root { --bg: #17171a; --card: #222226; --ink: #eee; --muted: #a0a0a0; --line: #34343a; --warn: #f0a060; --ok: #7fd09e; } }
+  body { margin: 0; background: var(--bg); color: var(--ink); font: 16px/1.45 system-ui, sans-serif; }
+  main { max-width: 760px; margin: 0 auto; padding: 16px; }
+  h1 { font-size: 1.4rem; margin: 8px 0 4px; } h2 { font-size: 1.05rem; margin: 24px 0 8px; }
+  .muted { color: var(--muted); font-size: .9rem; }
+  .item { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 12px; margin: 8px 0; }
+  .tag { font-size: .8rem; font-weight: 600; color: var(--warn); text-transform: uppercase; letter-spacing: .03em; }
+  .tag.ok { color: var(--ok); }
+  blockquote { margin: 6px 0 0; padding-left: 10px; border-left: 3px solid var(--line); color: var(--muted); }
+  button { margin-top: 8px; padding: 6px 12px; border-radius: 8px; border: 1px solid var(--line); background: var(--bg); color: var(--ink); cursor: pointer; }
+  #error { color: var(--warn); }
+</style>
+</head>
+<body>
+<main>
+  <h1>Ember care log</h1>
+  <p class="muted">This robot's own copy, for setup and when the facility page is unreachable. Staff normally use the facility page on tadashirobotics.com.</p>
+  <p id="error"></p>
+  <section id="exceptions" hidden><h2>To check today</h2><div id="exception-list"></div></section>
+  <section><h2>Today</h2><div id="today"></div></section>
+</main>
+<script>
+const labels = { attention: "Needs a look", no_answer: "No answer", open: "Open request", handled: "Handled", ok: "OK", info: "" };
+function card(e, staff) {
+  const div = document.createElement("div");
+  div.className = "item";
+  const tag = document.createElement("div");
+  tag.className = "tag" + (["ok", "handled", "info"].includes(e.status) ? " ok" : "");
+  tag.textContent = [labels[e.status], e.kind.replace("_", " ")].filter(Boolean).join(" · ");
+  const time = new Date(e.at).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  const summary = document.createElement("div");
+  summary.textContent = `${time}  ${e.summary}`;
+  div.append(tag, summary);
+  if (e.quote) { const q = document.createElement("blockquote"); q.textContent = `"${e.quote}"`; div.append(q); }
+  if (e.handled_by) { const h = document.createElement("div"); h.className = "muted"; h.textContent = `Handled by ${e.handled_by}`; div.append(h); }
+  if (staff && ["open", "attention", "no_answer"].includes(e.status)) {
+    const b = document.createElement("button");
+    b.textContent = "Mark handled";
+    b.onclick = async () => { await fetch(`/api/care/events/${e.id}/handled`, { method: "POST" }); load(); };
+    div.append(b);
+  }
+  return div;
+}
+async function load() {
+  const res = await fetch("/api/care/today");
+  const error = document.getElementById("error");
+  if (res.status === 401) { error.innerHTML = 'Sign in on the <a href="/">main dashboard</a> first.'; return; }
+  if (!res.ok) { error.textContent = (await res.json()).error || "Could not load the care log."; return; }
+  error.textContent = "";
+  const data = await res.json(), staff = data.role === "staff";
+  const exceptions = document.getElementById("exceptions");
+  exceptions.hidden = !staff;
+  if (staff) document.getElementById("exception-list").replaceChildren(...(data.exceptions.length ? data.exceptions.map(e => card(e, true)) : [Object.assign(document.createElement("p"), { className: "muted", textContent: "Nothing to check." })]));
+  document.getElementById("today").replaceChildren(...(data.events.length ? data.events.slice().reverse().map(e => card(e, staff)) : [Object.assign(document.createElement("p"), { className: "muted", textContent: "No events yet today." })]));
+}
+load();
+setInterval(load, 60000);
+</script>
+</body>
+</html>

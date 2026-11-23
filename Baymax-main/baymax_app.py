@@ -153,7 +153,7 @@ def login_required(f):
 # posting its events.
 
 _PUBLIC_PATHS = {
-    "/", "/api/auth/signup", "/api/auth/verify", "/api/auth/resend",
+    "/", "/care", "/api/auth/signup", "/api/auth/verify", "/api/auth/resend",
     "/api/auth/login", "/api/auth/logout", "/api/auth/me",
 }
 _ACCOUNT_PATHS = {"/api/devices", "/api/devices/pair"}  # login only, no pairing yet
@@ -390,12 +390,13 @@ def _alert_recipients():
     return emails
 
 
-def _send_alert_email(subject, body, kind):
-    """Emails each recipient separately, so paired accounts don't see each other's address."""
+def _send_alert_email(subject, body, kind, recipients=None):
+    """Emails each recipient separately, so paired accounts don't see each other's address.
+    `recipients` defaults to every account paired to this robot."""
     if not (EMAIL_FROM and EMAIL_PASSWORD):
         print(f"[EMAIL] Email not configured — {kind} not sent.")
         return
-    recipients = _alert_recipients()
+    recipients = _alert_recipients() if recipients is None else recipients
     if not recipients:
         print(f"[EMAIL] No account has paired unit {DEVICE_SERIAL} — {kind} not sent.")
         return
@@ -704,6 +705,16 @@ def voice_analysis_status():
     with _analysis_lock:
         running = _analysis_running
     return jsonify({"running": running})
+
+
+# ─── Facility care log (features/care) ───────────────────────────────────────
+from features.care import dashboard as _care_dashboard  # noqa: E402
+
+_care_dashboard.register(
+    app, _current_user, _alert_recipients,
+    lambda recipients, subject, body, kind: _send_alert_email(subject, body, kind, recipients),
+    {"serial": DEVICE_SERIAL, **KNOWN_DEVICES[DEVICE_SERIAL]}, STATIC_DIR,
+    start_digest=__name__ == "__main__" or os.getenv("EMBER_CARE_DIGEST_IN_PROCESS") == "1")
 
 
 if __name__ == "__main__":

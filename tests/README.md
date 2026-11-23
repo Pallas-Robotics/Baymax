@@ -26,6 +26,7 @@ tests/
     pose/
     memory_palace/
     person_recognition/           Reserved namespace; no claimed identity-engine tests
+    care/                         Facility care log (off unless EMBER_CARE_ENABLED=1)
     toolkits/{everyday,family,media,information}/
   documentation/graphify/
   deployment/sd_card_flash/

@@ -42,7 +42,9 @@ ENDPOINT_MAP = {
 }
 
 # Transcripts stay on the robot. The cloud gets falls, voice-analysis results
-# (numbers, no text) and boot status only; transcripts go to the local dashboard.
+# (numbers, no text) and boot status; transcripts go to the local dashboard.
+# Facility mode (features/care, off unless EMBER_CARE_ENABLED=1) also sends
+# staff-visible care events, which can carry a short quote of the resident.
 ROBOT_ONLY = {"/api/transcript", "/api/device/transcript"}
 
 # Boot/heartbeat messages describe a moment in time. Replaying a five-minute-old
