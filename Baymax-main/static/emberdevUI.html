@@ -3,7 +3,7 @@
 .timing-scroll{overflow-x:auto}.timing-scroll:focus-visible{outline:2px solid #ffb783;outline-offset:4px}.timing-table{width:100%;min-width:730px;border-collapse:collapse;font-size:12px;font-variant-numeric:tabular-nums}.timing-table th{text-align:left;color:#e9ede8;font-weight:600}.timing-table th,.timing-table td{padding:10px 8px;vertical-align:top;border-bottom:1px solid #46564a}.timing-table td{color:#c6d1c8;line-height:1.7}.timing-table td div:first-child{color:#f0f3ef}.timing-table td:first-child{min-width:155px}#speechIndicator{font-size:18px;font-weight:600;color:#c6d1c8}#speechIndicator[data-active="true"]{color:#ffceaa}</style></head><body><main><h1><span>Ember</span> dev monitor</h1><p>Live activity from the running Ember process. <a href="/">Device setup</a></p>
 <section class="card" aria-live="polite"><div id="state">Connecting to monitor…</div><p id="detail"></p><p id="speechIndicator" role="status">Local speech detector: waiting for audio…</p><p id="speechTimes" class="hint"></p><p id="speakerHealth" class="hint"></p><div id="activities"></div><p id="fresh" class="hint"></p></section>
 <div class="grid"><div class="pill">Memory: <span id="memory">Not reported</span></div><div class="pill">Google search: <span id="search">Not implemented</span></div></div>
-<p class="hint">Fall detection: <span id="fallStatus">Disabled</span></p>
+<p class="hint">Fall detection: <span id="fallStatus">Disabled</span> · <a href="/fall-demo">Fall demo</a></p>
 <section class="card" id="audioCard" hidden><h2>Microphone</h2><p id="audioMode"></p><p id="audioLevels" class="hint"></p><p class="hint">Input levels and speech estimate only; no voice identity is inferred.</p></section>
 <p id="echoDiagnostic" class="hint" role="status"></p>
 

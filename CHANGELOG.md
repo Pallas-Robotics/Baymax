@@ -1,5 +1,25 @@
 # MVP (unreleased)
 
+- Fall detection: made-up pose tests and a live demo mode. `fall_poses.py` generates
+  idealized MediaPipe-layout sequences (standing, walking, sitting, falls, bed, bending,
+  occlusion, leaving frame) reusable by a rig/eval harness; `fall_logic.py` is v10's
+  decision as a timestamped pure step (the vendored `FallDetector` with
+  `realtime_gemini_10`'s `FALL_*` thresholds), matched frame by frame against the
+  detector exactly as the runtime builds it (thresholds read from the runtime, at 10,
+  15 and 5 FPS). 17 sequences at 10 FPS: 9 ordinary cases and 3 fall variants pass,
+  plus fall-then-get-up (confirmed 2.7 s after onset; 2.67-2.8 s at 15/8/5 FPS). Five
+  known limitations are expectedFailure tests, not fixed: a brisk 3 s lie-down in bed
+  and a 2.5 s bend read as falls; a fall ending below the frame (new with v10's 60
+  degrees; v8's 45 caught it), one that leaves the frame at once and one toward the
+  camera are missed. New devUI **Fall demo** page: skeleton over the existing camera
+  stream, posture, countdown and what fires, from v10's own detector
+  (`fall_worker.observe_core`, display only, a no-op while demo mode is off); a demo
+  switch that lists falls on screen; and "Replay synthetic fall" through v10's decision
+  and the toolkit's check-in path (speaking optional; works offline, with no camera).
+  Replays never reach the built-in `/api/fall` dashboard report, and demo mode never
+  silences a real camera fall. No new camera/mic stream, no production alerts, no
+  systemd change. Ported from JoeKojima/Baymax#49. Live check on a real camera pending.
+
 - LED eyes blink calmly: a blink chance every 2.5-5 s (was 0.7-1.4 s) and eyes shut for
   0.12 s (was 0.015 s, which read as a flicker). Seen on ember-002.
 - LED eyes are one step dimmer: brightness 2 of 15 (was 3); sleep eyes stay at 1.

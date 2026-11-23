@@ -10,6 +10,8 @@ import socket
 import subprocess
 import sys
 import threading
+import time
+import uuid
 import webbrowser
 import urllib.request
 
@@ -20,6 +22,52 @@ from runtime_monitor import read_status
 
 ROOT = Path(__file__).resolve().parent
 ENV = ROOT / ".env"
+FALL_DEMO = ROOT / ".runtime-fall-demo.json"   # same file the runtime polls (fall_detection.DEMO_PATH)
+PAGES = {"/": "static/devUI.html", "/monitor": "static/emberdevUI.html", "/emberdevUI": "static/emberdevUI.html",
+         "/fall-demo": "static/falldemo.html"}
+
+
+def offline_replay(name):
+    """Ember is not running: compute the synthetic replay here so the page can animate it. Nobody is alerted."""
+    from features.toolkits import fall_poses
+    from features.toolkits.fall_logic import replay, points, V10_FPS
+    scenario = fall_poses.scenario(name, V10_FPS)
+    steps = []
+    for (moment, landmarks), result in zip(scenario.frames, replay(scenario.frames)):
+        angle, countdown = result["trunk_angle"], result["countdown_s"]
+        steps.append({"t": moment, "points": points(landmarks), "posture": result["posture"],
+                      "trunk_angle": None if angle is None else round(angle, 1),
+                      "fall_pending": result["fall_pending"], "fall_detected": result["fall_detected"],
+                      "countdown_s": None if countdown is None else round(countdown, 2)})
+    return {"scenario": name, "description": scenario.description, "steps": steps}
+
+
+def fall_demo(body):
+    from features.toolkits import fall_poses
+    from features.toolkits.fall_detection import WOULD_FIRE_CAMERA, WOULD_FIRE_REPLAY
+    action = body.get("action")
+    enabled, speak = body.get("enabled", True), body.get("speak", True)
+    if action not in ("set", "replay") or not isinstance(enabled, bool) or not isinstance(speak, bool):
+        raise ValueError("Invalid fall demo request.")
+    scenario = body.get("scenario", "fast_fall")
+    if action == "replay" and scenario not in fall_poses.DEMO_SCENARIOS:
+        raise ValueError("Unknown synthetic scenario.")
+    would_fire = {"replay": list(WOULD_FIRE_REPLAY), "camera": list(WOULD_FIRE_CAMERA)}
+    status = read_status()
+    running = status.get("state") not in ("offline", "stopped") and isinstance(status.get("pid"), int)
+    if not running:
+        result = {"runtime": False, "would_fire": would_fire}
+        if action == "replay":
+            result["timeline"] = offline_replay(scenario)
+        return result
+    request = {"pid": status["pid"], "enabled": enabled or action == "replay", "speak": speak,
+               "updated_at": time.time()}
+    if action == "replay":
+        request["replay"] = {"id": uuid.uuid4().hex, "scenario": scenario, "requested_at": time.time()}
+    temporary = FALL_DEMO.with_suffix(".tmp")
+    temporary.write_text(json.dumps(request), encoding="utf-8")
+    os.replace(temporary, FALL_DEMO)
+    return {"runtime": True, "would_fire": would_fire, "enabled": request["enabled"], "speak": speak}
 
 
 class LocalServer(ThreadingHTTPServer):
@@ -112,8 +160,8 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         if not self.valid_host():
             self.respond(403, {"error": "Local host required."})
-        elif self.path in ("/", "/monitor", "/emberdevUI"):
-            page = (ROOT / ("static/devUI.html" if self.path == "/" else "static/emberdevUI.html")).read_text(encoding="utf-8").replace("__TOKEN__", self.server.token)
+        elif self.path in PAGES:
+            page = (ROOT / PAGES[self.path]).read_text(encoding="utf-8").replace("__TOKEN__", self.server.token)
             self.respond(200, page.encode(), "text/html; charset=utf-8")
         else:
             self.respond(404, {"error": "Not found."})
@@ -133,6 +181,8 @@ class Handler(BaseHTTPRequestHandler):
                 self.respond(200, public_configuration(ENV))
             elif self.path == "/api/runtime":
                 self.respond(200, read_status())
+            elif self.path == "/api/fall-demo":
+                self.respond(200, fall_demo(body))
             elif self.path == "/api/devices":
                 # Only one hardware scan at a time, including requests from multiple tabs.
                 with self.server.settings_lock:

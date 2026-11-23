@@ -2,6 +2,7 @@
 import asyncio
 from collections import deque
 import hashlib
+import json
 import os
 from pathlib import Path
 import threading
@@ -11,6 +12,21 @@ import urllib.request
 ROOT = Path(__file__).resolve().parents[2]
 MODEL_URL = "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_full/float16/1/pose_landmarker_full.task"
 MODEL_SHA256 = "5134a3aad27a58b93da0088d431f366da362b44e3ccfbe3462b3827a839011b1"
+# Written by the local dev UI, read by the running Ember process (gitignored .runtime-*.json).
+# Bound to the runtime's PID, so a restarted Ember always starts with demo mode off.
+DEMO_PATH = ROOT / ".runtime-fall-demo.json"
+# What each kind of possible fall triggers in this build; shown on the demo screen.
+WOULD_FIRE_REPLAY = (
+    "Ember is asked, through the live Gemini session, to check in calmly and ask whether the person is okay "
+    "(unless 'Ember speaks the check-in' is off).",
+    "A local monitor event; the eyes show surprise.",
+    "Nothing else: a synthetic replay never reaches the runtime's own fall path, so no dashboard/cloud "
+    "/api/fall report, caregiver email, SMS or call.")
+WOULD_FIRE_CAMERA = (
+    "Ember's built-in detection asks Gemini to check on the person ([FALL ALERT]); demo mode never silences it.",
+    "A local monitor event; the eyes show surprise.",
+    "A /api/fall report to the dashboard (Ember cloud when the robot is linked, else the local webapp), "
+    "exactly as without demo mode. No caregiver email, SMS or call is sent by Ember itself.")
 
 
 # Other local features that reuse the camera frames / live session (e.g. proactive greetings).
@@ -111,6 +127,15 @@ class FallWorker:
         self.builtin = False                # the core's own fall detection sends the check-in
         self.pose_device = "CPU"            # where the core's pose model runs: "CPU" or "NPU"
         self.running_state = "Running on CPU"
+        # Demo mode: alerts listed on the dev-UI screen, optional spoken check-in for synthetic
+        # replays, and a live pose summary (joint points only while demo mode is on).
+        self.demo = {"enabled": False, "speak": True}
+        self.demo_alerts = deque(maxlen=5)
+        self.live = None
+        self.replay_thread = None
+        self.replay_speed = 1.0   # tests run replays faster; decisions use virtual frame times
+        self._replay_id = None
+        self._core_labels = None   # posture/countdown for the runtime's own detector (demo screen)
 
     def start(self, fps=15, shared_pose=False, builtin=False, **settings):
         """shared_pose=True: the core already runs pose on every frame and passes its
@@ -187,6 +212,8 @@ class FallWorker:
         try:
             backend = None if self.shared else self.backend_factory()
             detector = self.detector_factory(**self.settings)
+            from features.toolkits.fall_logic import Labeler
+            labels = Labeler()
             with self.lock:                 # share(device=...) may relabel running_state meanwhile
                 self.state = self.running_state
             _record("Fall detection running on the core's pose model; development mode" if self.shared
@@ -207,7 +234,8 @@ class FallWorker:
                     break
                 # Velocities use when the frame was captured (the core's time; or when
                 # submit() got it), not when its pose was done.
-                result = detector.update(landmarks, timestamp=item[3] if self.shared else item[0])
+                captured = item[3] if self.shared else item[0]
+                result = detector.update(landmarks, timestamp=captured)
                 finished = time.monotonic()
                 with self.lock:
                     self.inference_ms = (item[2] if self.shared else round((finished - started) * 1000, 1))
@@ -215,6 +243,8 @@ class FallWorker:
                     self.last_result = {k: result.get(k) for k in ("fall_pending", "fall_active", "trunk_angle")}
                     if result.get("fall_detected") and not self.builtin:   # the core's own already checks in
                         self.alerts.append({"time": time.time(), "recorded": finished})
+                if not self.builtin:   # with the built-in detector on, observe_core() shows its results
+                    self._show_camera(labels, detector, landmarks, result, captured, "camera (fall toolkit)")
                 if result.get("fall_detected"):
                     _record("Possible fall detected locally; check-ins come from Ember's built-in fall detection."
                             if self.builtin else
@@ -242,6 +272,124 @@ class FallWorker:
             self.pending = None
             self.alerts.clear()
 
+    # ── Demo mode ─────────────────────────────────────────────────────────
+    def _replaying(self):
+        return self.replay_thread is not None and self.replay_thread.is_alive()
+
+    def _publish(self, landmarks, result, labels, source, stay_down_s):
+        """Keep a small live summary for the demo screen; joint points only while demo mode is on."""
+        from features.toolkits.fall_logic import points
+        with self.lock:
+            if not self.demo["enabled"]:
+                self.live = None
+                return
+            angle, countdown = result.get("trunk_angle"), labels.get("countdown_s")
+            self.live = {"source": source, "updated": time.time(), "points": points(landmarks),
+                         "posture": labels.get("posture"), "trunk_angle": None if angle is None else round(angle, 1),
+                         "fall_pending": bool(result.get("fall_pending")), "fall_active": bool(result.get("fall_active")),
+                         "countdown_s": None if countdown is None else round(countdown, 2), "stay_down_s": stay_down_s}
+
+    def _demo_alert(self, source, spoken, would_fire):
+        with self.lock:
+            if self.demo["enabled"]:
+                self.demo_alerts.append({"time": time.time(), "source": source, "spoken": spoken,
+                                         "would_fire": list(would_fire)})
+
+    def _show_camera(self, labeler, detector, landmarks, result, captured_at, source):
+        """Camera results on the demo screen (display only; the alert paths are unchanged)."""
+        if not self.demo["enabled"]:
+            return
+        labels = labeler.label(detector, landmarks, result, captured_at)
+        if not self._replaying():
+            self._publish(landmarks, result, labels, source, detector.stay_down_s)
+        if result.get("fall_detected"):
+            self._demo_alert(source, True, WOULD_FIRE_CAMERA)
+
+    def observe_core(self, landmarks, result, detector, captured_at):
+        """realtime_gemini_10's own detector result for one camera frame. Only while demo mode
+        is on: shown on the demo screen. Never changes the decision or its check-in/report."""
+        try:
+            if not self.demo["enabled"]:
+                self._core_labels = None
+                return
+            if self._core_labels is None:
+                from features.toolkits.fall_logic import Labeler
+                self._core_labels = Labeler()
+            self._show_camera(self._core_labels, detector, landmarks, result, captured_at,
+                              "camera (Ember's built-in detection)")
+        except Exception:
+            pass   # the demo screen must never disturb the camera thread
+
+    def _replay_detected(self, name):
+        """A confirmed possible fall from a synthetic replay: the toolkit's check-in path only."""
+        with self.lock:
+            speak = self.demo["speak"] or not self.demo["enabled"]
+            # Queued even when the built-in detector owns camera check-ins: it never sees replays.
+            self.alerts.append({"time": time.time(), "recorded": time.monotonic(),
+                                "source": "synthetic replay", "quiet": not speak})
+        self._demo_alert("synthetic replay: " + name, speak, WOULD_FIRE_REPLAY)
+        _record("Demo: possible fall detected from a synthetic pose replay (not a camera). No external alert sent.")
+
+    def set_demo(self, enabled, speak=True):
+        with self.lock:
+            new = {"enabled": bool(enabled), "speak": bool(speak)}
+            changed, self.demo = self.demo != new, new
+            if not enabled:
+                self.live = None
+                self.demo_alerts.clear()
+        if changed:
+            _record("Fall demo mode " + ("on: alerts shown on screen" + ("; Ember speaks replay check-ins" if speak else
+                                         "; Ember stays quiet for replays") if enabled else "off"))
+
+    def replay(self, name="fast_fall"):
+        """Push a made-up pose sequence, in real time, through v10's decision (fall_logic.FallDecision:
+        realtime_gemini_10's detector and thresholds) and the toolkit's check-in path."""
+        from features.toolkits import fall_poses
+        from features.toolkits.fall_logic import FallDecision, V10_FPS
+        if name not in fall_poses.DEMO_SCENARIOS:
+            raise ValueError("Unknown synthetic scenario.")
+        if self._replaying():
+            return False
+        scenario = fall_poses.scenario(name, V10_FPS)
+        decision = FallDecision()
+
+        def run():
+            _record("Demo: replaying synthetic poses '" + name + "' (" + str(round(scenario.duration, 1)) + " s)")
+            base = time.monotonic()
+            for moment, landmarks in scenario.frames:
+                delay = base + moment / self.replay_speed - time.monotonic()
+                if delay > 0 and self.stop_event.wait(delay):
+                    return
+                result = decision.update(landmarks, base + moment)  # virtual frame time
+                self._publish(landmarks, result, result, "synthetic replay: " + name, decision.stay_down_s)
+                if result.get("fall_detected"):
+                    self._replay_detected(name)
+
+        self.replay_thread = threading.Thread(target=run, name="ember-fall-replay", daemon=True)
+        self.replay_thread.start()
+        return True
+
+    def poll_demo_control(self, path=None):
+        """Apply the dev UI's demo settings/replay request when written for this process."""
+        try:
+            request = json.loads(Path(path or DEMO_PATH).read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return
+        if not isinstance(request, dict) or request.get("pid") != os.getpid():
+            return
+        enabled, speak = request.get("enabled"), request.get("speak", True)
+        if isinstance(enabled, bool) and isinstance(speak, bool):
+            self.set_demo(enabled, speak)
+        replay = request.get("replay")
+        requested_at = replay.get("requested_at", 0) if isinstance(replay, dict) else 0
+        if (enabled is True and isinstance(replay, dict) and replay.get("id") != self._replay_id
+                and isinstance(requested_at, (int, float)) and 0 <= time.time() - requested_at < 15):
+            self._replay_id = replay.get("id")
+            try:
+                self.replay(replay.get("scenario"))
+            except ValueError:
+                pass
+
     def pop_alert(self):
         with self.lock:
             while self.alerts:
@@ -262,10 +410,13 @@ class FallWorker:
                 state = "Waiting for camera"
             if self.stop_event.is_set() and self.is_enabled and self.thread and self.thread.is_alive():
                 state = "Stopping"
+            live = self.live if self.live and time.time() - self.live["updated"] <= 2 else None
             return {"state": state, "backend": f"{self.pose_device} (core pose)" if self.shared else "CPU",
                     "inference_ms": self.inference_ms,
                     "fps": round(fps, 1) if fps is not None else None, "dropped": self.dropped,
-                    "last_result": dict(self.last_result) if self.last_result else None}
+                    "last_result": dict(self.last_result) if self.last_result else None,
+                    "demo": {**self.demo, "replaying": self._replaying(), "live": dict(live) if live else None,
+                             "alerts": [dict(alert) for alert in self.demo_alerts]}}
 
     async def alert_monitor(self, session, shutdown_event):
         tasks = [asyncio.create_task(task(session, shutdown_event)) for task in list(session_tasks)]
@@ -281,6 +432,10 @@ class FallWorker:
             if alert:
                 import runtime_monitor
                 runtime_monitor.notify('fall_alert')
+                if alert.get("quiet"):
+                    _record("Demo mode: synthetic possible fall shown on screen; Ember was not asked to speak.")
+                    await asyncio.sleep(0.1)
+                    continue
                 from features.conversational_ability.engage import engagement
                 engagement.engage("possible fall")  # The person must be able to answer the check-in.
                 from features.toolkits import audiobooks
