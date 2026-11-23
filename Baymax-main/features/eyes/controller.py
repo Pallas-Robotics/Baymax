@@ -21,6 +21,9 @@ DOTS = tuple((0, 0, 0, 0, value, value, 0, 0) for value in (0xC0, 0x18, 0x03))
 THINKING = tuple((dot, BLANK) for dot in DOTS) + tuple((BLANK, dot) for dot in DOTS)
 BRIGHTNESS = 2   # of 15; one step dimmer on the Orange Pi build
 SLEEP_BRIGHTNESS = 1  # Sleep eyes are dimmer.
+BLINK_GAP_S = (2.5, 5.0)     # seconds between blink chances (was 0.7-1.4: too busy)
+BLINK_CLOSED_S = 0.12        # eyes held shut per blink (was 0.015: a flicker, not a blink)
+DOUBLE_BLINK_GAP_S = 0.15    # open between the two blinks of a rare double blink
 # Anything that means a conversation is happening resets the sleep timer; the
 # last of Ember's audio leaving the speaker too, so the quiet time counts from
 # when Ember actually stops talking, not from Gemini's last packet.
@@ -259,7 +262,7 @@ class Eyes:
 
     def render(self, leds):
         leds.draw_pair(OPEN)
-        next_blink = self.clock() + random.uniform(0.7, 1.4)
+        next_blink = self.clock() + random.uniform(*BLINK_GAP_S)
         frame = 0
         was_thinking = False
         previous = 'normal'
@@ -284,19 +287,19 @@ class Eyes:
                 frame += 1
                 if mode in ('surprised', 'curious', 'love'):
                     if mode != previous:
-                        next_blink = self.clock() + random.uniform(0.7, 1.4)
+                        next_blink = self.clock() + random.uniform(*BLINK_GAP_S)
                     if self.clock() >= next_blink:
                         if random.random() < (0.50 if mode == 'surprised' else 0.55):
                             leds.draw_pair(BLINK)
-                            self.hold(0.015, mode)
+                            self.hold(BLINK_CLOSED_S, mode)
                             if self.mode() == mode:
                                 leds.draw_pair(*pair)
-                                if random.random() < 0.15 and self.hold(0.055, mode):
+                                if random.random() < 0.15 and self.hold(DOUBLE_BLINK_GAP_S, mode):
                                     leds.draw_pair(BLINK)
-                                    self.hold(0.010, mode)
+                                    self.hold(BLINK_CLOSED_S, mode)
                                     if self.mode() == mode:
                                         leds.draw_pair(*pair)
-                        next_blink = self.clock() + random.uniform(0.7, 1.4)
+                        next_blink = self.clock() + random.uniform(*BLINK_GAP_S)
                     self.hold(max(0, next_blink - self.clock()), mode)
                 else:
                     self.hold(seconds, mode)
@@ -306,18 +309,18 @@ class Eyes:
                     leds.draw_pair(OPEN)
                     frame = 0
                     was_thinking = False
-                    next_blink = self.clock() + random.uniform(0.7, 1.4)
+                    next_blink = self.clock() + random.uniform(*BLINK_GAP_S)
                 if self.clock() >= next_blink:
                     if random.random() < 0.75:
                         leds.draw_pair(BLINK)
-                        self.hold(0.015, False)
+                        self.hold(BLINK_CLOSED_S, False)
                         leds.draw_pair(OPEN)
                         if not self.thinking() and random.random() < 0.15:
-                            if self.hold(0.055, False):
+                            if self.hold(DOUBLE_BLINK_GAP_S, False):
                                 leds.draw_pair(BLINK)
-                                self.hold(0.010, False)
+                                self.hold(BLINK_CLOSED_S, False)
                                 leds.draw_pair(OPEN)
-                    next_blink = self.clock() + random.uniform(0.7, 1.4)
+                    next_blink = self.clock() + random.uniform(*BLINK_GAP_S)
                 self.hold(max(0, next_blink - self.clock()), False)
             previous = mode
 

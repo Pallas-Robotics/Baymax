@@ -59,9 +59,10 @@ the desktop/Debian x86_64 requirements profile.
   `ExecStopPost` runs `show.py --after-exit`, which draws X. `show.py <face>`
   draws any expression by hand. Existing robots must rerun
   `python3 devops/mvp/install_autostart.py` once to get the hook.
-- Open hollow eyes with random fast blinks are the default, including while
-  listening and speaking. Patterns and timing follow the user's supplied demo:
-  0.7–1.4s blink opportunities, 75% chance, 15ms blink with rare double blink.
+- Open hollow eyes with random calm blinks are the default, including while
+  listening and speaking. Patterns follow the user's supplied demo; timing is
+  slower than the demo's (`BLINK_GAP_S`, `BLINK_CLOSED_S`): 2.5–5s blink
+  opportunities, 75% chance, eyes shut 0.12s, with a rare double blink.
 - User transcription starts/restarts the wait. Thinking appears only when
   **more than two seconds** have elapsed since the last nonblank fragment.
   This is a transcription-based wait estimate, not acoustic end-of-speech.
@@ -169,7 +170,7 @@ test board never opens the real SPI device.
 Physical Firmata speed, second-matrix behavior and combined Gemini/audio/eye
 operation on ember-002 still require live verification. Pattern hold durations
 exclude transfer time; this bit-banged serial path does not guarantee exact
-15ms physical blink duration. No keys, transcripts or biometric information are
+0.12s physical blink duration. No keys, transcripts or biometric information are
 sent to the Arduino.
 
 With `BAYMAX_EYE_TOOL=1`, the eye tool uses the existing Gemini tool dispatcher, independently of public

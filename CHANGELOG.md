@@ -1,5 +1,7 @@
 # MVP (unreleased)
 
+- LED eyes blink calmly: a blink chance every 2.5-5 s (was 0.7-1.4 s) and eyes shut for
+  0.12 s (was 0.015 s, which read as a flicker). Seen on ember-002.
 - LED eyes are one step dimmer: brightness 2 of 15 (was 3); sleep eyes stay at 1.
 - LED eyes on the Orange Pi 4 Pro: the same expressive two-eye behaviour as the
   LattePanda, over hardware SPI3 (`/dev/spidev3.1`: pins 19 DIN, 23 CLK, 26 CS, 1 MHz,
