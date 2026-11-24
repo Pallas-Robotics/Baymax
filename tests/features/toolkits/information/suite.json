@@ -7,6 +7,8 @@
     "Baymax-main/features/vision_process.py",
     "Baymax-main/features/harness/**",
     "Baymax-main/features/conversational_ability/volume.py",
+    "Baymax-main/features/conversational_ability/voice_choice.py",
+    "Baymax-main/features/person_recognition/people.py",
     "Baymax-main/features/eyes/tools.py"
   ],
   "python": [

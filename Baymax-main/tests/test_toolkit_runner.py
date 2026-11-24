@@ -11,11 +11,12 @@ from unittest.mock import patch
 from google.genai import types
 
 import runtime_monitor as monitor
-from features.conversational_ability import volume
+from features.conversational_ability import voice_choice, volume
 from features.eyes import tools as eye_tools
 from features.harness import toolkit
 from features.harness.tools import BLOCKING, NON_BLOCKING, Tool, ToolRunner, validate
 from features.harness.trace import Trace
+from features.person_recognition import people
 from features.toolkits import audiobooks, experimental, gemini_tools, listen, look_closely, time_limits, web_search
 from features.toolkits.everyday import tools as everyday
 from features.toolkits.family import tools as family
@@ -309,6 +310,16 @@ class ToolkitParityTests(unittest.TestCase):
         self.assertEqual(sent[0][0][2], {"photo": "sent"})
         self.assertEqual(sent[0][2][2], {"tool": web_search.NAME, "args": {"query": "weather records"}})
 
+    def test_voice_and_people_tools_match_v10(self):
+        # Orange Pi 4 Pro tools: change_voice and the six face/voice recognition tools.
+        named = {"remember_person", "remember_voice", "forget_person"}
+        calls = [call(voice_choice.NAME, {"voice": "status"}, "v")] + [
+            call(name, {"name": "Joe"} if name in named else {}, name) for name in sorted(people.NAMES)]
+        monitor_calls, sent, _ = self.run_both(batch(*calls))
+        self.assertEqual(len(sent[0]), 7)
+        self.assertNotIn(("emit", "calling_tool", "Calling toolkit unknown_tool"), monitor_calls)
+        self.assertEqual(sent[0][0][2], {"tool": voice_choice.NAME, "args": {"voice": "status"}})
+
     def test_look_closely_disabled_matches_v10(self):
         _, sent, _ = self.run_both(batch(call("look_closely", {}, "1")), env={"BAYMAX_TOOLKIT_ENABLED": "0"})
         self.assertEqual(sent[0][0][2], {"error": "Toolkit is disabled"})
@@ -327,7 +338,7 @@ class ToolkitParityTests(unittest.TestCase):
         names = {t.name for t in toolkit.tools()}
         declared = {d["name"] for d in gemini_tools.DECLARATIONS + everyday.DECLARATIONS + experimental.DECLARATIONS
                     + family.DECLARATIONS} | {eye_tools.NAME, look_closely.DECLARATION["name"], listen.NAME,
-                                              volume.NAME, web_search.NAME}
+                                              volume.NAME, voice_choice.NAME, web_search.NAME} | people.NAMES
         self.assertEqual(names, declared)
         for tool in toolkit.tools():
             self.assertIsNone(tool.declaration.get("behavior"))  # Behaviour comes from the runner, not shared dicts.
@@ -343,7 +354,10 @@ class ToolkitParityTests(unittest.TestCase):
                     listen.NAME: {"action": "play_radio", "query": "jazz", "country_code": "US"},
                     family.DECLARATIONS[0]["name"]: {"message_id": "m1", "text": "Thanks"},
                     web_search.NAME: {"query": "who won the match"},
-                    eye_tools.NAME: {"expression": "happy"}}
+                    eye_tools.NAME: {"expression": "happy"},
+                    voice_choice.NAME: {"voice": "default"},
+                    "remember_person": {"name": "Joe", "relationship": "son"},
+                    "remember_voice": {"name": "Joe"}}
         for name, args in examples.items():
             self.assertEqual(validate(tools[name].declaration.get("parameters"), args), [], name)
 

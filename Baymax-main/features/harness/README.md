@@ -223,7 +223,7 @@ A tool never opens a microphone or camera stream.
   - cancellation: running, queued, async, and a session stop;
   - BLOCKING/NON_BLOCKING and the eye switch;
   - argument-value privacy;
-  - parity with `handle_tool_call_v10`: mixed batches, the v10-only tools (look_closely, volume, search_web, family), the disabled toolkit, a non-silent eye tool and more than 8 calls;
+  - parity with `handle_tool_call_v10`: mixed batches, the v10-only tools (look_closely, volume, search_web, family), `change_voice` and the person-recognition tools, the disabled toolkit, a non-silent eye tool and more than 8 calls;
   - the intended differences;
   - the `EMBER_TOOL_RUNNER` switch.
 - **`tests/test_toolkit_time_limits.py` (information suite):**

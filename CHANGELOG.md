@@ -19,7 +19,11 @@
   returns `timed_out` so Ember says the service couldn't be reached and offers to
   retry; late results are dropped and hung workers no longer block shutdown. This
   supersedes JoeKojima/Baymax#48 and Pallas #8. `EMBER_TOOL_RUNNER=0` restores
-  v10's dispatcher. Live checks pending.
+  v10's dispatcher. On the Orange Pi 4 Pro line the runner also registers
+  `change_voice` and the six face/voice recognition tools (`remember_person`,
+  `remember_voice`, `identify_speaker`, `who_is_here`, `forget_person`,
+  `decline_to_be_remembered`), dispatched as v10 does, with the 10 s default limit.
+  Live checks pending.
 
 - LED eyes blink calmly: a blink chance every 2.5-5 s (was 0.7-1.4 s) and eyes shut for
   0.12 s (was 0.015 s, which read as a flicker). Seen on ember-002.
